@@ -1,6 +1,6 @@
 {
   "name": "decomp-wtf",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Decompile games you own into C that rebuilds them byte for byte, with decomp.wtf.",
   "mcpServers": {
     "decomp": {"command": "decomp", "args": ["mcp"], "env": {"DECOMP_AGENT_NAME": "gemini"}}
