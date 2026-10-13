@@ -1306,7 +1306,8 @@ class RomNetwork(Network):
                 d = scoring.diff(self._target_obj(fn, proj), cand)
                 if verdict is not None:
                     d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-                out = {"rows": [list(r) for r in d.rows], "score": d.score, "percent": round(d.percent, 1),
+                out = {"rows": [list(r) for r in d.rows], "score": d.score,
+                       "percent": 100.0 if d.bytes_match else min(99.9, int(d.percent * 10) / 10),
                        "problems": problems, "source": source}
         if len(self._diffs) > 128:
             self._diffs.pop(next(iter(self._diffs)))

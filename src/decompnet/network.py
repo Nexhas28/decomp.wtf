@@ -403,8 +403,12 @@ class Network:
                     "score": 0, "matched": True}
         else:
             best = self.store.one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
-            head = (f"score {d.score} ({d.percent:.1f}% match) — best so far {best}. "
+            head = (f"score {d.score} ({scoring.percent_text(d.percent)} match) — best so far {best}. "
                     f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}.")
+            if d.rows and all(m == " " for m, _, _ in d.rows):
+                head += ("\nNOT A MATCH YET: every instruction reads the same, but the bytes differ"
+                         + (" because of the linking notes at the end: fix those." if problems else
+                            ": an encoding the listing doesn't show (branch form, an immediate, a relocation)."))
         warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)

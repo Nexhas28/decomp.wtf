@@ -1561,7 +1561,7 @@ async function refreshFn(first) {
     if (d.name !== S.fn) return;
     S.fnDetail = d;
     $("fnAddr").textContent = S.ov.kind === "fork"
-      ? `${d.unit} · ${d.insns} instructions${d.match_percent != null ? ` · ${d.match_percent.toFixed(1)}% now` : ""}`
+      ? `${d.unit} · ${d.insns} instructions${d.match_percent != null ? ` · ${d.match_percent >= 100 ? "100" : (Math.floor(d.match_percent * 10) / 10).toFixed(1)}% now` : ""}`
       : `${hex8(d.vram)} · ROM 0x${d.rom_offset.toString(16).toUpperCase()} · ${d.insns} instructions`;
     $("fnName").textContent = d.name;
     fnBadge(d);

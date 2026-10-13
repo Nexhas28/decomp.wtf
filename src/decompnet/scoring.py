@@ -6,6 +6,7 @@ score == 0 means a byte-for-byte (relocation-normalized) match. Lower is better.
 from __future__ import annotations
 
 import difflib
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -48,6 +49,15 @@ class Insn:
     mnemonic: str
     operands: str
     text: str  # normalized "mnemonic operands" with reloc targets symbolized
+
+
+def percent_text(p: float | None) -> str:
+    """A match percentage that never reads 100% before the function really matches: 99.96 is 99.9%, not 100.0%."""
+    if p is None:
+        return "?"
+    if p >= 100:
+        return "100%"
+    return f"{math.floor(max(0.0, p) * 10) / 10:.1f}%"
 
 
 def disassemble(fn: FunctionObj) -> list[Insn]:

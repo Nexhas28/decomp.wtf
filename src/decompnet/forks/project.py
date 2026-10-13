@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from ..limits import capped, killed_for_memory
 from . import objdiff
 
 STATE = ".decomp-wtf"
+_CONFIG_CACHE: dict[str, tuple] = {}  # objdiff.json path -> (stat key, parsed, units by name)
+_CONFIG_LOCK = threading.Lock()
 # Agents may only edit source and header files, never the project's build setup, targets or verification.
 EDITABLE = re.compile(r"\.(c|cc|cpp|cxx|h|hh|hpp|hxx|inc|inl)$", re.I)
 FORBIDDEN_PARTS = {".git", STATE, "orig", "build", "asm", "expected", "tools", "config", ".github", "assets", "bin"}
@@ -56,6 +59,8 @@ class Unit:
     source: str | None  # path relative to the project root
     complete: bool
     scratch: dict | None
+    options: dict | None = None  # the unit's own objdiff options
+    mappings: dict | None = None  # objdiff symbol mappings (target name -> base name)
 
 
 @functools.lru_cache(maxsize=64)
@@ -68,6 +73,8 @@ def _git_env(root: Path) -> dict | None:
     return {**os.environ, **who, "GIT_COMMITTER_NAME": who["GIT_AUTHOR_NAME"], "GIT_COMMITTER_EMAIL": who["GIT_AUTHOR_EMAIL"]}
 
 
+# A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
+_FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
 _NOISE = re.compile(r"^#{1,3}\s*(mwldeppc\.exe Linker Warning:|FORCEACTIVE symbol|(doesn't )?exist\.\s+Ignored\.|"
                     r"Section '\.note\.split' is unknown)")
@@ -264,7 +271,9 @@ class ForkProject:
             return [[cfg.get("custom_make") or "make", *cfg.get("custom_args", [])]]
         raise ForkError("decomp.wtf can't tell how to build this project; follow its README, then refresh")
 
-    def run(self, cmd: list[str], log=print, timeout: float = 3600) -> tuple[bool, str]:
+    def run(self, cmd: list[str], log=print, timeout: float = 3600, failed: list[str] | None = None) -> tuple[bool, str]:
+        """Run a build step in the project. Targets the build reports as failed (ninja's FAILED:, make's Error lines)
+        are added to `failed`."""
         env = dict(os.environ)
         env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
@@ -277,6 +286,8 @@ class ForkProject:
         for line in proc.stdout:
             line = line.rstrip()
             out.append(line)
+            if failed is not None and (m := _FAILED.match(line)):
+                failed.extend(t for t in (m.group(1) or m.group(2)).split() if t not in failed and not t.startswith("[code="))
             seen[line] += 1
             if seen[line] > 2 or _NOISE.match(line):  # the same line again, or CodeWarrior's linker chatter
                 quiet += 1
@@ -340,14 +351,29 @@ class ForkProject:
 
     # ------------------------------------------------------------------ objdiff project
 
-    def objdiff_config(self) -> dict:
+    def _config_entry(self) -> tuple[tuple, dict, dict]:
+        """(stat key, objdiff.json, units by name), parsed once per change of the file: a big game's runs to
+        megabytes and every compile needs it."""
         p = self.root / "objdiff.json"
-        if not p.exists():
-            raise ForkError("objdiff.json not found: set the project up first")
-        return json.loads(p.read_text())
+        try:
+            st = p.stat()
+        except OSError:
+            raise ForkError("objdiff.json not found: set the project up first") from None
+        key = (st.st_mtime_ns, st.st_size)
+        with _CONFIG_LOCK:
+            hit = _CONFIG_CACHE.get(str(p))
+            if hit is None or hit[0] != key:
+                cfg = json.loads(p.read_text())
+                by_name: dict[str, Unit] = {}
+                for u in self._units_of(cfg):
+                    by_name.setdefault(u.name, u)
+                hit = _CONFIG_CACHE[str(p)] = (key, cfg, by_name)
+            return hit
 
-    def units(self) -> list[Unit]:
-        cfg = self.objdiff_config()
+    def objdiff_config(self) -> dict:
+        return self._config_entry()[1]
+
+    def _units_of(self, cfg: dict) -> list[Unit]:
         tdir, bdir = cfg.get("target_dir"), cfg.get("base_dir")
         out = []
         for u in cfg.get("units") or cfg.get("objects") or []:
@@ -356,14 +382,27 @@ class ForkProject:
             b = u.get("base_path") or (str(Path(bdir) / u["path"]) if bdir and u.get("path") else None)
             out.append(Unit(u.get("name") or u.get("path") or "?", self.root / t if t else None,
                             self.root / b if b else None, meta.get("source_path"),
-                            bool(meta.get("complete", u.get("complete", False))), u.get("scratch")))
+                            bool(meta.get("complete", u.get("complete", False))), u.get("scratch"),
+                            u.get("options") or None, u.get("symbol_mappings") or None))
         return out
 
+    def units(self) -> list[Unit]:
+        return self._units_of(self.objdiff_config())
+
     def unit(self, name: str) -> Unit:
-        for u in self.units():
-            if u.name == name:
-                return u
-        raise ForkError(f"no unit {name!r}")
+        found = self._config_entry()[2].get(name)
+        if found is None:
+            raise ForkError(f"no unit {name!r}")
+        return found
+
+    def units_for(self, rel: str) -> list[Unit]:
+        """The units whose source file is `rel` (relative to the project root)."""
+        want = Path(rel).as_posix()
+        return [u for u in self.units() if u.source and Path(u.source).as_posix() == want]
+
+    def diff_options(self, unit: Unit) -> dict:
+        """What every diff of this unit is judged by: the progress report's rules with the project's and unit's options."""
+        return objdiff.judge_options(self.objdiff_config().get("options"), unit.options)
 
     def build_unit(self, unit: Unit, log=lambda *_: None) -> tuple[bool, str]:
         if unit.base is None:
@@ -374,6 +413,11 @@ class ForkProject:
         rel = os.path.relpath(unit.base, self.root)
         return self.run([tool, *cfg.get("custom_args", []), rel], log=log, timeout=600)
 
+    def failed_units(self, targets: list[str]) -> set[str]:
+        """Units whose source object is among the build's failed targets."""
+        want = {os.path.normpath(t) for t in targets}
+        return {u.name for u in self.units() if u.base is not None and os.path.normpath(os.path.relpath(u.base, self.root)) in want}
+
     def _all_source(self) -> bool:
         """dtk-template's `all_source`: every unit's source object, including units the game's link doesn't use yet
         (the default build only compiles what the link needs, so objdiff would have nothing to measure them by)."""
@@ -383,19 +427,22 @@ class ForkProject:
         except OSError:
             return False
 
-    def build_all(self, log=lambda *_: None) -> tuple[bool, str]:
+    def build_all(self, log=lambda *_: None, failed: list[str] | None = None) -> tuple[bool, str]:
         cfg = self.objdiff_config()
         make = cfg.get("custom_make") or "make"
         if (make == "ninja" or Path(make).name.startswith("ninja")) and self._all_source():
             # -k 0: keep going past work in progress that doesn't compile yet
-            return self.run([_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"], log=log)
-        return self.run([_tool(make) or make, *cfg.get("custom_args", [])], log=log)
+            return self.run([_tool(make) or make, *cfg.get("custom_args", []), "-k", "0", "all_source"], log=log,
+                            failed=failed)
+        keep_going = ["-k"] if Path(make).name in ("make", "gmake", "mingw32-make") else []
+        return self.run([_tool(make) or make, *cfg.get("custom_args", []), *keep_going], log=log, failed=failed)
 
     def report(self) -> dict:
         return objdiff.report(self.root, self.root / STATE / "report.json")
 
     def diff(self, unit: Unit, symbol: str) -> objdiff.FunctionDiff:
-        return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.objdiff_config().get("options"))
+        return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
+                            project=self.root if unit.mappings else None, unit=unit.name)
 
     # ------------------------------------------------------------------ files agents may touch
 

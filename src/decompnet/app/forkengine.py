@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import threading
 import time
 from collections import defaultdict
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .. import similarity
@@ -25,6 +27,7 @@ from ..forks import catalog, csource, drafts, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import STATE, ForkError, ForkProject
 from ..network import Agent, Network, NetworkError
+from ..scoring import percent_text
 
 _REPO = re.compile(r"^(https://(github\.com|gitlab\.com|codeberg\.org|git\.[\w.-]+)/[\w.-]+/[\w.-]+?)(\.git)?/?$")
 # A match has to come from C/C++: no inline assembly, asm functions, asm includes or embedded binaries.
@@ -49,7 +52,7 @@ def objdiff_diff(fp: ForkProject, unit, symbol: str, target_only: bool = False):
 
     if not target_only:
         return fp.diff(unit, symbol)
-    return objdiff.diff(unit.target, None, symbol, cwd=fp.root, options=fp.objdiff_config().get("options"))
+    return objdiff.diff(unit.target, None, symbol, cwd=fp.root, options=fp.diff_options(unit))
 
 
 def scaled(fuzzy: float | None, n_insns: int) -> int:
@@ -59,13 +62,160 @@ def scaled(fuzzy: float | None, n_insns: int) -> int:
     return 0 if fuzzy >= 100 else max(1, round((1 - fuzzy / 100) * n_insns * 100))
 
 
+class _TreeLock:
+    """Work on different source files runs side by side; a change any file may depend on (a header) runs alone.
+    A thread that holds it exclusively may take it again either way."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._readers = 0
+        self._writer: int | None = None
+        self._waiting = 0
+        self._mine = threading.local()
+
+    @contextmanager
+    def shared(self):
+        me = threading.get_ident()
+        depth = getattr(self._mine, "depth", 0)
+        if self._writer == me or depth:
+            self._mine.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._mine.depth -= 1
+            return
+        with self._cond:
+            while self._writer is not None or self._waiting:
+                self._cond.wait()
+            self._readers += 1
+        self._mine.depth = 1
+        try:
+            yield
+        finally:
+            self._mine.depth = 0
+            with self._cond:
+                self._readers -= 1
+                self._cond.notify_all()
+
+    @contextmanager
+    def exclusive(self):
+        me = threading.get_ident()
+        if self._writer == me:
+            yield
+            return
+        if getattr(self._mine, "depth", 0):
+            raise RuntimeError("a shared holder can't take the tree exclusively")
+        with self._cond:
+            self._waiting += 1
+            while self._writer is not None or self._readers:
+                self._cond.wait()
+            self._waiting -= 1
+            self._writer = me
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._writer = None
+                self._cond.notify_all()
+
+
+def _floor_pct(pct: float, matched: bool) -> float:
+    """For display: 100 only for a match (99.96 or code whose constants differ reads 99.9)."""
+    return 100.0 if matched else min(99.9, int(pct * 10) / 10)
+
+
+def _digest(code: str) -> str:
+    """A function's text, whitespace aside."""
+    return hashlib.sha1(re.sub(r"\s+", " ", code).strip().encode()).hexdigest()
+
+
+def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str]]:
+    """(unit, function) pairs a progress report counts as matched; units that don't build are measured from an old
+    object, so nothing in them counts."""
+    return {(u["name"], f["name"]) for u in rep.get("units", []) if u["name"] not in broken
+            for f in u.get("functions", []) if (f.get("fuzzy_match_percent") or 0) >= 100}
+
+
+def _renamed_note(d) -> str:
+    """objdiff's rules accept a reference to a differently named symbol; the game's link doesn't."""
+    if not d.renamed:
+        return ""
+    pairs = ", ".join(f"`{mine}` (the original uses `{orig}`)" for orig, mine in d.renamed[:5])
+    return (f"\n⚠️ Some references use other names than the original: {pairs}. objdiff counts the match, but the "
+            "game links by name: use the original's names (or rename the symbol everywhere) so the code links.")
+
+
 class ForkEngine:
     def __init__(self, net):
         self.net = net
-        self._locks: dict[int, threading.RLock] = defaultdict(threading.RLock)
+        self._trees: dict[int, _TreeLock] = defaultdict(_TreeLock)  # project id -> its source tree's lock
+        self._unit_locks: dict[tuple[int, str], threading.RLock] = defaultdict(threading.RLock)
+        self._build_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)  # one build at a time per tree
+        self._git_locks: dict[int, threading.Lock] = defaultdict(threading.Lock)
+        self._mlock = threading.Lock()
+        # (project id, unit) -> (sha1 of its source, base object mtime, {function: match %}): what objdiff said
+        # the last time it measured the unit, so a compile doesn't need a second objdiff run to know the baseline
+        self._scores: dict[tuple[int, str], tuple[str, int | None, dict]] = {}
         self._index: dict[int, dict] = {}  # project id -> {unit: {"mtime", "order", "ops"}}
         self._indexing: set[int] = set()
         self._ilock = threading.Lock()
+
+    # ------------------------------------------------------------------ locks, builds, baselines
+
+    def _tree(self, proj) -> _TreeLock:
+        with self._mlock:
+            return self._trees[proj["id"]]
+
+    def _unit_lock(self, proj, unit: str) -> threading.RLock:
+        with self._mlock:
+            return self._unit_locks[(proj["id"], unit)]
+
+    @contextmanager
+    def _units_locked(self, proj, names: list[str]):
+        with ExitStack() as stack:
+            for n in sorted(set(names)):
+                stack.enter_context(self._unit_lock(proj, n))
+            yield
+
+    def _build_unit(self, proj, fp: ForkProject, unit) -> tuple[bool, str]:
+        """Build one unit's object. Builds share the tree's build files (ninja's log), so they take turns."""
+        with self._build_locks[proj["id"]]:
+            return fp.build_unit(unit)
+
+    def _build_all(self, proj, fp: ForkProject, failed: list[str] | None = None) -> tuple[bool, str]:
+        with self._build_locks[proj["id"]]:
+            return fp.build_all(failed=failed)
+
+    def _keep_scores(self, proj, unit, text: str, scores: dict) -> None:
+        mtime = unit.base.stat().st_mtime_ns if unit.base is not None and unit.base.exists() else None
+        self._scores[(proj["id"], unit.name)] = (hashlib.sha1(text.encode()).hexdigest(), mtime, dict(scores))
+
+    def _last_scores(self, proj, unit) -> dict | None:
+        hit = self._scores.get((proj["id"], unit.name))
+        return hit[2] if hit else None
+
+    def _baseline(self, proj, fp: ForkProject, unit, text: str) -> tuple[dict | None, bool]:
+        """({function: match %} for the unit as its source file is now, whether that builds). Scores are None when
+        the file doesn't build or objdiff can't measure it."""
+        hit = self._scores.get((proj["id"], unit.name))
+        if (hit and unit.base is not None and unit.base.exists() and hit[0] == hashlib.sha1(text.encode()).hexdigest()
+                and hit[1] == unit.base.stat().st_mtime_ns):
+            return hit[2], True
+        ok, _ = self._build_unit(proj, fp, unit)  # the object may be older than the file
+        if not ok or unit.base is None or not unit.base.exists():
+            return None, False
+        try:
+            d = fp.diff(unit, None)
+        except (ObjdiffError, ForkError):
+            return None, True
+        self._keep_scores(proj, unit, text, d.unit_scores)
+        return d.unit_scores, True
+
+    def _commit(self, proj, fp: ForkProject, rel: str, message: str) -> None:
+        """Commit one file (agents work side by side: never sweep up another one's change)."""
+        with self._git_locks[proj["id"]]:
+            fp.git("add", "--", rel)
+            fp.git("commit", "-q", "-m", message, "--", rel)
 
     # ------------------------------------------------------------------ helpers
 
@@ -216,14 +366,17 @@ class ForkEngine:
         self._save_cfg(proj, cfg)
         return self.sync(slug, log=log)
 
-    def sync(self, slug: str, log=print) -> dict:
-        """Measure the whole project with objdiff and update every function's state."""
+    def sync(self, slug: str, log=print, rep: dict | None = None, broken: set[str] = frozenset()) -> dict:
+        """Measure the whole project with objdiff (or take a report just made) and update every function's state.
+        Functions in `broken` units (sources that don't build) don't count as matched."""
         proj, fp, cfg = self.get(slug)
-        log("measuring progress with objdiff")
-        try:
-            rep = fp.report()
-        except (ObjdiffError, ForkError) as e:
-            raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
+        if rep is None:
+            log("measuring progress with objdiff")
+            try:
+                with self._tree(proj).exclusive():  # never read an object while a build writes it
+                    rep = fp.report()
+            except (ObjdiffError, ForkError) as e:
+                raise NetworkError(f"objdiff couldn't measure the project: {e}") from None
         units = {u.name: u for u in fp.units()}
         rows = [(u["name"], f) for u in rep.get("units", []) for f in u.get("functions", [])]
         counts: dict[str, int] = defaultdict(int)
@@ -233,12 +386,13 @@ class ForkEngine:
         existing = {(r["unit"], self._meta(r).get("symbol"), self._meta(r).get("nth", 0)): r for r in all_rows}
         used = {r["name"] for r in all_rows}
         nth: dict[tuple[str, str], int] = defaultdict(int)  # a unit can hold two functions of the same name
+        held = {u: self._held(proj, u) for u in {r["unit"] for r in all_rows if '"held"' in (r["meta"] or "")}}
         with self.net.store.tx() as db:
             for uname, f in rows:
                 sym = f["name"]
                 k = nth[(uname, sym)]
                 nth[(uname, sym)] += 1
-                fuzzy = f.get("fuzzy_match_percent")
+                fuzzy = f.get("fuzzy_match_percent") if uname not in broken else None
                 size = int(f.get("size", 0))
                 n = max(1, size // 4)
                 u = units.get(uname)
@@ -246,10 +400,14 @@ class ForkEngine:
                 meta = {"symbol": sym, "demangled": md.get("demangled_name"), "source": u.source if u else None}
                 if k:
                     meta["nth"] = k
+                old = existing.get((uname, sym, k))
+                if old is not None and "held" in self._meta(old):
+                    meta["held"] = self._meta(old)["held"]
+                    if sym in held.get(uname, ()):
+                        fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
                 score = None if fuzzy is None else scaled(fuzzy, n)
                 vram = md.get("virtual_address")
-                old = existing.get((uname, sym, k))
                 if old is None:
                     name = sym if counts[sym] == 1 else f"{sym}@{uname}" + (f"#{k + 1}" if k else "")
                     while name in used:
@@ -438,17 +596,51 @@ class ForkEngine:
                 return n, span
         return None, None
 
+    def _held(self, proj, unit: str, text: str | None = None) -> set[str]:
+        """Functions of a unit whose source is still the very text judged to load the wrong constants: objdiff's
+        progress rules count them, decomp.wtf doesn't (see forks/literals.py)."""
+        rows = self.net.store.all("SELECT name, meta FROM functions WHERE project_id=? AND unit=? AND meta LIKE ?",
+                                  proj["id"], unit, '%"held"%')
+        if not rows:
+            return set()
+        if text is None:
+            try:
+                u = ForkProject(Path(proj["root"])).unit(unit)
+                text = (Path(proj["root"]) / u.source).read_text(errors="replace") if u.source else ""
+            except (ForkError, OSError):
+                return set()
+        out = set()
+        for r in rows:
+            meta = self._meta(r)
+            _, span = self._find(text, self._names(meta, r))
+            if span and _digest(text[span[0]:span[1]]) == meta.get("held"):
+                out.add(meta.get("symbol"))
+        return out
+
+    def _hold(self, fn, code: str | None) -> None:
+        """Remember (code) or forget (None) that this text of the function loads constants the original doesn't."""
+        meta = self._meta(fn)
+        if code is None and "held" not in meta:
+            return
+        if code is None:
+            meta.pop("held", None)
+        else:
+            meta["held"] = _digest(code)
+        with self.net.store.tx() as db:
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+
     def _apply_scores(self, proj, unit: str, scores: dict[str, float | None], skip: int | None = None) -> None:
         """Bring every function of a unit up to date with a fresh diff (cheaper than a full report)."""
         rows = self.net.store.all("SELECT id, status, n_insns, best_score, best_source, meta FROM functions "
                                   "WHERE project_id=? AND unit=?", proj["id"], unit)
+        held = self._held(proj, unit)
         with self.net.store.tx() as db:
             for r in rows:
                 sym = self._meta(r).get("symbol")
                 if r["id"] == skip or sym not in scores or r["status"] == "nosource":
                     continue
                 pct = scores[sym]
-                if pct is not None and pct >= 100:
+                if pct is not None and pct >= 100 and sym not in held:
                     db.execute("UPDATE functions SET status='matched', best_score=0 WHERE id=?", (r["id"],))
                 elif r["status"] == "matched":
                     db.execute("UPDATE functions SET status='open' WHERE id=?", (r["id"],))
@@ -474,12 +666,16 @@ class ForkEngine:
             lines.append("this unit has no source file yet, so it can't be decompiled from here")
         try:
             d = fp.diff(unit, meta.get("symbol") or fn["name"])
-            pct = "not in your build yet" if d.match_percent is None else f"{d.match_percent:.1f}% match"
+            pct = ("not in your build yet" if d.match_percent is None else
+                   "every instruction matches, but loaded constants differ" if d.literals else
+                   f"{percent_text(d.match_percent)} match")
             asm = d.target_asm().splitlines()
             if len(asm) > 500:
                 asm = asm[:500] + [f"... ({len(asm) - 500} more instructions)"]
             lines += [f"current state: {pct}", "", "### Target assembly", "```asm", *asm, "```"]
-            if d.match_percent is not None and not d.matched:
+            if d.literals:
+                lines += ["", d.literals_note()]
+            elif d.match_percent is not None and not d.matched:
                 lines += ["", "### Diff against the current build", d.render()]
         except (ObjdiffError, ForkError) as e:
             lines.append(f"(objdiff couldn't diff this function: {e})")
@@ -593,11 +789,21 @@ class ForkEngine:
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.net.claim_ttl, fn["id"]))
         path = fp.safe_path(unit.source, write=True)
         symbol = meta.get("symbol") or fn["name"]
-        protected = {self._meta(r).get("symbol") for r in self.net.store.all(
-            "SELECT meta FROM functions WHERE project_id=? AND unit=? AND status='matched' AND id != ?",
-            proj["id"], fn["unit"], fn["id"])}
-        with self._locks[proj["id"]]:
+        with self._tree(proj).shared(), self._unit_lock(proj, unit.name):
             before = path.read_text(errors="replace") if path.exists() else ""
+            # What matches in the file as it is now is what this change must keep (not the database's idea of it,
+            # which a change outside decomp.wtf or a different measurement can leave behind)
+            scores, builds = self._baseline(proj, fp, unit, before)
+            held = self._held(proj, unit.name, before)
+            if scores is not None:
+                self._apply_scores(proj, unit.name, scores)
+                protected = {n for n, pct in scores.items()
+                             if n != symbol and n not in held and pct is not None and pct >= 100}
+                was_matched = (scores.get(symbol) or 0) >= 100 and symbol not in held
+            else:
+                protected = {n for n, pct in (self._last_scores(proj, unit) or {}).items()
+                             if n != symbol and n not in held and pct is not None and pct >= 100}
+                was_matched = fn["status"] == "matched"
             hit, old_span = self._find(before, names)
             if old_span:
                 after = before[:old_span[0]] + code.rstrip("\n") + "\n" + before[old_span[1]:]
@@ -607,13 +813,17 @@ class ForkEngine:
 
             def undo() -> None:
                 path.write_text(before)
-                fp.build_unit(unit)
+                if self._build_unit(proj, fp, unit)[0] and scores is not None:
+                    self._keep_scores(proj, unit, before, scores)
 
-            ok, log = fp.build_unit(unit)
+            ok, log = self._build_unit(proj, fp, unit)
             if not ok:
                 undo()
                 self.net._record(fn, agent, None, code, 0)
-                return {"text": f"❌ BUILD ERROR (your change was undone)\n{log[-3000:]}", "score": None, "matched": False}
+                why = "" if builds else ("\n(The file didn't build before your change either, so the error may be in "
+                                         "other code of the file: fix that with edit_file.)")
+                return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}", "score": None,
+                        "matched": False}
             try:
                 d = fp.diff(unit, symbol)
             except (ObjdiffError, ForkError) as e:
@@ -626,30 +836,35 @@ class ForkEngine:
                 return {"text": f"❌ REJECTED and undone: your change breaks matched function(s) {', '.join(broken[:8])}. "
                                 "Check you replaced the right definition (overloads?) and didn't change shared code.",
                         "score": None, "matched": False}
+            self._keep_scores(proj, unit, after, d.unit_scores)
             pct = d.match_percent if d.match_percent is not None else 0.0
-            score = scaled(pct, fn["n_insns"])
+            score = max(1, len(d.literals)) if d.literals else scaled(pct, fn["n_insns"])
             matched = d.matched
-            if fn["status"] == "matched":  # a rewrite of a matched function must keep matching
+            self._hold(fn, code if d.literals else None)
+            if was_matched:  # a rewrite of a matched function must keep matching
                 if not matched:
                     undo()
-                    return {"text": f"❌ {fn['name']} already matches; your version is {pct:.1f}%, so the matching one "
-                                    "was kept. Call claim_function for a function that still needs work.",
+                    why = "loads other constants" if d.literals else f"is {percent_text(pct)}"
+                    return {"text": f"❌ {fn['name']} already matches; your version {why}, so the matching one was "
+                                    "kept. Call claim_function for a function that still needs work.",
                             "score": score, "matched": False}
-                fp.git("add", unit.source)
-                fp.git("commit", "-q", "-m", f"Tidy {meta.get('demangled') or symbol} (still matches)\n\n"
-                                              f"Edited by {agent.name} with decomp.wtf.")
-                return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.", "score": 0,
-                        "matched": True}
+                self._commit(proj, fp, unit.source, f"Tidy {meta.get('demangled') or symbol} (still matches)\n\n"
+                                                    f"Edited by {agent.name} with decomp.wtf.")
+                return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
+                        "score": 0, "matched": True}
             self.net._record(fn, agent, score, code, 0, matched=matched)
             self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"])
             self._remember(proj, fp, unit, d)
             if matched:
-                fp.git("add", unit.source)
-                fp.git("commit", "-q", "-m", f"Match {meta.get('demangled') or symbol}\n\n"
-                                              f"Decompiled by {agent.name} with decomp.wtf.")
+                self._commit(proj, fp, unit.source, f"Match {meta.get('demangled') or symbol}\n\n"
+                                                    f"Decompiled by {agent.name} with decomp.wtf.")
                 return {"text": f"✅ MATCH! {fn['name']} is 100% identical to the original. Committed to git in the "
-                                "project. Call claim_function for the next one.", "score": 0, "matched": True}
-        return {"text": f"{pct:.1f}% match (score {score}; 0 = identical).\n{d.render()}", "score": score, "matched": False}
+                                f"project. Call claim_function for the next one.{_renamed_note(d)}", "score": 0,
+                        "matched": True}
+        if d.literals:
+            return {"text": f"score {score} (0 = identical). {d.literals_note()}", "score": score, "matched": False}
+        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}", "score": score,
+                "matched": False}
 
     def _insert_in_order(self, proj, fp: ForkProject, unit, fn, text: str, code: str) -> str:
         """Place a new function where it was in the original: after the closest earlier function present in the
@@ -735,16 +950,82 @@ class ForkEngine:
             raise NetworkError("give a short message explaining the change")
         if _CHEAT.search(_strip_comments(new)):
             raise NetworkError("inline assembly, asm functions and asm includes aren't allowed")
-        with self._locks[proj["id"]]:
-            existed = p.exists()
-            text = p.read_text(errors="replace") if existed else ""
-            if old:
-                if text.count(old) != 1:
-                    raise NetworkError(f"`old` must appear exactly once in {path} (found {text.count(old)})")
-                updated = text.replace(old, new)
-            else:
-                updated = text.rstrip("\n") + ("\n" if text else "") + new.strip("\n") + "\n"
-            before = {(r["unit"], self._meta(r).get("symbol")) for r in self.net.store.all(
+        rel = Path(os.path.relpath(p, fp.root)).as_posix()
+        units = [u for u in fp.units_for(rel) if u.base is not None]
+        if units:  # a unit's own source file: only that unit can change
+            return self._edit_source(agent, proj, fp, p, rel, units, old, new, message)
+        return self._edit_shared(agent, proj, fp, slug, p, rel, old, new, message)
+
+    @staticmethod
+    def _edited(p: Path, path: str, old: str, new: str) -> tuple[bool, str, str]:
+        existed = p.exists()
+        text = p.read_text(errors="replace") if existed else ""
+        if old:
+            if text.count(old) != 1:
+                raise NetworkError(f"`old` must appear exactly once in {path} (found {text.count(old)})")
+            return existed, text, text.replace(old, new)
+        return existed, text, text.rstrip("\n") + ("\n" if text else "") + new.strip("\n") + "\n"
+
+    def _edit_source(self, agent: Agent, proj, fp: ForkProject, p: Path, rel: str, units: list, old: str, new: str,
+                     message: str) -> str:
+        """Edit a unit's source file: rebuild and measure just that unit, keep everything that matched before."""
+        with self._tree(proj).shared(), self._units_locked(proj, [u.name for u in units]):
+            existed, text, updated = self._edited(p, rel, old, new)
+            bases = {u.name: self._baseline(proj, fp, u, text) for u in units}
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(updated)
+
+            def undo() -> None:
+                if existed:
+                    p.write_text(text)
+                else:
+                    p.unlink(missing_ok=True)
+                for u in units:
+                    if self._build_unit(proj, fp, u)[0] and bases[u.name][0] is not None:
+                        self._keep_scores(proj, u, text, bases[u.name][0])
+
+            after: dict[str, dict | None] = {}
+            for u in units:
+                ok, log = self._build_unit(proj, fp, u)
+                if not ok:
+                    if bases[u.name][1]:
+                        undo()
+                        return f"❌ {rel} doesn't compile after your edit, so it was undone:\n{log[-2500:]}"
+                    after[u.name] = None  # it didn't build before the edit either
+                    continue
+                try:
+                    after[u.name] = fp.diff(u, None).unit_scores
+                except (ObjdiffError, ForkError) as e:
+                    undo()
+                    return f"❌ objdiff couldn't measure {rel} after your edit, so it was undone: {e}"
+            lost = []
+            for u in units:
+                before = bases[u.name][0] if bases[u.name][0] is not None else self._last_scores(proj, u)
+                now = after[u.name] or {}
+                lost += [n for n, pct in (before or {}).items() if pct is not None and pct >= 100 and (now.get(n) or 0) < 100]
+            if lost:
+                undo()
+                return f"❌ REJECTED and undone: the edit breaks {len(lost)} matched function(s): {', '.join(sorted(lost)[:10])}"
+            for u in units:
+                if after[u.name] is not None:
+                    self._keep_scores(proj, u, updated, after[u.name])
+                    self._apply_scores(proj, u.name, after[u.name])
+            self._commit(proj, fp, rel, f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
+            with self.net.store.tx() as db:
+                self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
+        if any(v is None for v in after.values()):
+            return f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured."
+        return f"✅ {rel} updated; every matched function still matches."
+
+    def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str, old: str, new: str,
+                     message: str) -> str:
+        """Edit a header (or any file several units may use): rebuild and measure the whole project."""
+        with self._tree(proj).exclusive():
+            existed, text, updated = self._edited(p, rel, old, new)
+            failed_before: list[str] = []
+            self._build_all(proj, fp, failed=failed_before)  # what already doesn't build, so it isn't blamed on the edit
+            broken_before = fp.failed_units(failed_before)
+            protected = {(r["unit"], self._meta(r).get("symbol")) for r in self.net.store.all(
                 "SELECT unit, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(updated)
@@ -754,26 +1035,41 @@ class ForkEngine:
                     p.write_text(text)
                 else:
                     p.unlink(missing_ok=True)
-                fp.build_all()
+                self._build_all(proj, fp)
 
-            fp.build_all()
+            failed_after: list[str] = []
+            _, log = self._build_all(proj, fp, failed=failed_after)
+            broken_after = fp.failed_units(failed_after)
+            newly = sorted(broken_after - broken_before)
+            if newly:
+                undo()
+                return (f"❌ after your edit {len(newly)} file(s) no longer compile ({', '.join(newly[:5])}), so it was "
+                        f"undone. Build output:\n{log[-2500:]}")
             try:
                 rep = fp.report()
             except (ObjdiffError, ForkError) as e:
                 undo()
                 return f"❌ the project couldn't be measured after your edit, so it was undone: {e}"
-            still = {(u["name"], f["name"]) for u in rep.get("units", []) for f in u.get("functions", [])
-                     if (f.get("fuzzy_match_percent") or 0) >= 100}
-            lost = sorted(sym for unit, sym in before - still)
-            if lost:
+            lost = protected - _matched_in(rep, broken_after)
+            if lost:  # was each of them really matched before the edit? (the database can be behind the tree)
                 undo()
-                return f"❌ REJECTED and undone: the edit breaks {len(lost)} matched function(s): {', '.join(lost[:10])}"
-            fp.git("add", path)
-            fp.git("commit", "-q", "-m", f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
+                try:
+                    rep_before = fp.report()
+                except (ObjdiffError, ForkError) as e:
+                    return f"❌ the project couldn't be measured, so the edit was undone: {e}"
+                truly = sorted(sym for unit, sym in lost & _matched_in(rep_before, broken_before))
+                self.sync(slug, log=lambda *_: None, rep=rep_before, broken=broken_before)
+                if truly:
+                    return f"❌ REJECTED and undone: the edit breaks {len(truly)} matched function(s): {', '.join(truly[:10])}"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(updated)
+                self._build_all(proj, fp)
+            self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+            self._commit(proj, fp, rel, f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
             with self.net.store.tx() as db:
-                self.net._event(db, proj["id"], agent.id, "context", f"{path}: {message.strip()[:120]}")
-        self.sync(slug, log=lambda *_: None)
-        return f"✅ {path} updated; every matched function still matches."
+                self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
+            self.sync(slug, log=lambda *_: None, rep=rep, broken=broken_after)
+        return f"✅ {rel} updated; every matched function still matches."
 
     # ------------------------------------------------------------------ for the GUI
 
@@ -813,8 +1109,10 @@ class ForkEngine:
             return {"kind": None, "rows": None, "error": f"objdiff: {e}"}
         if d.match_percent is None:
             return {"kind": None, "rows": None}
+        problems = [f"a loaded constant differs: {m.describe()}" for m in d.literals]
+        problems += [f"refers to `{mine}` where the original refers to `{orig}`" for orig, mine in d.renamed]
         return {"kind": "matched" if fn["status"] == "matched" else "latest", "rows": [list(r) for r in d.rows],
-                "score": None, "percent": round(d.match_percent, 1), "problems": []}
+                "score": None, "percent": _floor_pct(d.match_percent, d.matched), "problems": problems}
 
     def function_detail(self, slug: str, name: str) -> dict:
         proj, fp, cfg = self.get(slug)
@@ -824,7 +1122,7 @@ class ForkEngine:
         asm, current, pct = "", None, None
         try:
             d = fp.diff(unit, meta.get("symbol") or fn["name"])
-            asm, pct = d.target_asm(), d.match_percent
+            asm, pct = d.target_asm(), (None if d.match_percent is None else _floor_pct(d.match_percent, d.matched))
         except (ObjdiffError, ForkError) as e:
             asm = f"(objdiff: {e})"
         if unit.source and (fp.root / unit.source).exists():
