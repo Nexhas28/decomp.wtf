@@ -34,6 +34,9 @@ R_MIPS_32, R_MIPS_26, R_MIPS_HI16, R_MIPS_LO16, R_MIPS_GPREL16 = 2, 4, 5, 6, 7
 _REF = re.compile(r"%(hi|lo|gp_rel)\(\s*([A-Za-z_.$][\w.$]*)\s*(?:([+-])\s*(0x[0-9A-Fa-f]+|\d+))?\s*\)")
 _KIND = {"hi": 5, "lo": 6, "gp_rel": 7}
 _JUMPS = {"jal", "j"}
+# Bytes a load or store moves, by opcode (lwl/lwr/swl/swr read parts of words, so they don't say)
+_WIDTH = {0x20: 1, 0x24: 1, 0x28: 1, 0x21: 2, 0x25: 2, 0x29: 2, 0x23: 4, 0x27: 4, 0x2B: 4, 0x31: 4, 0x39: 4, 0x32: 4,
+          0x3A: 4, 0x35: 8, 0x3D: 8, 0x37: 8, 0x3F: 8, 0x1E: 16, 0x1F: 16, 0x36: 16, 0x3E: 16}
 
 ReadFn = Callable[[int, int], "bytes | None"]
 
@@ -91,6 +94,30 @@ def _patch(word: int, rtype: int, address: int, gp: int = 0) -> int:
     if rtype == R_MIPS_32:
         return address & 0xFFFFFFFF
     raise ValueError(rtype)
+
+
+def _text(data: bytes) -> bool:
+    return bool(data) and all(32 <= c < 127 or c in (9, 10, 13, 27) or c >= 0x80 for c in data)
+
+
+def significant(mine: bytes, addr: int, width: int | None, next_start: Callable[[int], int | None]) -> int:
+    """How many bytes of a datum the candidate defines (placed at the game's `addr`) must equal the game's.
+
+    `width`: the bytes the code loads from it, when it only loads (a float, a word); that's all that counts.
+    Otherwise (its address is used: a string, a table) the whole datum counts except alignment padding: zeros
+    at its end where the game already keeps its next datum (`next_start(a)`: the first labelled address >= a),
+    or after a C string's terminator. A compiler pads the same data differently next to other data."""
+    if width:
+        return min(len(mine), width)
+    k = len(mine.rstrip(b"\0"))
+    if k + 1 >= len(mine):
+        return len(mine)
+    nxt = next_start(addr + k + 1)  # past the last non-zero byte and one zero (a string's terminator)
+    if nxt is not None and nxt < addr + len(mine):
+        return nxt - addr
+    if _text(mine[:k]):
+        return k + 1
+    return len(mine)
 
 
 # ----------------------------------------------------------------------------------- target
@@ -166,7 +193,10 @@ class _Linker:
         self.problems: list[str] = []
         self.local_map: dict[tuple[int, int], int] = {}  # (section index, offset) -> ROM address
         self.target_at = {off: (rtype, addr) for off, rtype, addr in target.relocs}
-        self.checked: set[tuple[int, int]] = set()
+        self.data: dict[tuple[int, int], int] = {}  # every datum of its own the candidate uses -> ROM address
+        self.widths: dict[tuple[int, int], int | None] = {}  # bytes the code loads from it (None: its address is used)
+        self._data_relocs: dict[int, list] = {}
+        self.words: list[int] = []
         self.fn_shndx = None
 
     def problem(self, text: str) -> None:
@@ -228,70 +258,109 @@ class _Linker:
             if prev != addr:
                 self.problem(f"{self.elf.get_section(shndx).name}+0x{off:X} is used for two different ROM addresses")
                 return None
-        self.verify_data(shndx, off, addr, named)
+        self.data.setdefault((shndx, off), addr)
+        if r["type"] != R_MIPS_HI16:  # the instruction that uses the address says how much of the data it reads
+            width = _WIDTH.get(self.words[r["off"] // 4] >> 26) if r["off"] // 4 < len(self.words) else None
+            prev_width = self.widths.get((shndx, off), 0)
+            self.widths[(shndx, off)] = None if width is None or prev_width is None else max(prev_width, width)
         return addr
 
-    def verify_data(self, shndx: int, off: int, addr: int, named) -> None:
-        """Data the candidate defines must be byte-identical to the ROM data it stands for."""
+    # ------------------------------------------------------------------ the candidate's own data
+
+    def _relocs_in(self, shndx: int):
+        """(offset, type, symbol) of relocations inside one of the candidate's data sections."""
+        if shndx not in self._data_relocs:
+            out = []
+            for rsec in self.elf.iter_sections():
+                if isinstance(rsec, RelocationSection) and rsec["sh_info"] == shndx:
+                    rsym = self.elf.get_section(rsec["sh_link"])
+                    out += [(rel["r_offset"], rel["r_info_type"], rsym.get_symbol(rel["r_info_sym"]))
+                            for rel in rsec.iter_relocations()]
+            self._data_relocs[shndx] = sorted(out, key=lambda x: x[0])
+        return self._data_relocs[shndx]
+
+    def extent(self, shndx: int, off: int) -> int:
+        """Length of the datum at `off`: up to the next symbol or the next place this candidate uses (period
+        assemblers don't record sizes; string literals have no symbol at all)."""
         sec = self.elf.get_section(shndx)
-        if sec["sh_type"] == "SHT_NOBITS" or (shndx, off) in self.checked:
-            return
-        self.checked.add((shndx, off))
-        data = sec.data()
+        size = sec["sh_size"]
         sym = next((s for s in self.symtab.iter_symbols() if s["st_shndx"] == shndx and s["st_value"] == off
-                    and s["st_size"]), None) if named and named[1] == 0 else None
+                    and s["st_size"] and s["st_info"]["type"] == "STT_OBJECT"), None)
         if sym is not None:
-            length = sym["st_size"]
-        else:  # up to the next symbol (period assemblers don't record sizes)
-            bounds = sorted({s["st_value"] for s in self.symtab.iter_symbols() if s["st_shndx"] == shndx}
-                            | {o for (i, o) in self.local_map if i == shndx} | {len(data)})
-            length = next((b for b in bounds if b > off), len(data)) - off
-        length = max(0, min(length, len(data) - off))
-        if not length:
-            return
-        mine = bytearray(data[off:off + length])
-        for rsec in self.elf.iter_sections():  # relocated words inside the data, e.g. jump tables
-            if not isinstance(rsec, RelocationSection) or rsec["sh_info"] != shndx:
+            return max(0, min(sym["st_size"], size - off))
+        bounds = {s["st_value"] for s in self.symtab.iter_symbols() if s["st_shndx"] == shndx
+                  and s["st_info"]["type"] not in ("STT_SECTION", "STT_FILE")} | {o for (i, o) in self.data if i == shndx}
+        return next((b for b in sorted(bounds) if b > off), size) - off
+
+    def _pointee(self, s, value: int) -> tuple[int | None, tuple[int, int] | None]:
+        """(address, own datum) a word of the candidate's data points at: (address, None) for a named thing,
+        (None, (section, offset)) for more of the candidate's own data, (None, None) when it can't be placed."""
+        if s["st_shndx"] in ("SHN_UNDEF", "SHN_COMMON") or s["st_shndx"] in (0xFF03, 0xFF04):
+            base = self.resolve_name(_canonical(s.name, s["st_info"]["bind"]))
+            return (None if base is None else base + value), None
+        in_sec = value if s["st_info"]["type"] == "STT_SECTION" else s["st_value"] + value
+        hit = _symbol_at(self.symtab, s["st_shndx"], in_sec)
+        if hit and hit[0] == self.name:
+            return self.target.vram + hit[1], None
+        base = self.symbols.resolve(hit[0]) if hit else None
+        if base is not None:
+            return base + hit[1], None
+        if s["st_shndx"] == self.fn_shndx:
+            return None, None
+        return None, (s["st_shndx"], in_sec)
+
+    def place_pointees(self) -> None:
+        """Data the candidate's data points at (a table of strings) goes where the ROM's pointers point."""
+        todo = list(self.data)
+        while todo:
+            shndx, off = todo.pop()
+            if self.elf.get_section(shndx)["sh_type"] == "SHT_NOBITS":
                 continue
-            rsym = self.elf.get_section(rsec["sh_link"])
-            for rel in rsec.iter_relocations():
-                at = rel["r_offset"] - off
-                if not (0 <= at <= length - 4) or rel["r_info_type"] != R_MIPS_32:
+            addr, length = self.data[(shndx, off)], self.extent(shndx, off)
+            data = self.elf.get_section(shndx).data()
+            for at, rtype, s in self._relocs_in(shndx):
+                if rtype != R_MIPS_32 or not off <= at <= off + length - 4:
                     continue
-                s = rsym.get_symbol(rel["r_info_sym"])
-                value = int.from_bytes(mine[at:at + 4], self.target.order)
-                if s["st_shndx"] in ("SHN_UNDEF", "SHN_COMMON") or s["st_shndx"] in (0xFF03, 0xFF04):
-                    base = self.resolve_name(_canonical(s.name, s["st_info"]["bind"]))
-                    dest = None if base is None else base + value
-                else:
-                    in_sec = value if s["st_info"]["type"] == "STT_SECTION" else s["st_value"] + value
-                    hit = _symbol_at(self.symtab, s["st_shndx"], in_sec)
-                    base = self.symbols.resolve(hit[0]) if hit and hit[0] != self.name else None
-                    if hit and hit[0] == self.name:
-                        dest = self.target.vram + hit[1]
-                    elif base is not None:
-                        dest = base + hit[1]
-                    elif s["st_shndx"] != self.fn_shndx and (rom_word := self.read(addr + at, 4)) is not None:
-                        # a pointer to more of the submission's own data (e.g. a table of string literals):
-                        # it goes where the ROM's pointer points, and that data must match too
-                        dest = int.from_bytes(rom_word, self.target.order)
-                        if self.local_map.setdefault((s["st_shndx"], in_sec), dest) != dest:
-                            dest = None
-                        else:
-                            self.verify_data(s["st_shndx"], in_sec, dest, hit)
-                    else:
-                        dest = None
-                if dest is None:
-                    self.problem(f"can't place a pointer inside your data at {sec.name}+0x{off + at:X}")
-                    return
-                mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, self.target.order)
-        rom = self.read(addr, length)
+                _, own = self._pointee(s, int.from_bytes(data[at:at + 4], self.target.order))
+                if own is None or own in self.data or (rom := self.read(addr + at - off, 4)) is None:
+                    continue
+                self.local_map[own] = self.data[own] = int.from_bytes(rom, self.target.order)
+                self.widths[own] = None
+                todo.append(own)
+
+    def significant(self, mine: bytes, addr: int, width: int | None) -> int:
+        starts = [*self.data.values(), *(a for _, a in self.target_at.values())]
+        return significant(mine, addr, width, lambda lo: min(
+            [a for a in (self.symbols.next_after(lo - 1), *starts) if a is not None and a >= lo], default=None))
+
+    def verify_data(self, shndx: int, off: int, addr: int) -> None:
+        """Data the candidate defines must be identical to the ROM data it stands for."""
+        sec = self.elf.get_section(shndx)
+        if sec["sh_type"] == "SHT_NOBITS":
+            return
+        length = self.extent(shndx, off)
+        if length <= 0:
+            return
+        mine = bytearray(sec.data()[off:off + length])
+        for at, rtype, s in self._relocs_in(shndx):  # relocated words inside the data, e.g. jump tables
+            at -= off
+            if rtype != R_MIPS_32 or not 0 <= at <= length - 4:
+                continue
+            dest, own = self._pointee(s, int.from_bytes(mine[at:at + 4], self.target.order))
+            if own is not None:
+                dest = self.local_map.get(own)
+            if dest is None:
+                self.problem(f"can't place a pointer inside your data at {sec.name}+0x{off + at:X}")
+                return
+            mine[at:at + 4] = (dest & 0xFFFFFFFF).to_bytes(4, self.target.order)
+        n = self.significant(bytes(mine), addr, self.widths.get((shndx, off)))
+        rom = self.read(addr, n)
         if rom is None:
             return  # the ROM has no bytes there (e.g. .bss in the ROM): nothing to compare
-        if bytes(mine) != rom:
+        if bytes(mine[:n]) != rom:
             where = self.symbols.label(addr)
-            self.problem(f"your data for {where} differs from the ROM: yours {bytes(mine[:24]).hex(' ')}"
-                         f"{'…' if length > 24 else ''}, ROM {rom[:24].hex(' ')}{'…' if length > 24 else ''}")
+            self.problem(f"your data for {where} differs from the ROM: yours {bytes(mine[:min(n, 24)]).hex(' ')}"
+                         f"{'…' if n > 24 else ''}, ROM {rom[:24].hex(' ')}{'…' if n > 24 else ''}")
 
     def run(self) -> LinkResult:
         fsym = self.function()
@@ -305,6 +374,7 @@ class _Linker:
             return LinkResult(None, False, ["the compiler produced code in the wrong byte order for this game"])
         fmt = (">" if self.target.big_endian else "<") + f"{len(code) // 4}I"
         words = list(struct.unpack(fmt, code[:len(code) // 4 * 4]))
+        self.words = list(words)
         relocs: list[Reloc] = []
         for k, r in enumerate(raw):
             addr = self.address(raw, k, shndx, start)
@@ -319,11 +389,15 @@ class _Linker:
             if self.target.vram <= addr < self.target.vram + len(self.target.code):
                 name, residual = self.name, addr - self.target.vram
             relocs.append(Reloc(r["off"], r["type"], name, encode(r["type"], residual)))
+        # every place is known before any datum is measured: a datum runs to the next one, whatever the code's order
+        self.place_pointees()
+        for (dshndx, off), addr in sorted(self.data.items()):
+            self.verify_data(dshndx, off, addr)
         linked = struct.pack(fmt[0] + f"{len(words)}I", *words)
         exact = not self.problems and linked == self.target.code
         placements: dict[str, dict[int, int]] = {}
-        for (shndx, off), addr in self.local_map.items():
-            placements.setdefault(self.elf.get_section(shndx).name, {})[off] = addr
+        for (dshndx, off), addr in self.local_map.items():
+            placements.setdefault(self.elf.get_section(dshndx).name, {})[off] = addr
         return LinkResult(FunctionObj(self.name, "mips", self.target.big_endian, code, relocs), exact, self.problems,
                           placements)
 

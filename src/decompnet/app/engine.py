@@ -188,14 +188,69 @@ class RomNetwork(Network):
         return read
 
     def _function(self, name: str, project: str | None):
-        """Functions can also be named by address (0x80001234), handy for agents reading assembly."""
+        """Functions can also be named by address (0x80001234), handy for agents reading assembly, and the way
+        agents write names they read elsewhere (see _loose_functions)."""
         m = _ADDRESS.match(name.strip()) if name else None
         if m:
             proj = self._project(project)
             row = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], int(m.group(1), 16))
             if row is not None:
                 return row
-        return super()._function(name, project)
+        try:
+            return super()._function(name, project)
+        except NetworkError:
+            rows = self._loose_functions(name, project) if name else []
+            if len(rows) == 1:
+                return rows[0]
+            if rows:
+                raise NetworkError(self._ambiguous(name, rows)) from None
+            raise
+
+    def _loose_functions(self, name: str, project: str | None) -> list:
+        """Functions an agent may mean by a name that isn't stored as such: the plain symbol of a function whose
+        name repeats across a fork's files (stored as symbol@unit), symbol@unit for one that doesn't repeat,
+        Class::method, a name with its parameter list or in quotes."""
+        try:
+            proj = self._project(project)
+        except NetworkError:
+            return []
+        text = name.strip().strip("`'\"").strip()
+        sym, _, unit = text.partition("@")
+        unit, _, nth = unit.partition("#")
+        sym = sym.split("(", 1)[0].strip()
+        if not sym:
+            return []
+        rows = self.store.all(
+            "SELECT * FROM functions WHERE project_id=? AND (name=? OR substr(name,1,?)=? "
+            "OR json_extract(meta,'$.symbol')=? OR substr(json_extract(meta,'$.demangled'),1,?)=?) ORDER BY name",
+            proj["id"], sym, len(sym) + 1, sym + "@", sym, len(sym) + 1, sym + "(")
+        if unit:
+            rows = [r for r in rows if r["unit"] == unit] or [r for r in rows if r["unit"].endswith(unit)]
+        if nth.isdigit() and len(rows) > 1:
+            rows = [r for r in rows if (json.loads(r["meta"] or "{}").get("nth", 0) + 1) == int(nth)] or rows
+        return [r for r in rows if r["status"] != "nosource"] or rows  # ones in files without source can't be worked on
+
+    @staticmethod
+    def _ambiguous(name: str, rows: list) -> str:
+        listing = "\n".join(f"- {r['name']} ({r['status']}, {r['n_insns']} instructions)" for r in rows[:12])
+        more = f"\n... and {len(rows) - 12} more" if len(rows) > 12 else ""
+        return (f"{name!r} is the name of {len(rows)} functions in different files; pass the full name:\n"
+                f"{listing}{more}")
+
+    def resolve_function(self, agent: Agent | None, project: str | None, name: str) -> str:
+        """The stored name for what an agent calls a function: when a plain name fits several, the one the agent
+        holds a claim on."""
+        try:
+            return self._function(name, project)["name"]
+        except NetworkError:
+            rows = self._loose_functions(name, project) if name else []
+            held = agent and self.store.one("SELECT f.id, f.unit FROM claims c JOIN functions f ON f.id=c.function_id "
+                                            "WHERE c.agent_id=?", agent.id)
+            if held and len(rows) > 1:  # the one it holds, else the one in the file it works in
+                for pick in ([r for r in rows if r["id"] == held["id"]], [r for r in rows if r["unit"] == held["unit"]]):
+                    if len(pick) == 1:
+                        return pick[0]["name"]
+            raise
 
     def _rom_target(self, fn) -> match.RomTarget:
         proj = self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])

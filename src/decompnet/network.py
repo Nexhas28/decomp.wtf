@@ -116,7 +116,7 @@ class Network:
         raise NetworkError("several projects exist; pass `project` (see list_projects)")
 
     def _function(self, name: str, project: str | None):
-        if project is None and "/" in name:
+        if project is None and "/" in name and "@" not in name.split("/", 1)[0]:  # project/name (fork names hold units)
             project, name = name.split("/", 1)
         if project is None:
             rows = self.store.all("SELECT * FROM functions WHERE name=?", name)
@@ -244,7 +244,7 @@ class Network:
             held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
                               (agent.id,)).fetchone()
             if held is not None:
-                if function and held["name"] != function.split("/")[-1]:
+                if function and held["id"] != self._function(function, proj["slug"] if proj else None)["id"]:
                     raise NetworkError(f"you already hold {held['name']}; match it or release_function it first")
                 fn = held
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
@@ -456,11 +456,9 @@ class Network:
             ctx = self._context(proj["id"], unit)
             header = ctx["header"]
             if old:
-                count = header.count(old)
-                if count != 1:
-                    raise NetworkError(f"`old` must appear exactly once in the header (found {count}); "
-                                       f"include more surrounding text, or pass old=\"\" to append")
-                new_header = header.replace(old, new)
+                from .textedit import replace_once
+
+                new_header = replace_once(header, old, new, "the header")
             else:
                 new_header = header.rstrip("\n") + "\n\n" + new.strip("\n") + "\n"
             members = self._matched_using(proj, unit)

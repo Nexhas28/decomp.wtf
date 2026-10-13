@@ -25,9 +25,10 @@ from pathlib import Path
 from .. import similarity
 from ..forks import catalog, csource, drafts, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
-from ..forks.project import STATE, ForkError, ForkProject
+from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
 from ..network import Agent, Network, NetworkError
 from ..scoring import percent_text
+from ..textedit import replace_once
 
 _REPO = re.compile(r"^(https://(github\.com|gitlab\.com|codeberg\.org|git\.[\w.-]+)/[\w.-]+/[\w.-]+?)(\.git)?/?$")
 # A match has to come from C/C++: no inline assembly, asm functions, asm includes or embedded binaries.
@@ -366,9 +367,11 @@ class ForkEngine:
         self._save_cfg(proj, cfg)
         return self.sync(slug, log=log)
 
-    def sync(self, slug: str, log=print, rep: dict | None = None, broken: set[str] = frozenset()) -> dict:
+    def sync(self, slug: str, log=print, rep: dict | None = None, broken: set[str] = frozenset(),
+             agent: Agent | None = None) -> dict:
         """Measure the whole project with objdiff (or take a report just made) and update every function's state.
-        Functions in `broken` units (sources that don't build) don't count as matched."""
+        Functions in `broken` units (sources that don't build) don't count as matched. Functions that match now and
+        didn't before are recorded as matches (credited to `agent`, whose change it was)."""
         proj, fp, cfg = self.get(slug)
         if rep is None:
             log("measuring progress with objdiff")
@@ -387,6 +390,7 @@ class ForkEngine:
         used = {r["name"] for r in all_rows}
         nth: dict[tuple[str, str], int] = defaultdict(int)  # a unit can hold two functions of the same name
         held = {u: self._held(proj, u) for u in {r["unit"] for r in all_rows if '"held"' in (r["meta"] or "")}}
+        texts: dict[str, str | None] = {}  # unit -> its source, for functions that match now
         with self.net.store.tx() as db:
             for uname, f in rows:
                 sym = f["name"]
@@ -421,6 +425,13 @@ class ForkEngine:
                         score = old["best_score"] if score is None else min(score, old["best_score"])
                     db.execute("UPDATE functions SET size=?, n_insns=?, status=?, best_score=?, meta=? WHERE id=?",
                                (size, n, status, score, json.dumps(meta), old["id"]))
+                    if status == "matched" and old["status"] != "matched":
+                        if uname not in texts:
+                            try:
+                                texts[uname] = (fp.root / u.source).read_text(errors="replace") if u and u.source else None
+                            except OSError:
+                                texts[uname] = None
+                        self._matched(db, proj, old, agent, texts[uname])
             m = rep.get("measures", {})
             self.net._event(db, proj["id"], None, "sync", f"{float(m.get('matched_code_percent', 0)):.2f}% of code matches")
         log(f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
@@ -629,11 +640,14 @@ class ForkEngine:
         with self.net.store.tx() as db:
             db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
 
-    def _apply_scores(self, proj, unit: str, scores: dict[str, float | None], skip: int | None = None) -> None:
-        """Bring every function of a unit up to date with a fresh diff (cheaper than a full report)."""
-        rows = self.net.store.all("SELECT id, status, n_insns, best_score, best_source, meta FROM functions "
+    def _apply_scores(self, proj, unit: str, scores: dict[str, float | None], skip: int | None = None,
+                      agent: Agent | None = None, text: str | None = None) -> None:
+        """Bring every function of a unit up to date with a fresh diff (cheaper than a full report). A function
+        that matches now is a match like any other, whichever change made it: `agent` (whose edit it was) is
+        credited, and `text` (the unit's source) gives the matching code."""
+        rows = self.net.store.all("SELECT id, name, status, n_insns, best_score, best_source, meta FROM functions "
                                   "WHERE project_id=? AND unit=?", proj["id"], unit)
-        held = self._held(proj, unit)
+        held = self._held(proj, unit, text)
         with self.net.store.tx() as db:
             for r in rows:
                 sym = self._meta(r).get("symbol")
@@ -641,11 +655,24 @@ class ForkEngine:
                     continue
                 pct = scores[sym]
                 if pct is not None and pct >= 100 and sym not in held:
-                    db.execute("UPDATE functions SET status='matched', best_score=0 WHERE id=?", (r["id"],))
+                    if r["status"] != "matched":
+                        self._matched(db, proj, r, agent, text)
                 elif r["status"] == "matched":
                     db.execute("UPDATE functions SET status='open' WHERE id=?", (r["id"],))
                 elif pct is not None and not r["best_source"]:
                     db.execute("UPDATE functions SET best_score=? WHERE id=?", (scaled(pct, r["n_insns"]), r["id"]))
+
+    def _matched(self, db, proj, r, agent: Agent | None, text: str | None) -> None:
+        """Record a function that matches now (outside compile_and_diff, which records its own)."""
+        source = None
+        if text:
+            _, span = self._find(text, self._names(self._meta(r), r))
+            source = text[span[0]:span[1]] if span else None
+        db.execute("UPDATE functions SET status='matched', best_score=0, matched_at=?, matched_agent_id=?, "
+                   "matched_source=COALESCE(?, matched_source, best_source) WHERE id=?",
+                   (time.time(), agent.id if agent else None, source, r["id"]))
+        db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
+        self.net._event(db, proj["id"], agent.id if agent else None, "match", r["name"])
 
     def brief(self, fn, agent: Agent | None, header: str) -> str:
         proj = self.net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -770,13 +797,22 @@ class ForkEngine:
         _, span = self._find(source, names)
         if span is None:
             raise NetworkError(f"send the complete definition of {names[0]} (with its body)")
-        if csource._blank(source[:span[0]] + source[span[1]:]).strip():
-            raise NetworkError("send only the one function definition. Put structs, prototypes, globals and helper "
-                               "functions in with edit_file first")
         code = source[span[0]:span[1]]
         unit = fp.unit(fn["unit"])
         if not unit.source:
             raise NetworkError(f"unit {unit.name} has no source file, so there's nowhere to write it")
+        extra = source[:span[0]] + source[span[1]:]
+        if csource._blank(extra).strip():  # includes and prototypes the file already has are fine to resend
+            try:
+                have = {ln.strip() for ln in (fp.root / unit.source).read_text(errors="replace").splitlines()}
+            except OSError:
+                have = set()
+            new = [ln.strip() for ln in _strip_comments(extra).splitlines() if ln.strip() and ln.strip() not in have]
+            if new:
+                listing = "\n".join(new[:6]) + ("\n..." if len(new) > 6 else "")
+                raise NetworkError(f"send only the one function definition. These lines aren't in {unit.source}:\n"
+                                   f"{listing}\nPut structs, prototypes, globals and helper functions in with "
+                                   "edit_file first")
         with self.net.store.tx() as db:  # claim bookkeeping, as for ROM projects
             self.net._expire_claims(db)
             claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
@@ -796,7 +832,7 @@ class ForkEngine:
             scores, builds = self._baseline(proj, fp, unit, before)
             held = self._held(proj, unit.name, before)
             if scores is not None:
-                self._apply_scores(proj, unit.name, scores)
+                self._apply_scores(proj, unit.name, scores, text=before)
                 protected = {n for n, pct in scores.items()
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = (scores.get(symbol) or 0) >= 100 and symbol not in held
@@ -853,7 +889,7 @@ class ForkEngine:
                 return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
                         "score": 0, "matched": True}
             self.net._record(fn, agent, score, code, 0, matched=matched)
-            self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"])
+            self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"], agent=agent, text=after)
             self._remember(proj, fp, unit, d)
             if matched:
                 self._commit(proj, fp, unit.source, f"Match {meta.get('demangled') or symbol}\n\n"
@@ -905,7 +941,7 @@ class ForkEngine:
         _, fp, _ = self.get(slug)
         p = fp.safe_path(path)
         if not p.is_file():
-            raise NetworkError(f"{path} isn't a file")
+            raise NetworkError(f"{path} isn't a file{self._did_you_mean(fp, path)}")
         with open(p, "rb") as f:
             head = f.read(8192)
         if b"\0" in head or p.stat().st_size > 4 * 1024 * 1024:
@@ -917,12 +953,28 @@ class ForkEngine:
         out += [f"{start + i:5d}  {line}" for i, line in enumerate(chunk)]
         return "\n".join(out)
 
+    @staticmethod
+    def _did_you_mean(fp: ForkProject, path: str) -> str:
+        """Files of the project with the name the agent guessed a path for."""
+        name = Path(path).name
+        if not name or not EDITABLE.search(name):
+            return ""
+        root = fp.root.resolve()
+        found = []
+        for hit in root.rglob(name):
+            rel = hit.relative_to(root)
+            if hit.is_file() and not {".git", "build", STATE} & set(rel.parts):
+                found.append(rel.as_posix())
+                if len(found) >= 5:
+                    break
+        return ("; did you mean " + " or ".join(found)) if found else ""
+
     def search(self, slug: str, pattern: str, glob: str = "") -> str:
         _, fp, _ = self.get(slug)
         try:
             rx = re.compile(pattern)
-        except re.error as e:
-            raise NetworkError(f"bad pattern: {e}") from None
+        except re.error:  # e.g. "func(": search for the text itself
+            rx = re.compile(re.escape(pattern))
         root = fp.root.resolve()
         if glob:
             files = sorted(fp.root.glob(glob))
@@ -961,9 +1013,7 @@ class ForkEngine:
         existed = p.exists()
         text = p.read_text(errors="replace") if existed else ""
         if old:
-            if text.count(old) != 1:
-                raise NetworkError(f"`old` must appear exactly once in {path} (found {text.count(old)})")
-            return existed, text, text.replace(old, new)
+            return existed, text, replace_once(text, old, new, path)
         return existed, text, text.rstrip("\n") + ("\n" if text else "") + new.strip("\n") + "\n"
 
     def _edit_source(self, agent: Agent, proj, fp: ForkProject, p: Path, rel: str, units: list, old: str, new: str,
@@ -1009,7 +1059,7 @@ class ForkEngine:
             for u in units:
                 if after[u.name] is not None:
                     self._keep_scores(proj, u, updated, after[u.name])
-                    self._apply_scores(proj, u.name, after[u.name])
+                    self._apply_scores(proj, u.name, after[u.name], agent=agent, text=updated)
             self._commit(proj, fp, rel, f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
             with self.net.store.tx() as db:
                 self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
@@ -1068,7 +1118,7 @@ class ForkEngine:
             self._commit(proj, fp, rel, f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
             with self.net.store.tx() as db:
                 self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
-            self.sync(slug, log=lambda *_: None, rep=rep, broken=broken_after)
+            self.sync(slug, log=lambda *_: None, rep=rep, broken=broken_after, agent=agent)
         return f"✅ {rel} updated; every matched function still matches."
 
     # ------------------------------------------------------------------ for the GUI

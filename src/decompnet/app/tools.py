@@ -172,12 +172,20 @@ def tool_names(fork: bool) -> list[str]:
     return [n for n in HANDLERS if n not in skip]
 
 
+def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
+    """Function names as agents write them (a plain symbol that repeats across files, symbol@unit, Class::method)
+    turned into the stored name, preferring the function the agent holds."""
+    if args.get("function"):
+        args = {**args, "function": net.resolve_function(agent, slug, args["function"])}
+    return args
+
+
 def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str:
     """Run one tool for the built-in agent; errors come back as text the model can act on."""
     if name not in HANDLERS:
         return f"error: unknown tool {name!r}"
     try:
-        return HANDLERS[name](net, agent, slug, **args)
+        return HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
     except NetworkError as e:
         return f"error: {e}"
     except TypeError as e:
@@ -194,7 +202,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
-            return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **args))
+            return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args)))
         except NetworkError as e:
             raise ToolError(str(e)) from None
 

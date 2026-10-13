@@ -73,6 +73,11 @@ class SymbolTable:
                 return sym.name, address - start
         return f"D_{address:08X}", 0
 
+    def next_after(self, address: int) -> int | None:
+        """The first symbol's address above `address` (where the ROM's next datum starts, as splat labels it)."""
+        i = bisect.bisect_right(self._starts, address)
+        return self._starts[i] if i < len(self._starts) else None
+
     def label(self, address: int) -> str:
         name, off = self.name_at(address)
         return f"{name}+0x{off:X}" if off else name

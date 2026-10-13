@@ -170,3 +170,34 @@ def test_an_edit_that_breaks_the_build_is_undone(fork):
     out = net.forks.edit_file(agent, slug, "src/lit.c", "", "/* a note */", "a comment")
     assert out.startswith("✅"), out
     assert _status(net, slug, "offset") == "matched"
+
+
+def test_a_match_made_with_edit_file_is_a_match_like_any_other(fork):
+    net, slug, agent = fork
+    out = net.forks.edit_file(agent, slug, "src/lit.c", "", SCALE, "write scale")
+    assert out.startswith("✅"), out
+    fn = net._function("scale", slug)
+    assert fn["status"] == "matched" and fn["matched_agent_id"] == agent.id and fn["matched_at"]
+    assert "1.1" in fn["matched_source"] and "offset" not in fn["matched_source"]
+    assert net.store.one("SELECT 1 FROM events WHERE kind='match' AND detail='scale' AND agent_id=?", agent.id)
+    assert net.stats(slug)["agents"][0]["matched"] >= 1
+
+
+def test_edit_file_forgives_whitespace_and_shows_where_the_text_went(fork):
+    net, slug, agent = fork
+    path = Path(net.project_row(slug)["root"]) / "src" / "lit.c"
+    out = net.forks.edit_file(agent, slug, "src/lit.c", "double offset(double x) {\n  return x + 2.2;",
+                              "double offset(double x) {\n    /* tidied */\n    return x + 2.2;", "comment")
+    assert out.startswith("✅") and "/* tidied */" in path.read_text(), out
+    with pytest.raises(Exception) as e:
+        net.forks.edit_file(agent, slug, "src/lit.c", "double ofset(double y) {\n    return y + 2.2;", "", "x")
+    assert "closest" in str(e.value) and "double offset(double x)" in str(e.value)
+
+
+def test_lines_the_file_already_has_may_come_along(fork):
+    net, slug, agent = fork
+    out = net.compile_and_diff(agent, "scale", '#include "lit.h"\n\n' + SCALE, slug)
+    assert out.startswith("✅ MATCH"), out
+    with pytest.raises(Exception) as e:
+        net.compile_and_diff(agent, "read_gain", "extern float gGain;\n" + GAIN, slug)
+    assert "extern float gGain;" in str(e.value) and "edit_file" in str(e.value)
