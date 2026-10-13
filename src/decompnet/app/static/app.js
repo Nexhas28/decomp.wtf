@@ -512,6 +512,7 @@ async function poll(first) {
         if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
       }
       if (ev.kind === "autopilot" && !first) toast(`Autopilot: ${esc(ev.detail)}`, "match");
+      if (ev.kind === "link" && !first) toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
     }
     for (const at of live.attempts) {
       S.a = Math.max(S.a, at.id);
@@ -575,7 +576,7 @@ function renderHeader(ov) {
   $("phPct").textContent = pctNum(pct);
   $("phBar").style.width = pct + "%";
   $("phSub").textContent = fork && !ov.ready ? "set up the project to start"
-    : `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()} functions · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
+    : `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()} functions${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
   const w = workingAgents();
   $("phWorking").hidden = !w.n;
   $("phWorkingText").textContent = `${w.n} agent${w.n === 1 ? "" : "s"} working`;
@@ -599,11 +600,17 @@ $("phWorking").onclick = () => { location.hash = `#/p/${S.slug}/agents`; };
 $("phRoom").onclick = () => { location.hash = `#/p/${S.slug}/team`; };
 $("phFolder").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
 
+/* Forks: how much of the game is built from linked C (decomp.dev's "linked"), next to what matches. */
+function linkedText(ov) {
+  const p = ov.kind === "fork" && ov.measures ? ov.measures.complete_code_percent : null;
+  return p == null ? "" : ` · ${pctNum(Number(p))}% linked`;
+}
+
 function renderStats(ov) {
   renderHeader(ov);
   const pct = ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
   $("pct").textContent = pctNum(pct);
-  $("pctSub").textContent = (ov.bytes ? `${bytes(ov.matched_bytes)} of ${bytes(ov.bytes)}` : "") + (S.today ? ` · ${S.today} matched today` : "");
+  $("pctSub").textContent = (ov.bytes ? `${bytes(ov.matched_bytes)} of ${bytes(ov.bytes)}` : "") + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
   $("fnCount").textContent = `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()}`;
   renderAutopilot(ov);
   renderSteering(ov);
@@ -1387,6 +1394,7 @@ function eventHtml(ev) {
   switch (ev.kind) {
     case "claim": return `${who} started ${fnLink(d)}`;
     case "match": return `<span class="ok">✓</span> ${who} matched ${fnLink(d)}`;
+    case "link": return `<span class="ok">🔗</span> ${esc(d)} is linked: the game builds from its C, byte for byte`;
     case "release": return `${who} set ${fnLink(d)} aside, with notes for the next agent`;
     case "expired": return `${fnLink(d)} was left unfinished`;
     case "context": return `${who} updated ${ev.agent ? "shared code" : "context"}: ${esc(d)}`;

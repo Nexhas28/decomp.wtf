@@ -73,6 +73,10 @@ def _git_env(root: Path) -> dict | None:
     return {**os.environ, **who, "GIT_COMMITTER_NAME": who["GIT_AUTHOR_NAME"], "GIT_COMMITTER_EMAIL": who["GIT_AUTHOR_EMAIL"]}
 
 
+# dtk-template's configure.py: Object(NonMatching, "path.c"), also over several lines, MatchingFor("GALE01")...
+_OBJECT = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.S)
+_SRC_DIR = re.compile(r'^\s*config\.src_dir\s*=\s*Path\(\s*"([^"]+)"\s*\)', re.M)
+_CHECK = re.compile(r"^build (\S+/ok): check\b")
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
@@ -443,6 +447,60 @@ class ForkProject:
     def diff(self, unit: Unit, symbol: str) -> objdiff.FunctionDiff:
         return objdiff.diff(unit.target, unit.base, symbol, cwd=self.root, options=self.diff_options(unit),
                             project=self.root if unit.mappings else None, unit=unit.name)
+
+    # ------------------------------------------------------------------ linking (dtk-template projects)
+    # A file whose code and data match is linked into the game: configure.py marks it Matching, the build then
+    # uses its compiled object instead of the original's, and the project's checksum check (`ninja .../ok`) proves
+    # the whole game still comes out byte for byte. That's what decomp.dev counts as linked.
+
+    def check_target(self) -> str | None:
+        """dtk-template's checksum target (build/<version>/ok: the built DOL and RELs against the game's SHA-1s)."""
+        try:
+            with open(self.root / "build.ninja", errors="replace") as f:
+                for line in f:
+                    m = _CHECK.match(line)
+                    if m:
+                        return m.group(1)
+        except OSError:
+            pass
+        return None
+
+    def link_states(self) -> dict[str, tuple[str, int, int]]:
+        """Source file (relative to the project root) -> (its link state in configure.py: Matching, NonMatching,
+        Equivalent or MatchingFor(...), where that word starts and ends in configure.py)."""
+        try:
+            return self._states_in((self.root / "configure.py").read_text(errors="replace"))
+        except OSError:
+            return {}
+
+    @staticmethod
+    def _states_in(text: str) -> dict[str, tuple[str, int, int]]:
+        src_dir = _SRC_DIR.search(text)
+        prefix = (src_dir.group(1) if src_dir else "src").strip("/")
+        return {f"{prefix}/{m.group(2)}": (m.group(1), m.start(1), m.end(1)) for m in _OBJECT.finditer(text)}
+
+    def linkable(self) -> bool:
+        return self.check_target() is not None and bool(self.link_states())
+
+    def marked_matching(self, text: str, sources: list[str], version: str | None) -> str:
+        """configure.py (`text`) with these source files (NonMatching in it) marked as linked."""
+        states = self._states_in(text)
+        # a project that builds several versions links per version where it can say so
+        word = (f'MatchingFor("{version}")' if version and len(self.versions()) > 1 and "def MatchingFor" in text
+                else "Matching")
+        spans = sorted((states[s][1], states[s][2]) for s in sources if s in states and states[s][0] == "NonMatching")
+        for start, end in reversed(spans):
+            text = text[:start] + word + text[end:]
+        return text
+
+    def verify(self, log=lambda *_: None) -> tuple[bool, str]:
+        """Build the game and check it against its checksums (regenerating the build when configure.py changed)."""
+        target = self.check_target()
+        if target is None:
+            return False, "this project has no checksum check to run"
+        cfg = self.objdiff_config()
+        make = cfg.get("custom_make") or "ninja"
+        return self.run([_tool(make) or make, *cfg.get("custom_args", []), target], log=log, timeout=1800)
 
     # ------------------------------------------------------------------ files agents may touch
 

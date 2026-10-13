@@ -120,6 +120,11 @@ class _TreeLock:
                 self._cond.notify_all()
 
 
+def _tail(log: str, lines: int = 14) -> str:
+    """The end of a build log, where the reason is."""
+    return "\n".join(log.strip().splitlines()[-lines:])
+
+
 def _floor_pct(pct: float, matched: bool) -> float:
     """For display: 100 only for a match (99.96 or code whose constants differ reads 99.9)."""
     return 100.0 if matched else min(99.9, int(pct * 10) / 10)
@@ -160,6 +165,7 @@ class ForkEngine:
         self._index: dict[int, dict] = {}  # project id -> {unit: {"mtime", "order", "ops"}}
         self._indexing: set[int] = set()
         self._ilock = threading.Lock()
+        self._linking: dict[str, dict] = {}  # slug -> background link run
 
     # ------------------------------------------------------------------ locks, builds, baselines
 
@@ -365,7 +371,10 @@ class ForkEngine:
                                "or `make`); see its README")
         cfg["ready"] = True
         self._save_cfg(proj, cfg)
-        return self.sync(slug, log=log)
+        measures = self.sync(slug, log=log)
+        if fp.linkable():
+            self.link_soon(slug)  # files that are finished but not linked yet (in the project as it came, too)
+        return measures
 
     def sync(self, slug: str, log=print, rep: dict | None = None, broken: set[str] = frozenset(),
              agent: Agent | None = None) -> dict:
@@ -441,6 +450,118 @@ class ForkEngine:
         if cfg.get("ready"):
             self.start_indexing(slug)
         return m
+
+    # ------------------------------------------------------------------ linking
+    # The end of a decomp is not a matching function but a linked file: configure.py marks it Matching, the game is
+    # built from its C and checked against its checksums. decomp.wtf does that for every file the moment its code and
+    # data match, and keeps it only when the whole game still builds byte for byte.
+
+    @staticmethod
+    def _finished(unit: dict) -> bool:
+        m = unit.get("measures") or {}
+        tc, td = int(m.get("total_code") or 0), int(m.get("total_data") or 0)
+        return bool(tc or td) and int(m.get("matched_code") or 0) == tc and int(m.get("matched_data") or 0) == td
+
+    def link_candidates(self, proj, fp: ForkProject, rep: dict) -> list[str]:
+        """Source files not linked yet whose every unit matches in code and data (and loads the original's constants)."""
+        states = fp.link_states()
+        units: dict[str, list[dict]] = defaultdict(list)
+        for u in rep.get("units", []):
+            src = (u.get("metadata") or {}).get("source_path")
+            if src:
+                units[src].append(u)
+        return sorted(src for src, us in units.items() if states.get(src, ("",))[0] == "NonMatching"
+                      and all(self._finished(u) and not self._held(proj, u["name"]) for u in us))
+
+    def link(self, slug: str, log=print, agent: Agent | None = None) -> dict:
+        """Link every finished file into the game, keeping only what the project's checksum check accepts."""
+        proj, fp, cfg = self.get(slug)
+        if not fp.linkable():
+            return {"linked": [], "failed": {}, "note": "this project has no link step decomp.wtf knows (dtk-template)"}
+        with self._tree(proj).exclusive(), self._build_locks[proj["id"]]:
+            fp.build_all()
+            rep = fp.report()
+            todo = self.link_candidates(proj, fp, rep)
+            if not todo:
+                return {"linked": [], "failed": {}}
+            conf = fp.root / "configure.py"
+            original = conf.read_text(errors="replace")
+            ok, out = fp.verify()
+            if not ok:
+                return {"linked": [], "failed": {}, "error": "the project's checksum check fails before linking "
+                        f"anything, so nothing was linked:\n{_tail(out)}"}
+
+            def build_with(sources: list[str]) -> tuple[bool, str]:
+                conf.write_text(fp.marked_matching(original, sources, cfg.get("version")))
+                return fp.verify()
+
+            log(f"linking {len(todo)} finished file(s)")
+            linked: list[str] = []
+            failed: dict[str, str] = {}
+            ok, out = build_with(todo)
+            if ok:
+                linked = todo
+            else:  # one at a time, so one file that doesn't link keeps none of the others out
+                for src in todo[:40]:
+                    ok, out = build_with([*linked, src])
+                    if ok:
+                        linked.append(src)
+                    else:
+                        failed[src] = _tail(out)
+                ok, out = build_with(linked)
+                if not ok:
+                    linked = []
+            if not linked:
+                conf.write_text(original)
+                fp.verify()
+                return {"linked": [], "failed": failed}
+            names = ", ".join(Path(s).name for s in linked[:6]) + (f" and {len(linked) - 6} more" if len(linked) > 6 else "")
+            who = f"\n\nLinked by decomp.wtf after {agent.name}'s match." if agent else "\n\nLinked by decomp.wtf."
+            self._commit(proj, fp, "configure.py", f"Link {names}\n\nEvery function and all data match, and the game "
+                                                   f"still builds byte for byte from the C.{who}")
+            with self.net.store.tx() as db:
+                for src in linked:
+                    self.net._event(db, proj["id"], agent.id if agent else None, "link", src)
+            self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
+            self.sync(slug, log=lambda *_: None, rep=fp.report())
+        log(f"linked {len(linked)} file(s)" + (f"; {len(failed)} didn't link" if failed else ""))
+        return {"linked": linked, "failed": failed}
+
+    def _verify(self, proj, fp: ForkProject) -> tuple[bool, str]:
+        with self._build_locks[proj["id"]]:
+            return fp.verify()
+
+    def _file_done(self, slug: str, proj, fp: ForkProject, unit, scores: dict, agent: Agent | None) -> str:
+        """When every function of a file matches: link it (in the background) and say so."""
+        if (unit.complete or not unit.source or not fp.linkable() or not scores
+                or any(v is None or v < 100 for v in scores.values())):
+            return ""
+        self.link_soon(slug, agent)
+        return (f"\n🔗 Every function in {unit.source} matches now: decomp.wtf links the file into the game as soon as "
+                "its data matches too and the game still builds byte for byte.")
+
+    def link_soon(self, slug: str, agent: Agent | None = None) -> None:
+        """Link in the background (one run per project at a time; another request while it runs runs it again)."""
+        with self._mlock:
+            state = self._linking.setdefault(slug, {"running": False, "again": False})
+            if state["running"]:
+                state["again"] = True
+                return
+            state["running"] = True
+
+        def run() -> None:
+            while True:
+                try:
+                    self.link(slug, log=lambda *_: None, agent=agent)
+                except Exception:  # a background tidy-up: the next match tries again
+                    pass
+                with self._mlock:
+                    if not state["again"]:
+                        state["running"] = False
+                        return
+                    state["again"] = False
+
+        threading.Thread(target=run, daemon=True, name=f"link-{slug}").start()
 
     # ------------------------------------------------------------------ look-alike index
 
@@ -825,7 +946,8 @@ class ForkEngine:
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.net.claim_ttl, fn["id"]))
         path = fp.safe_path(unit.source, write=True)
         symbol = meta.get("symbol") or fn["name"]
-        with self._tree(proj).shared(), self._unit_lock(proj, unit.name):
+        linked = unit.complete and fp.linkable()  # the game is built from this file: changes must keep it identical
+        with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
             before = path.read_text(errors="replace") if path.exists() else ""
             # What matches in the file as it is now is what this change must keep (not the database's idea of it,
             # which a change outside decomp.wtf or a different measurement can leave behind)
@@ -872,6 +994,12 @@ class ForkEngine:
                 return {"text": f"❌ REJECTED and undone: your change breaks matched function(s) {', '.join(broken[:8])}. "
                                 "Check you replaced the right definition (overloads?) and didn't change shared code.",
                         "score": None, "matched": False}
+            if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
+                undo()
+                self.net._record(fn, agent, None, code, 0, compiled=True)
+                return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
+                                f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
+                        "matched": False}
             self._keep_scores(proj, unit, after, d.unit_scores)
             pct = d.match_percent if d.match_percent is not None else 0.0
             score = max(1, len(d.literals)) if d.literals else scaled(pct, fn["n_insns"])
@@ -895,7 +1023,8 @@ class ForkEngine:
                 self._commit(proj, fp, unit.source, f"Match {meta.get('demangled') or symbol}\n\n"
                                                     f"Decompiled by {agent.name} with decomp.wtf.")
                 return {"text": f"✅ MATCH! {fn['name']} is 100% identical to the original. Committed to git in the "
-                                f"project. Call claim_function for the next one.{_renamed_note(d)}", "score": 0,
+                                f"project. Call claim_function for the next one.{_renamed_note(d)}"
+                                f"{self._file_done(slug, proj, fp, unit, d.unit_scores, agent)}", "score": 0,
                         "matched": True}
         if d.literals:
             return {"text": f"score {score} (0 = identical). {d.literals_note()}", "score": score, "matched": False}
@@ -1019,7 +1148,9 @@ class ForkEngine:
     def _edit_source(self, agent: Agent, proj, fp: ForkProject, p: Path, rel: str, units: list, old: str, new: str,
                      message: str) -> str:
         """Edit a unit's source file: rebuild and measure just that unit, keep everything that matched before."""
-        with self._tree(proj).shared(), self._units_locked(proj, [u.name for u in units]):
+        linked = any(u.complete for u in units) and fp.linkable()
+        with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), \
+                self._units_locked(proj, [u.name for u in units]):
             existed, text, updated = self._edited(p, rel, old, new)
             bases = {u.name: self._baseline(proj, fp, u, text) for u in units}
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -1056,6 +1187,10 @@ class ForkEngine:
             if lost:
                 undo()
                 return f"❌ REJECTED and undone: the edit breaks {len(lost)} matched function(s): {', '.join(sorted(lost)[:10])}"
+            if linked and not (ok := self._verify(proj, fp))[0]:
+                undo()
+                return (f"❌ REJECTED and undone: {rel} is linked into the game, and with your edit the game no longer "
+                        f"builds byte for byte:\n{_tail(ok[1])}")
             for u in units:
                 if after[u.name] is not None:
                     self._keep_scores(proj, u, updated, after[u.name])
@@ -1065,7 +1200,8 @@ class ForkEngine:
                 self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
         if any(v is None for v in after.values()):
             return f"⚠️ {rel} updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured."
-        return f"✅ {rel} updated; every matched function still matches."
+        done = "".join(self._file_done(proj["slug"], proj, fp, u, after[u.name] or {}, agent) for u in units[:1])
+        return f"✅ {rel} updated; every matched function still matches.{done}"
 
     def _edit_shared(self, agent: Agent, proj, fp: ForkProject, slug: str, p: Path, rel: str, old: str, new: str,
                      message: str) -> str:
@@ -1074,6 +1210,7 @@ class ForkEngine:
             existed, text, updated = self._edited(p, rel, old, new)
             failed_before: list[str] = []
             self._build_all(proj, fp, failed=failed_before)  # what already doesn't build, so it isn't blamed on the edit
+            game_ok = fp.linkable() and fp.verify()[0]
             broken_before = fp.failed_units(failed_before)
             protected = {(r["unit"], self._meta(r).get("symbol")) for r in self.net.store.all(
                 "SELECT unit, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
@@ -1091,6 +1228,10 @@ class ForkEngine:
             _, log = self._build_all(proj, fp, failed=failed_after)
             broken_after = fp.failed_units(failed_after)
             newly = sorted(broken_after - broken_before)
+            if not newly and game_ok and not (ok := fp.verify())[0]:
+                undo()
+                return (f"❌ after your edit the game no longer builds byte for byte from its linked files, so it was "
+                        f"undone:\n{_tail(ok[1])}")
             if newly:
                 undo()
                 return (f"❌ after your edit {len(newly)} file(s) no longer compile ({', '.join(newly[:5])}), so it was "
@@ -1119,6 +1260,8 @@ class ForkEngine:
             with self.net.store.tx() as db:
                 self.net._event(db, proj["id"], agent.id, "context", f"{rel}: {message.strip()[:120]}")
             self.sync(slug, log=lambda *_: None, rep=rep, broken=broken_after, agent=agent)
+        if fp.linkable() and self.link_candidates(proj, fp, rep):
+            self.link_soon(slug, agent)
         return f"✅ {rel} updated; every matched function still matches."
 
     # ------------------------------------------------------------------ for the GUI
