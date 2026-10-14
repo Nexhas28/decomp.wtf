@@ -153,8 +153,11 @@ def _splat(args: list[str], cwd: Path) -> str:
                          encoding="utf-8", errors="replace")
     out = (res.stdout + res.stderr).strip()
     if res.returncode != 0:
-        tail = "\n".join(out.splitlines()[-12:])
-        raise RomError(f"splat could not analyse this ROM:\n{tail}")
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        reason = next((ln for ln in reversed(lines) if re.match(r"\w*(Error|Exception)\b|error:", ln)), lines[-1] if lines else "")
+        err = RomError(f"splat could not analyse this ROM: {reason[:300]}")
+        err.details = out[-6000:]  # the whole story, for the log and a bug report
+        raise err
     return out
 
 

@@ -49,7 +49,7 @@ async function followJob(id, logEl, onUpdate) {
     if (logEl) { logEl.textContent = job.log.join("\n"); logEl.scrollTop = logEl.scrollHeight; }
     if (onUpdate) onUpdate(job.log);
     if (job.state === "done") return job.result;
-    if (job.state === "error") throw new Error(job.error);
+    if (job.state === "error") { const err = new Error(job.error); err.job = job; throw err; }
     await sleep(500);
   }
 }
@@ -130,7 +130,10 @@ function markNav() {
   document.querySelectorAll(".nav-proj").forEach((a) => a.classList.toggle("on", a.dataset.slug === S.slug && route === "project"));
 }
 async function loadNav() {
-  try { S.projects = await api("/api/projects"); } catch { return; }
+  try { S.projects = await api("/api/projects"); } catch (e) {
+    if (!S.projects?.length) $("navProjects").innerHTML = `<p class="nav-empty">Couldn't load your projects: ${esc(e.message)}</p>`;
+    return;
+  }
   renderNav();
 }
 function renderNav() {
@@ -141,6 +144,9 @@ function renderNav() {
     const short = PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
+    if (p.broken) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
+      <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
+      <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
     return `<a class="nav-proj" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
       <span class="np-top"><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
       <span class="np-meta"><span>${esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
@@ -173,12 +179,18 @@ async function showHome() {
     const a = document.createElement("a");
     a.className = "card";
     a.href = `#/p/${p.slug}`;
+    if (p.broken) {
+      a.innerHTML = `<div class="cc-top"><span class="plat">?</span></div><div><h4>${esc(p.title)}</h4>
+        <p class="meta err-text">Can't be opened: ${esc(p.broken)}</p></div>`;
+      box.append(a);
+      continue;
+    }
     const meta = p.kind === "fork"
       ? `${p.origin === "scratch" ? "from scratch" : "public decomp"}${p.version ? " · " + esc(p.version) : ""}${p.ready ? "" : " · needs setup"}`
-      : `${esc(p.rom.game_code || "")}${p.rom.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler.name)}`;
+      : `${esc(p.rom?.game_code || "")}${p.rom?.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler?.name || "")}`;
     a.innerHTML = `<div class="cc-top"><span class="plat">${esc(p.platform_name || "?")}</span><span class="meta">${esc(since(p.last_activity))}</span></div>
       <div><h4>${esc(p.title)}</h4><p class="meta">${meta}</p></div>
-      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${p.matched.toLocaleString()} / ${p.functions.toLocaleString()} functions</p>`;
+      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${(p.matched || 0).toLocaleString()} / ${(p.functions || 0).toLocaleString()} functions</p>`;
     box.append(a);
     requestAnimationFrame(() => { a.querySelector(".meter i").style.width = pct + "%"; });
   }
@@ -189,6 +201,7 @@ function resetDrop() {
   $("dropIdle").hidden = false;
   $("dropPicked").hidden = true;
   $("dropBusy").hidden = true;
+  $("dropError").hidden = true;
   $("own").checked = false;
   $("analyse").disabled = true;
   $("file").value = "";
@@ -264,7 +277,8 @@ function identifyHead(head, file) {
     const ram = dv.getUint32(0x28, true), entry = dv.getUint32(0x24, true);
     if (ram >= 0x02000000 && ram < 0x02400000 && entry >= ram) return { ...base, platform: "nds", order: "ROM", code: ascii(12, 16), title: ascii(0, 12) || stem, entry };
   }
-  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001") return { ...base, platform: "playstation", order: "disc image" };
+  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001" || text(0x9311, 0x9316) === "CD001") return { ...base, platform: "playstation", order: "disc image" };
+  if (text(0, 8) === "MComprHD") return { ...base, platform: "playstation", order: "CHD disc image" };
   if (text(0, 4) === "\x7fELF" && head[5] === 1 && dv.getUint16(18, true) === 8) return { ...base, platform: "ps2", order: "ELF program", entry: dv.getUint32(24, true) };
   if (head.length > 0x60 && dv.getUint32(0x1c) === 0xc2339f3d) return { ...base, platform: "gc", order: "disc image", code: ascii(0, 6), title: ascii(0x20, 0x80) || stem };
   if (head.length > 0x60 && dv.getUint32(0x18) === 0x5d1c9ea3) return { ...base, platform: "wii", order: "disc image", code: ascii(0, 6), title: ascii(0x20, 0x80) || stem };
@@ -284,14 +298,32 @@ function identifyHead(head, file) {
   return null;
 }
 
+/* Files people try that decomp.wtf can't start from: say what they are and why, not just "no". */
+function notSupported(head, file) {
+  const text = (a, b) => String.fromCharCode(...head.slice(a, b));
+  const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
+  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy Advance and DS games.";
+  if (text(0, 4) === "XEX2" || ext === "xex") return "That's an Xbox 360 program. Xbox 360 games aren't supported yet.";
+  if (["nsp", "xci", "nso", "nro", "nca"].includes(ext) || text(0, 4) === "NSO0" || text(0, 4) === "PFS0") return "That's a Nintendo Switch file. Switch games aren't supported yet.";
+  if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
+  if (["nes", "gb", "gbc", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
+  if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
+  if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
+  if (ext === "apk") return "Android apps aren't supported yet.";
+  if (ext === "pbp" || ext === "cso") return "That's a PSP file. PSP games aren't supported yet.";
+  return null;
+}
+const NOT_A_GAME = "That isn't a game file decomp.wtf can start from scratch (yet). For other platforms, continue a public decomp.";
+
 async function pickFile(file) {
   const head = new Uint8Array(await file.slice(0, 0x9400).arrayBuffer());
   let info = identifyHead(head, file), buf = file;
   if (!info) {
-    if (file.size > 64 * 1024 * 1024) return toast("That isn't a game file decomp.wtf can start from scratch (yet). For other platforms, continue a public decomp.", "err");
+    const why = notSupported(head, file);
+    if (why || file.size > 64 * 1024 * 1024) return toast(esc(why || NOT_A_GAME), "err");
     buf = await file.arrayBuffer();
     try { info = parseRom(buf); info.platform = "n64"; } catch (e) {
-      return toast("That isn't a game file decomp.wtf can start from scratch (yet). For other platforms, continue a public decomp.", "err");
+      return toast(esc(NOT_A_GAME), "err");
     }
   }
   picked = { buf, info, name: file.name };
@@ -382,10 +414,28 @@ async function runImport(query, file, title, name = "") {
     loadNav();
     location.hash = `#/p/${res.slug}`;
   } catch (e) {
-    toast(esc(e.message), "err");
-    resetDrop();
+    importFailed(name || title.replace(/^\w+ |…$/g, ""), e, $("jobLog").textContent);
   } finally { clearInterval(tick); $("busyTime").textContent = ""; }
 }
+
+/* A failed import stays on screen with what happened, ready to report: a toast is gone before it's read. */
+function importFailed(name, e, logText) {
+  const job = e.job || {};
+  const log = (job.log ? job.log.join("\n") : logText || "").trim();
+  $("dropIdle").hidden = true; $("dropPicked").hidden = true; $("dropBusy").hidden = true;
+  $("dropError").hidden = false;
+  $("errName").textContent = name || "the game";
+  $("errMsg").textContent = e.message;
+  $("errLog").textContent = [log, job.trace].filter(Boolean).join("\n\n") || "(nothing was logged)";
+  $("errCopy").onclick = async () => {
+    const st = S.st || {};
+    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.runtime || st.platform || navigator.platform}`,
+      `Importing: ${name}`, `Error: ${e.message}`, "", "Log:", "```", log.split("\n").slice(-80).join("\n"), job.trace || "", "```"].join("\n");
+    try { await navigator.clipboard.writeText(report); toast("Copied: paste it into a GitHub issue"); }
+    catch { toast("Couldn't reach the clipboard: select the text under What happened instead", "err"); }
+  };
+}
+$("errBack").onclick = (e) => { e.stopPropagation(); resetDrop(); };
 
 async function ensureCodeWarrior() {
   if ($("mwConsent").hidden) return;
@@ -402,7 +452,7 @@ $("analyse").onclick = async () => {
   const title = `Analysing ${picked.info.title}…`;
   if (!$("mwConsent").hidden) {
     $("dropPicked").hidden = true; $("dropBusy").hidden = false; $("impUp").hidden = true;
-    try { await ensureCodeWarrior(); } catch (e) { toast(esc(e.message), "err"); resetDrop(); return; }
+    try { await ensureCodeWarrior(); } catch (e) { importFailed("CodeWarrior", e, $("jobLog").textContent); return; }
   }
   const body = picked.buf instanceof Blob ? picked.buf : new Blob([picked.buf]);
   runImport(`confirmed=1${tc ? `&toolchain=${encodeURIComponent(tc)}` : ""}`, body, title, picked.name);
@@ -2213,16 +2263,18 @@ function renderAgentsPage() {
     };
   });
   const set = S.st.settings.api || {}, presets = S.st.api_presets, prov = set.provider || "deepseek";
-  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.wtf's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or a local Ollama or LM Studio. The key stays on this computer.</p>
+  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.wtf's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or a model on this computer with llama.cpp, Ollama or LM Studio. The key stays on this computer.</p>
     <label class="field"><span>Provider</span><select id="apProv">${Object.entries(presets).map(([k, p]) => `<option value="${k}" ${k === prov ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
     <label class="field"><span>API address</span><input id="apBase" class="mono" value="${esc(set.base_url || presets[prov].base_url)}"></label>
     <label class="field"><span>Model</span><input id="apModel" class="mono" value="${esc(set.model || presets[prov].model)}"></label>
-    <label class="field"><span>API key</span><input id="apKey" type="password" placeholder="${set.has_key ? esc(set.api_key) : "paste your key"}" autocomplete="off"></label>
+    <label class="field"><span>API key</span><input id="apKey" type="password" placeholder="${set.has_key ? esc(set.api_key) : "paste your key (none for local models)"}" autocomplete="off"></label>
+    <label class="field"><span>Context size (tokens)</span><input id="apCtx" class="mono" inputmode="numeric" placeholder="automatic" value="${esc(String(set.context_tokens || ""))}"></label>
+    <p class="muted small">For a local model: what you started it with. The agent keeps its conversation within it. Give it at least 16384 (llama.cpp: <code>-c 16384</code>; Ollama: <code>OLLAMA_CONTEXT_LENGTH=16384</code>, or it quietly cuts the start off).</p>
     <div class="row"><button class="primary small-btn" id="apSave" type="button">Save</button>${set.has_key ? `<button class="ghost small-btn" id="apClear" type="button">Forget the key</button>` : ""}</div>`;
   $("apProv").onchange = () => { const p = presets[$("apProv").value]; $("apBase").value = p.base_url; $("apModel").value = p.model; };
   $("apSave").onclick = async () => {
     try {
-      S.st.settings = await api("/api/settings", { method: "POST", body: { api: { provider: $("apProv").value, base_url: $("apBase").value, model: $("apModel").value, api_key: $("apKey").value } } });
+      S.st.settings = await api("/api/settings", { method: "POST", body: { api: { provider: $("apProv").value, base_url: $("apBase").value, model: $("apModel").value, api_key: $("apKey").value, context_tokens: $("apCtx").value } } });
       toast("Saved. Choose “API key” when you start agents.");
       renderAgentsPage();
     } catch (e) { toast(esc(e.message), "err"); }

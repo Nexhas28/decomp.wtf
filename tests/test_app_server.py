@@ -200,3 +200,110 @@ def test_an_older_bridge_never_stops_a_newer_app(tmp_path, monkeypatch):
     state.write_text(json.dumps({"port": 1234, "secret": "s"}))
     assert cli.replace_older(state, log=lambda *_: None) == {"port": 1234, "secret": "s"}
     assert cli._version_key("0.10.0") > cli._version_key("0.9.4")
+
+
+def test_a_job_always_ends_and_says_why(tmp_path):
+    """Whatever goes wrong in an import, the job ends with words the user can act on and the log has the whole
+    story: before, an error of a kind nobody caught left the GUI on "Analysing…" forever."""
+    import subprocess
+
+    from decompnet.app.server import Jobs
+
+    jobs = Jobs(tmp_path / "logs" / "decomp.log")
+
+    def wait(jid):
+        for _ in range(200):
+            if jobs.jobs[jid]["state"] != "running":
+                return jobs.jobs[jid]
+            time.sleep(0.01)
+        raise AssertionError("the job never ended")
+
+    def bug(log):
+        log("reading the ROM")
+        return {}["missing"]
+
+    def slow(log):
+        raise subprocess.TimeoutExpired(["/usr/bin/systemd-run", "--user", "--", "/x/luvdis", "disasm"], 1800)
+
+    def failed(log):
+        raise subprocess.CalledProcessError(2, ["ninja"], stderr=b"ld: undefined symbol foo")
+
+    job = wait(jobs.start("import", bug))
+    assert job["state"] == "error" and "KeyError" in job["error"] and "report" in job["error"]
+    assert "Traceback" in job["trace"]
+    assert "luvdis took longer than 30 minutes" in wait(jobs.start("import", slow))["error"]
+    assert wait(jobs.start("build", failed))["error"] == "ninja failed (2): ld: undefined symbol foo"
+    logged = (tmp_path / "logs" / "decomp.log").read_text()
+    assert "reading the ROM" in logged and "KeyError" in logged and "Traceback" in logged
+
+
+def test_the_log_can_be_read_from_the_gui(app):
+    client, _, _ = app
+    res = client.get("/api/log")
+    assert res.status_code == 200 and res.headers["content-type"].startswith("text/plain")
+    anon = TestClient(client.app, base_url=f"http://127.0.0.1:{PORT}")
+    assert anon.get("/api/log").status_code == 401
+
+
+def test_a_project_that_cant_be_read_is_listed_with_the_reason(app, monkeypatch):
+    """One odd project used to empty the whole sidebar (or quietly vanish from it)."""
+    client, net, _ = app
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                   ("odd-game", "Odd Game", "", "mips", 1, "/nowhere", "{}"))
+    real = net.overview
+
+    def overview(slug, *a, **k):
+        if slug == "odd-game":
+            raise TypeError("'NoneType' object is not subscriptable")
+        return real(slug, *a, **k)
+
+    monkeypatch.setattr(net, "overview", overview)
+    listed = {p["slug"]: p for p in client.get("/api/projects").json()}
+    assert "TypeError" in listed["odd-game"]["broken"] and listed["odd-game"]["title"] == "Odd Game"
+    assert any("broken" not in p for p in listed.values()) or len(listed) == 1
+    assert client.get("/api/state").status_code == 200
+    with net.store.tx() as db:
+        db.execute("DELETE FROM projects WHERE slug='odd-game'")
+
+
+def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
+    """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
+    fit, and when the server still says the request is too long, trims harder and sends it again."""
+    client, net, manager = app
+    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=(SELECT id FROM projects "
+                                                 "WHERE slug=?) ORDER BY n_insns DESC LIMIT 6", slug)]
+    script = iter([{"tool_calls": [{"id": str(k), "type": "function", "function": {
+        "name": "get_function", "arguments": json.dumps({"function": n})}}]} for k, n in enumerate(names)]
+        + [{"content": "done looking"}])
+    sizes, refused = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 16384}})
+        size = len(request.content)
+        if size > 30000 and not refused:  # once: the server counts tokens its own way
+            refused.append(size)
+            return httpx.Response(400, json={"error": {"message": "the request exceeds the available context size"}})
+        sizes.append(size)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": None} | next(script)}]})
+
+    real = httpx.Client
+    monkeypatch.setattr(agents.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    s = agents.Session("api-c", "api", "Test", slug, "api-ctx", {"base_url": "http://127.0.0.1:8080/v1", "model": "m"})
+    agent, _ = net.local_agent("api-ctx")
+    assert manager._run_api(s, agent) is True
+    assert len(sizes) == len(names) + 1 and max(sizes) < 16384 * 3  # all of it, each within the context
+    assert refused  # and it got past a refusal
+
+
+def test_fit_keeps_the_task_and_the_latest_exchange():
+    msgs = [{"role": "system", "content": "rules " * 100}, {"role": "user", "content": "task " * 100}]
+    for k in range(6):
+        msgs += [{"role": "assistant", "content": f"thinking {k} " * 50},
+                 {"role": "tool", "tool_call_id": str(k), "content": f"assembly {k} " * 400}]
+    agents.fit(msgs, 3000)
+    assert msgs[0]["content"] == "rules " * 100 and msgs[1]["content"] == "task " * 100
+    assert msgs[-1]["content"] == "assembly 5 " * 400  # the latest result, whole
+    assert "trimmed" in msgs[3]["content"]

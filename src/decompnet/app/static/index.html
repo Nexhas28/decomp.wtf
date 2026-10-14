@@ -95,6 +95,17 @@
         <div class="upbar" id="impUp" hidden><i></i></div>
         <details class="logbox"><summary>Details</summary><pre class="joblog" id="jobLog"></pre></details>
       </div>
+      <div class="drop-error" id="dropError" hidden>
+        <p class="drop-title">Couldn't import <span id="errName"></span></p>
+        <p class="err-msg" id="errMsg"></p>
+        <details class="logbox"><summary>What happened</summary><pre class="joblog" id="errLog"></pre></details>
+        <div class="row">
+          <button class="primary" id="errBack" type="button">Try another file</button>
+          <button class="ghost" id="errCopy" type="button">Copy for a bug report</button>
+          <a class="ghost btn" id="errLogLink" href="/api/log" target="_blank" rel="noopener">The full log</a>
+          <a class="ghost btn" href="https://github.com/i12bp8/decomp.wtf/issues/new" target="_blank" rel="noopener">Report it</a>
+        </div>
+      </div>
     </div>
   </section>
   <p class="privacy"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 2.5 3v4.2c0 3.3 2.3 6.3 5.5 7.3 3.2-1 5.5-4 5.5-7.3V3L8 1Zm0 1.6 4 1.5v3.1c0 2.5-1.6 4.8-4 5.7-2.4-.9-4-3.2-4-5.7V4.1l4-1.5Z"/></svg>Your game never leaves this computer. Only your AI agent's provider sees the assembly and code it works on.</p>

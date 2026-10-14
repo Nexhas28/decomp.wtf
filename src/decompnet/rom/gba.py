@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import re
 import struct
 import subprocess
+import time
 from pathlib import Path
 
 from .. import toolchains
@@ -49,7 +50,11 @@ def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None) -> tuple[str, list[in
     args = [str(exe), "disasm", str(rom), "--min-calls", "1", "--min-length", "2", "-o", str(out), "-co", str(cfg)]
     if cfg_in is not None:
         args[3:3] = ["-c", str(cfg_in)]
-    res = subprocess.run(capped(args), capture_output=True, text=True, timeout=1800, encoding="utf-8", errors="replace")
+    try:
+        res = subprocess.run(capped(args), capture_output=True, text=True, timeout=3600, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        raise RomError("luvdis (the GBA disassembler) took more than an hour on this ROM and was stopped. Please "
+                       "report it with the log: the game's size and title help") from None
     if res.returncode != 0 or not out.exists():
         raise RomError("luvdis couldn't disassemble the ROM: " + (res.stderr or res.stdout)[-400:])
     found = sorted({int(m.group(1), 16) for m in re.finditer(r"^(?:[a-z_]+[ \t]+)?(0x[0-9A-Fa-f]+)",
@@ -57,14 +62,22 @@ def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None) -> tuple[str, list[in
     return out.read_text(encoding="utf-8"), found
 
 
-def find_functions(rom_path: Path, workdir: Path, rounds: int = 4) -> tuple[str, list[int]]:
-    """(assembly, function addresses) for the ROM, with prologue hunting in what luvdis left as data."""
+def find_functions(rom_path: Path, workdir: Path, rounds: int = 4, log=lambda *_: None,
+                   budget: float = 1800) -> tuple[str, list[int]]:
+    """(assembly, function addresses) for the ROM, with prologue hunting in what luvdis left as data. The extra
+    rounds stop once `budget` seconds have gone by (a 32 MiB ROM takes minutes a round)."""
     rom = rom_path.read_bytes()
+    t0 = time.time()
     asm, found = _luvdis(rom_path, workdir, None)
-    for _ in range(rounds):
+    log(f"luvdis followed the code from the start: {len(found)} functions ({time.time() - t0:.0f}s)")
+    for k in range(rounds):
+        if time.time() - t0 > budget:
+            log("stopping the search for more here: it has run half an hour (agents can split what's left)")
+            break
         extra = [a for a in gba_candidates.candidates(rom, found) if a not in found]
         if not extra:
             break
+        log(f"round {k + 2}: {len(extra)} more function starts in code nothing calls directly")
         cfg = workdir / "candidates.cfg"
         cfg.write_text("".join(f"thumb_func 0x{a:X}\n" for a in sorted(set(found) | set(extra))), encoding="utf-8")
         asm, found2 = _luvdis(rom_path, workdir, cfg)
@@ -138,8 +151,10 @@ def _refs(code: bytes, addr: int, literals: set[int], off: int) -> list[tuple[in
 def split(rom_path: Path, workdir: Path, log=print) -> list[GbaFunction]:
     """Every function in the ROM: its bytes (code and the literal pool it loads), assembly and size."""
     rom = rom_path.read_bytes()
-    log("finding the functions (luvdis, then a pass for code nothing calls)")
-    asm, found = find_functions(rom_path, workdir)
+    big = len(rom) > 8 << 20
+    log("finding the functions (luvdis, then a pass for code nothing calls)"
+        + (f": a {len(rom) >> 20} MiB ROM takes several minutes" if big else ""))
+    asm, found = find_functions(rom_path, workdir, log=log)
     blocks = _asm_blocks(asm)
     starts = sorted({a & ~1 for a in found if BASE <= (a & ~1) < BASE + len(rom)})
     literals = gba_candidates.literal_words(rom, starts)

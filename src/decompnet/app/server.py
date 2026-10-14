@@ -8,6 +8,8 @@ checked on every request, so web pages can't reach it through DNS rebinding.
 from __future__ import annotations
 
 import json
+import logging
+import logging.handlers
 import mimetypes
 import re
 import os
@@ -17,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from importlib import resources
 from pathlib import Path
@@ -37,30 +40,85 @@ COOKIE = "decomp_live"
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
 
 
-class Jobs:
-    """Background work the GUI can follow: imports and installs."""
+def file_log(path: Path) -> logging.Logger:
+    """decomp.wtf's own log (logs/decomp.log in its data folder): every job, what it said, and every error with its
+    traceback, so a failed import can be reported with the whole story."""
+    logger = logging.getLogger("decomp.wtf")
+    if not any(getattr(h, "baseFilename", None) == str(path) for h in logger.handlers):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.handlers.RotatingFileHandler(path, maxBytes=2 << 20, backupCount=2, encoding="utf-8")
+        except OSError:
+            return logger
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    return logger
 
-    def __init__(self):
+
+def _tool_of(cmd) -> str:
+    """The program a command ran (past a systemd-run wrapper), by name."""
+    argv = [str(a) for a in cmd] if isinstance(cmd, (list, tuple)) else str(cmd).split()
+    if "--" in argv and Path(argv[0]).name.startswith("systemd-run"):
+        argv = argv[argv.index("--") + 1:]
+    return Path(argv[0]).name if argv else "a tool"
+
+
+def job_error(e: BaseException, log_path: Path | None = None) -> str:
+    """What to tell the user when a job fails: why, in words, for every kind of failure."""
+    if isinstance(e, subprocess.TimeoutExpired):
+        mins = max(1, round((e.timeout or 0) / 60))
+        return (f"{_tool_of(e.cmd)} took longer than {mins} minute{'s' if mins != 1 else ''} and was stopped. "
+                "A very big game can need more: please report it, with the log")
+    if isinstance(e, subprocess.CalledProcessError):
+        said = e.stderr or e.output or ""  # what the command said, so the error shows why
+        said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else said).strip()
+        return f"{_tool_of(e.cmd)} failed ({e.returncode})" + (f": {said[-400:]}" if said else "")
+    if isinstance(e, MemoryError):
+        return "this computer ran out of memory: close other programs and try again"
+    if isinstance(e, (NetworkError, RomError, toolchains.ToolchainError, ValueError, RuntimeError, OSError)):
+        return str(e) or type(e).__name__
+    where = f" (the log: {hostenv.shown_path(log_path)})" if log_path else ""
+    return (f"something went wrong inside decomp.wtf ({type(e).__name__}: {e}). That's a bug: please report it with "
+            f"the log{where}")
+
+
+class Jobs:
+    """Background work the GUI can follow: imports and installs. A job always ends: done, or an error that says why
+    (never `running` forever because of an error nobody caught). Everything goes to the log file too."""
+
+    def __init__(self, log_path: Path | None = None):
         self.jobs: dict[str, dict] = {}
+        self.log_path = log_path
+        self.logger = file_log(log_path) if log_path else logging.getLogger("decomp.wtf")
 
     def start(self, kind: str, fn) -> str:
         jid = uuid.uuid4().hex[:12]
         job = {"id": jid, "kind": kind, "state": "running", "log": [], "result": None, "error": None, "t": time.time()}
         self.jobs[jid] = job
+        logger = self.logger
+        logger.info("job %s %s started", kind, jid)
 
         def log(line: str) -> None:
             job["log"].append(str(line))
+            logger.info("[%s %s] %s", kind, jid[:6], line)
 
         def run():
             try:
                 job["result"] = fn(log)
                 job["state"] = "done"
-            except (NetworkError, RomError, toolchains.ToolchainError, ValueError, RuntimeError, OSError) as e:
-                job["error"], job["state"] = str(e), "error"
-            except subprocess.CalledProcessError as e:
-                said = e.stderr or e.output or ""  # what the command said, so the error shows why
-                said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else said).strip()
-                job["error"], job["state"] = f"command failed ({e.returncode})" + (f": {said[-400:]}" if said else ""), "error"
+                logger.info("job %s %s done in %.0fs", kind, jid, time.time() - job["t"])
+            except BaseException as e:  # noqa: BLE001: a job must end, whatever went wrong
+                if getattr(e, "details", None):  # what the tool said, in full
+                    job["trace"] = str(e.details)[-6000:]
+                elif not isinstance(e, (NetworkError, RomError, ValueError)):
+                    job["trace"] = traceback.format_exc()[-4000:]
+                job["error"] = job_error(e, self.log_path)
+                job["state"] = "error"  # last: whoever sees the state sees the rest
+                logger.error("job %s %s failed: %s\n%s", kind, jid, job["error"], traceback.format_exc())
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
         threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
         return jid
 
@@ -111,7 +169,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     mcp_url = f"http://127.0.0.1:{port}/mcp"
     build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
     manager = agents.Manager(net, home, mcp_url)
-    jobs = Jobs()
+    jobs = Jobs(home / "logs" / "decomp.log")
     settings = Settings(home / "settings.json")
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
 
@@ -226,19 +284,27 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     # ------------------------------------------------------------------ state
 
-    def state() -> dict:
-        projects = []
-        for p in net.store.all("SELECT slug FROM projects ORDER BY id DESC"):
+    def overviews() -> list[tuple[str, dict | None, str]]:
+        """(slug, overview or None, why not) for every project. One that can't be read is still listed, with the
+        reason: before, one odd project emptied the whole sidebar, or quietly went missing from it."""
+        out = []
+        for p in net.store.all("SELECT slug, name FROM projects ORDER BY id DESC"):
             try:
-                projects.append(net.overview(p["slug"]))
-            except (NetworkError, OSError, KeyError):
-                continue
+                out.append((p["slug"], net.overview(p["slug"]), ""))
+            except Exception as e:  # noqa: BLE001
+                jobs.logger.warning("project %s can't be read: %s", p["slug"], e, exc_info=not isinstance(e, NetworkError))
+                out.append((p["slug"], {"slug": p["slug"], "title": p["name"] or p["slug"]}, job_error(e, jobs.log_path)))
+        return out
+
+    def state() -> dict:
+        projects = [ov | ({"broken": why} if why else {}) for _, ov, why in overviews()]
         tcs = [t for t in toolchains.status() if t["id"] in COMPILERS or t["id"] in TOOLS]
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
             t["name"] = SHORT_NAMES.get(t["id"], t["name"])
         return {"version": __version__, "build": build_id, "install": updates.installed(), **hostenv.info(),
                 "platform": toolchains.current_platform(), "home": hostenv.shown_path(home.parent),
+                "log_file": hostenv.shown_path(home / "logs" / "decomp.log"),
                 "projects": projects, "toolchains": tcs, "agents": agents.detect(),
                 "api_presets": agents.API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
@@ -251,15 +317,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if s.state in ("starting", "working", "waiting"):
                 running[s.slug] = running.get(s.slug, 0) + 1
         out = []
-        for p in net.store.all("SELECT slug FROM projects ORDER BY id DESC"):
-            try:
-                ov = net.overview(p["slug"])
-            except (NetworkError, OSError, KeyError):
-                continue
+        for slug, ov, why in overviews():
             out.append({k: ov.get(k) for k in ("slug", "title", "kind", "origin", "platform", "platform_name", "ready",
                                                 "functions", "matched", "bytes", "matched_bytes", "last_activity")}
-                       | {"working": running.get(p["slug"], 0), "room": (ov.get("room") or {}).get("role"),
-                          "autopilot": (ov.get("autopilot") or {}).get("state")})
+                       | {"working": running.get(slug, 0), "room": (ov.get("room") or {}).get("role"),
+                          "autopilot": (ov.get("autopilot") or {}).get("state")} | ({"broken": why} if why else {}))
         return out
 
     @mcp.custom_route("/api/projects", methods=["GET"])
@@ -324,6 +386,22 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     pass
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
+
+    @mcp.custom_route("/api/log", methods=["GET"])
+    async def api_log(request: Request) -> Response:
+        """The end of decomp.wtf's log, to read or attach to a bug report (the app's data folder isn't always at
+        hand: in Docker it's inside the container)."""
+        if (bad := guard(request)):
+            return bad
+        path = home / "logs" / "decomp.log"
+        try:
+            with open(path, "rb") as f:
+                f.seek(max(0, path.stat().st_size - (512 << 10)))
+                text = f.read().decode("utf-8", "replace")
+        except OSError:
+            text = "(nothing logged yet)"
+        return Response(text, media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": 'inline; filename="decomp.log"'})
 
     @mcp.custom_route("/api/job", methods=["GET"])
     async def api_job(request: Request) -> Response:
@@ -625,7 +703,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if kind == "api":
             api = dict(settings.data.get("api", {}))
             api.update({k: v for k, v in (data.get("options") or {}).items()
-                        if k in ("provider", "base_url", "model") and v})
+                        if k in ("provider", "base_url", "model", "context_tokens") and v})
             if not api.get("base_url") or not api.get("model"):
                 return fail(ValueError("choose a provider and model first"))
             options.update(api)
@@ -707,6 +785,15 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             for k in ("provider", "base_url", "model"):
                 if k in data["api"]:
                     api[k] = str(data["api"][k]).strip()
+            if "context_tokens" in data["api"]:  # the model's context, in tokens: empty = find out
+                try:
+                    n = int(str(data["api"]["context_tokens"]).strip() or 0)
+                except ValueError:
+                    raise ValueError("the context size is a number of tokens, like 16384") from None
+                if n:
+                    api["context_tokens"] = max(2048, n)
+                else:
+                    api.pop("context_tokens", None)
             if data["api"].get("api_key") and "•" not in data["api"]["api_key"]:
                 api["api_key"] = str(data["api"]["api_key"]).strip()
             if data["api"].get("clear_key"):
