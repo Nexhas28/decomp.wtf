@@ -70,7 +70,8 @@ irm https://decomp.wtf/install.ps1 | iex
 
 One line sets up everything: [uv](https://docs.astral.sh/uv/), the app, the period compilers (pinned and
 checksum-verified) and the m2c draft decompiler. It then adds **decomp.wtf** to your apps and opens it in your
-browser. Remove it any time with `uv tool uninstall decompnet`.
+browser. After that, start it any time from your apps menu (the Start menu on Windows) or by typing `decomp` in a
+terminal. Remove it any time with `uv tool uninstall decompnet`.
 
 > [!TIP]
 > No ROM at hand? The app ships with **Demo Quest 64**, a real N64 ROM built from public-domain code and zlib.
