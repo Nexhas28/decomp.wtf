@@ -405,10 +405,14 @@ def test_a_catalog_that_cant_be_had_says_why(tmp_path, monkeypatch):
     def refused():
         raise urllib.error.HTTPError(catalog.URL, 403, "Forbidden", {}, None)
 
-    monkeypatch.setattr(catalog, "_fetch", refused)
+    asked = []
+    monkeypatch.setattr(catalog, "_fetch", lambda: asked.append(1) or refused())
     cache = tmp_path / "catalog.json"
-    with pytest.raises(catalog.CatalogError, match="declined"):
+    with pytest.raises(catalog.CatalogError, match="declines"):
         catalog.catalog(cache)
+    with pytest.raises(catalog.CatalogError, match="declines"):  # a refusal stands: not asked again for a week
+        catalog.catalog(cache)
+    assert len(asked) == 1
     cache.write_text(json.dumps({"projects": [{"owner": "o", "repo": "r", "platform": "gc"}]}))
     os.utime(cache, (0, 0))  # an old copy is better than nothing
     assert [p["id"] for p in catalog.catalog(cache)] == ["o/r"]

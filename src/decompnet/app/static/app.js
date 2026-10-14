@@ -1071,7 +1071,8 @@ async function showCatalog() {
   show("catalog");
   $("catGrid").innerHTML = `<p class="muted">Loading projects from decomp.dev…</p>`;
   try { await loadCatalog(); } catch (e) {
-    $("catGrid").innerHTML = `<p class="muted">${esc(e.message)}. You can still continue any public decomp: paste its repository address below.</p>`;
+    $("catGrid").innerHTML = `<div class="cat-empty"><p class="muted">${esc(e.message)}, so its list can't be shown here. You can still continue any public decomp:</p>
+      <p><a class="btn ghost" href="https://decomp.dev" target="_blank" rel="noopener">Browse decomp.dev</a> <span class="muted small">open a project there, copy its repository link and paste it below.</span></p></div>`;
     $("catNote").textContent = ""; $("catChips").innerHTML = "";
     return;
   }

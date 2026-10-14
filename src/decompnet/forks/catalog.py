@@ -16,8 +16,21 @@ PLATFORMS = {
 }
 
 
+# How often the list is asked for: once a day at most, and after decomp.dev declines, once a week (in case it changes
+# its mind). Every request says what it is: decomp.dev decides whether it serves decomp.wtf, and its answer stands.
+MAX_AGE = 24 * 3600
+AFTER_REFUSAL = 7 * 24 * 3600
+AFTER_ERROR = 3600
+
+
+def _user_agent() -> str:
+    from .. import __version__
+
+    return f"decomp.wtf/{__version__} (+https://decomp.wtf)"
+
+
 def _fetch() -> dict:
-    req = urllib.request.Request(URL, headers={"User-Agent": "decomp.wtf", "Accept": "application/json"})
+    req = urllib.request.Request(URL, headers={"User-Agent": _user_agent(), "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -49,23 +62,40 @@ def _cached(cache: Path) -> list[dict] | None:
         return None
 
 
-def catalog(cache: Path, max_age: float = 6 * 3600) -> list[dict]:
-    """Projects from decomp.dev, cached on disk. When it can't be fetched, the last copy (however old) is used; with
-    none, CatalogError says why instead of an empty list that looks like "no projects"."""
+def catalog(cache: Path, max_age: float = MAX_AGE) -> list[dict]:
+    """Projects from decomp.dev, cached on disk for a day. When it can't be had, the last copy (however old) is used;
+    with none, CatalogError says why instead of an empty list that looks like "no projects". A refusal is remembered
+    (next to the cache) and not asked again for a week; another failure for an hour."""
     if cache.exists() and time.time() - cache.stat().st_mtime < max_age and (fresh := _cached(cache)) is not None:
         return fresh
+    failed = cache.with_suffix(".failed.json")
     try:
-        raw = _fetch()
-        normalized = normalize(raw)
-    except urllib.error.HTTPError as e:
-        why = (f"decomp.dev declined decomp.wtf's request for its project list ({e.code} Access denied)" if e.code == 403
-               else f"decomp.dev answered {e.code} to the request for its project list")
-    except (OSError, ValueError, KeyError) as e:
-        why = f"decomp.dev couldn't be reached ({getattr(e, 'reason', None) or e})"
+        last = json.loads(failed.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        last = None
+    wait = (AFTER_REFUSAL if last and last.get("code") in (401, 403, 429) else AFTER_ERROR) if last else 0
+    if last and time.time() - last.get("at", 0) < wait:
+        why = last.get("why") or "decomp.dev's project list isn't available"
     else:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(raw), encoding="utf-8")
-        return normalized
+        try:
+            raw = _fetch()
+            normalized = normalize(raw)
+        except urllib.error.HTTPError as e:
+            code = e.code
+            why = ("decomp.dev declines decomp.wtf's requests for its project list" if code in (401, 403)
+                   else f"decomp.dev answered {code} to the request for its project list")
+        except (OSError, ValueError, KeyError) as e:
+            code, why = None, f"decomp.dev couldn't be reached ({getattr(e, 'reason', None) or e})"
+        else:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(raw), encoding="utf-8")
+            failed.unlink(missing_ok=True)
+            return normalized
+        try:
+            failed.parent.mkdir(parents=True, exist_ok=True)
+            failed.write_text(json.dumps({"at": time.time(), "code": code, "why": why}), encoding="utf-8")
+        except OSError:
+            pass
     old = _cached(cache)
     if old is not None:
         return old

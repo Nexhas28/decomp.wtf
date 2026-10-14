@@ -81,6 +81,8 @@ button { cursor: pointer; border: 0; background: none; }
 .primary:disabled, .ghost:disabled { opacity: .4; cursor: not-allowed; }
 .primary svg { width: 13px; height: 13px; fill: currentColor; }
 .ghost { border: 1px solid var(--line); color: var(--ink-2); }
+a.ghost, a.primary { text-decoration: none; }
+.cat-empty { display: grid; gap: 10px; }
 .ghost:hover { background: var(--bg-alt); color: var(--ink); }
 .ghost.icon { width: 36px; padding: 0; }
 .ghost.icon.sm { width: 30px; height: 30px; border-color: transparent; }
