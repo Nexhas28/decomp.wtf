@@ -1,6 +1,6 @@
 {
   "name": "decomp-wtf",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Decompile games you own into C that rebuilds them byte for byte, with decomp.wtf: the original compilers, a byte-for-byte judge, free matches from machine drafts, helper agents and a live view.",
   "author": {"name": "decomp.wtf", "url": "https://decomp.wtf"},
   "homepage": "https://decomp.wtf",
