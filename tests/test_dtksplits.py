@@ -97,3 +97,52 @@ def test_a_program_with_two_sections_of_one_name_gets_unique_names(tmp_path):
         "\t.rodata     type:rodata align:8\n\t.data       type:data align:16\n")
     assert not (config / "symbols.txt").exists()
     assert _unique_sections(tmp_path, "GM4P01") == []  # nothing left to rename
+
+
+def test_hand_written_code_gets_a_function_hint(tmp_path):
+    """Mario Kart Wii's copy routine has branch targets dtk takes for a function inside a function ("Overlapping
+    functions"): the first is declared to end where the second starts, and the analysis runs again."""
+    from decompnet.forks.scratch_dtk import _overlap_hint
+
+    (tmp_path / "config" / "RMCP01").mkdir(parents=True)
+    tail = "Caused by:\n    Overlapping functions 3:0x800E9D34-3:0x800E9DA0 -> 3:0x800E9D44\nninja: error"
+    assert _overlap_hint(tmp_path, "RMCP01", tail) == "0x800E9D34"
+    assert (tmp_path / "config" / "RMCP01" / "symbols.txt").read_text() == \
+        "fn_800E9D34 = .text:0x800E9D34; // type:function size:0x10\n"
+    assert _overlap_hint(tmp_path, "RMCP01", tail) is None  # said once: no loop
+    assert _overlap_hint(tmp_path, "RMCP01", "some other failure") is None
+
+
+def test_a_link_failure_tries_the_next_newer_linker(monkeypatch, tmp_path):
+    from decompnet.forks import scratch_dtk
+
+    for v in ("GC/1.3.2", "GC/2.7"):  # 2.6 isn't installed here: skipped
+        (tmp_path / v).mkdir(parents=True)
+        (tmp_path / v / "mwldeppc.exe").write_bytes(b"")
+    monkeypatch.setattr(scratch_dtk.toolchains, "path", lambda tid: tmp_path)
+    crash = "### mwldeppc.exe Linker Error:\n#   internal linker error: File: 'ELF_PPC_EABI.c' Line: 2687."
+    assert scratch_dtk._next_linker("GC/1.3.2", crash) == "GC/2.7"
+    assert scratch_dtk._next_linker("GC/2.7", crash) is None  # nothing newer installed
+    assert scratch_dtk._next_linker("GC/1.3.2", "### mwldeppc.exe Linker Error:\n#   undefined: __start") is None  # not a crash
+    assert scratch_dtk._next_linker("GC/1.3.2", "build/GZ2E01/main.dol: \x1b[31mFAILED\x1b[39m") == "GC/2.7"  # links, other bytes
+    assert scratch_dtk.comment_version("GC/2.7") == 11
+
+
+def test_hand_written_code_cut_in_two_becomes_one_function(tmp_path):
+    """dtk's first analysis of Mario Kart Wii cuts DWCi_Np_CPUCopyFast (0x800E941C, 0x984 bytes) in two and then can't
+    read that back ("Overlapping functions 0x800E9D34-0x800E9DA0 -> 0x800E9D44"): the two become one function again,
+    as in the community's project, and dtk analyses the whole game."""
+    from decompnet.forks.scratch_dtk import _overlap_hint
+
+    (tmp_path / "config" / "RMCP01").mkdir(parents=True)
+    path = tmp_path / "config" / "RMCP01" / "symbols.txt"
+    path.write_text("fn_800E9414 = .text:0x800E9414; // type:function size:0x8\n"
+                    "fn_800E941C = .text:0x800E941C; // type:function size:0x918\n"
+                    "fn_800E9D34 = .text:0x800E9D34; // type:function size:0x6C\n"
+                    "fn_800E9DA0 = .text:0x800E9DA0; // type:function size:0x48\n", encoding="utf-8")
+    tail = "Overlapping functions 3:0x800E9D34-3:0x800E9DA0 -> 3:0x800E9D44"
+    assert _overlap_hint(tmp_path, "RMCP01", tail) == "0x800E941C"
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "fn_800E9414 = .text:0x800E9414; // type:function size:0x8",
+        "fn_800E941C = .text:0x800E941C; // type:function size:0x984",
+        "fn_800E9DA0 = .text:0x800E9DA0; // type:function size:0x48"]

@@ -53,6 +53,31 @@ def comment_version(compiler: str) -> int:
     return 8
 
 
+# When CodeWarrior's linker can't link the game's objects (Twilight Princess's modules with the GC 1.3.2 linker:
+# "internal linker error"), or links them into other bytes than the game's (TP with 2.6), the game was built with a
+# newer one: these are tried in order (TP: 2.7, as its decomp uses).
+NEWER_LINKERS = {"GC": ["GC/1.3.2", "GC/2.6", "GC/2.7", "GC/3.0a5"], "Wii": ["Wii/1.0", "Wii/1.1", "Wii/1.3", "Wii/1.7"]}
+
+
+def _next_linker(compiler: str, log_tail: str) -> str | None:
+    """The next newer CodeWarrior linker to try after a link failure, or None."""
+    crashed = "internal linker error" in log_tail  # (an undefined symbol is a different problem)
+    differs = re.search(r"\.(dol|rel): \S*FAILED", log_tail) is not None  # links, but not into the game's bytes
+    if not (crashed or differs):
+        return None
+    family = NEWER_LINKERS.get(compiler.split("/", 1)[0], [])
+    later = family[family.index(compiler) + 1:] if compiler in family else []
+    base = Path(toolchains.path("mwcc"))
+    return next((v for v in later if (base / v / "mwldeppc.exe").exists()), None)
+
+
+def _use_linker(root: Path, game_id: str, compiler: str, sources: list[str], rels: bool) -> None:
+    cfg = root / "config" / game_id / "config.yml"
+    cfg.write_text(re.sub(r"^mw_comment_version: \d+$", f"mw_comment_version: {comment_version(compiler)}",
+                          cfg.read_text(encoding="utf-8"), count=1, flags=re.M), encoding="utf-8")
+    _write_configure(root, game_id, compiler, sources, rels)
+
+
 def is_dol(data: bytes) -> bool:
     """A GameCube/Wii program (DOL): 7 text + 11 data section offsets, addresses in 0x80000000-0x81800000."""
     if len(data) < 0x100:
@@ -137,9 +162,16 @@ def is_rel(data: bytes) -> bool:
 
 
 def disc_modules(disc: Path) -> list[tuple[str, str, str, int]]:
-    """The REL modules on a disc: (name, path in the disc, sha1, module id), in the disc's order. Compressed ones
-    (inside archives, or Yaz0) aren't read yet."""
-    rels = [f for f in vfs_list(disc) if f.lower().endswith(".rel")]
+    """The REL modules on a disc: (name, path in the disc, sha1, module id), in the disc's order. Modules can also
+    be packed in an archive (Twilight Princess keeps 134 of its 250 in files/RELS.arc): dtk reads those by the
+    path "files/RELS.arc:mmem/d_a_bg.rel". Archives are looked into when their name says they hold RELs."""
+    files = vfs_list(disc)
+    rels = [f for f in files if f.lower().endswith(".rel")]
+    for arc in (f for f in files if re.search(r"rel", Path(f).name, re.I) and Path(f).suffix.lower() in (".arc", ".szs", ".carc")):
+        try:
+            rels += [f"{arc}:{inner}" for inner in vfs_list(Path(f"{disc}:{arc}")) if inner.lower().endswith(".rel")]
+        except ForkError:
+            continue
     if not rels:
         return []
     out, names = [], set()
@@ -355,6 +387,62 @@ def _name_entry(root: Path, game_id: str, dol: bytes) -> bool:
     return bool(n)
 
 
+_OVERLAP = re.compile(r"Overlapping functions (\d+):0x([0-9A-Fa-f]+)-\d+:0x([0-9A-Fa-f]+) -> \d+:0x([0-9A-Fa-f]+)")
+
+
+def _differing(root: Path, game_id: str, log_tail: str) -> list[str] | None:
+    """The files that rebuilt but not into the game's bytes, when that's what the build's failure is (its checksum
+    step: dtk asked again, as the build's output can be too long to keep); None when something else failed."""
+    if not re.search(r"\.(dol|rel): \S*FAILED|build\.sha1", log_tail) or "internal linker error" in log_tail:
+        return None
+    if any(e != f"build/{game_id}/ok" for e in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", log_tail, re.M)):
+        return None  # another step failed (what's on disk may be from an earlier build)
+    res = subprocess.run(capped([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"]), cwd=root, capture_output=True,
+                         text=True, timeout=600, encoding="utf-8", errors="replace")
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in (res.stdout + res.stderr).splitlines()]
+    results = [re.match(r"^(\S+\.(?:dol|rel)): (OK|FAILED)$", ln) for ln in lines]
+    if any(m is None for m, ln in zip(results, lines) if re.search(r"\.(dol|rel)\b", ln)):
+        return None  # a file is missing or unreadable: the build didn't get that far
+    failed = [Path(m.group(1)).name for m in results if m and m.group(2) == "FAILED"]
+    return failed or None
+
+
+def _overlap_hint(root: Path, game_id: str, log_tail: str) -> str | None:
+    """dtk stops at "Overlapping functions A-B -> C" when hand-written code looks like a function starting inside
+    another: Mario Kart Wii's DWCi_Np_CPUCopyFast, a copy routine with entry points of its own, which dtk's first
+    analysis cuts in two and then can't read back. The fix is the community's: one function. A function of dtk's
+    that ends right where A starts gets A's code too (up to B); otherwise A is declared to end where C starts.
+    Returns the address it changed, or None when there's nothing left to try."""
+    m = _OVERLAP.search(log_tail)
+    if not m:
+        return None
+    start, end, inner = int(m.group(2), 16), int(m.group(3), 16), int(m.group(4), 16)
+    path = root / "config" / game_id / "symbols.txt"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    line_re = r"^(\S+) = \.text:0x([0-9A-Fa-f]{8});(.*?)size:0x([0-9A-Fa-f]+)(.*)$"
+    lines = text.splitlines()
+    at = next((i for i, ln in enumerate(lines) if (mm := re.match(line_re, ln)) and int(mm.group(2), 16) == start), None)
+    before = next((i for i, ln in enumerate(lines) if (mm := re.match(line_re, ln))
+                   and int(mm.group(2), 16) + int(mm.group(4), 16) == start and "type:function" in ln), None)
+    if before is not None:  # one function: the one before takes A's code
+        mm = re.match(line_re, lines[before])
+        lines[before] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}size:0x{end - int(mm.group(2), 16):X}{mm.group(5)}"
+        if at is not None:
+            del lines[at]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return f"0x{int(mm.group(2), 16):08X}"
+    size = f"size:0x{inner - start:X}"
+    if at is not None:
+        if f" {size}" in lines[at]:
+            return None  # already said: dtk didn't take it
+        mm = re.match(line_re, lines[at])
+        lines[at] = f"{mm.group(1)} = .text:0x{mm.group(2)};{mm.group(3)}{size}{mm.group(5)}"
+    else:
+        lines.append(f"fn_{start:08X} = .text:0x{start:08X}; // type:function {size}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f"0x{start:08X}"
+
+
 def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, str]]:
     """(module or None for the program, start, end, section) of the code regions dtk split out automatically (not
     .init: hand-written start-up). A module's addresses are offsets in its section, as its splits.txt has them."""
@@ -429,17 +517,39 @@ write_asm: true
     fp = ForkProject(root)
     log(f"analysing {info['title']} ({gid}) with decomp-toolkit")
     ok, tail = _build(fp, log)
-    if not ok and (renamed := _unique_sections(root, gid)):
-        log(f"the program has sections of its own (named {', '.join(renamed)} here): analysing it again")
+    closest: tuple[int, str] | None = None  # (files that differ, linker): the linker that came closest
+    for _ in range(40):  # what a real game needs that dtk's defaults don't do: one repair at a time, then again
+        if ok:
+            break
+        if _name_entry(root, gid, info["dol"]):
+            log("the program's entry point is __start (CodeWarrior links from it)")
+        elif (hint := _overlap_hint(root, gid, tail)):
+            log(f"code at {hint} is hand-written, with branch targets of its own: analysing again")
+        elif (renamed := _unique_sections(root, gid)):
+            log(f"the program has sections of its own (named {', '.join(renamed)} here): analysing again")
+        elif (named := _standard_module_sections(root, gid)):
+            log(f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
+                "analysing again")
+        elif (newer := _next_linker(compiler, tail)):
+            if (diff := _differing(root, gid, tail)) is not None and (closest is None or len(diff) < closest[0]):
+                closest = (len(diff), compiler)
+            log(f"CodeWarrior's {compiler} linker can't link this game into its bytes: trying {newer}")
+            compiler = newer
+            _use_linker(root, gid, compiler, [], bool(modules))
+        else:
+            break
         ok, tail = _build(fp, log)
-    if (named := _standard_module_sections(root, gid)):
-        log(f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
-            "analysing again")
+    diff = None if ok else _differing(root, gid, tail)
+    if not ok and closest is not None and closest[1] != compiler and (diff is None or closest[0] <= len(diff)):  # the closest (earliest of equals)
+        compiler = closest[1]
+        _use_linker(root, gid, compiler, [], bool(modules))
         ok, tail = _build(fp, log)
-    if _name_entry(root, gid, info["dol"]):
-        ok, tail = _build(fp, log)
-    if not ok:
-        raise ForkError(f"the first build didn't rebuild the game identically:\n{tail[-1500:]}")
+        diff = None if ok else _differing(root, gid, tail)
+    if not ok and diff is None:
+        raise ForkError(f"the first build failed:\n{tail[-1500:]}")
+    if diff:  # decompiling works per function; the whole game doesn't rebuild into its bytes yet (link order...)
+        log(f"note: {len(diff)} of the game's files don't rebuild byte for byte yet ({', '.join(diff[:5])}"
+            f"{', ...' if len(diff) > 5 else ''}). Decompiling works anyway: every function is compared with your copy's.")
 
     units = _code_units(root, gid)
     sources = []
@@ -461,14 +571,18 @@ write_asm: true
     _write_configure(root, gid, compiler, sources, rels=bool(modules))
     log(f"{len(sources)} source files for agents to write into")
     ok, tail = _build(fp, log)
-    if not ok:
+    if not ok and (_differing(root, gid, tail) is None or not diff):
         raise ForkError(f"the project didn't rebuild the game identically after adding source files:\n{tail[-1500:]}")
+    rebuild = {"identical": True, "detail": "identical"} if ok else {
+        "identical": False, "detail": f"{len(diff)} files differ: {', '.join(diff[:8])}{', ...' if len(diff) > 8 else ''}"}
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
         "created": "from scratch", "platform": platform, "version": gid, "compiler": compiler,
         "game": {"what": "your copy of the game", "path": f"orig/{gid}/" + ("sys/main.dol" if info["kind"] == "dol" else game.name),
                  "sha1": hashlib.sha1((orig / "sys" / "main.dol").read_bytes()).hexdigest() if info["kind"] == "dol" else None},
-        "setup": [["python", "configure.py", *tool_args()], ["ninja"]],
+        # a project that doesn't rebuild identically yet builds what decompiling needs (not its checksum step)
+        "setup": [["python", "configure.py", *tool_args()], ["ninja"] if ok else ["ninja", "all_source", f"build/{gid}/report.json"]],
+        "rebuild": rebuild,
     }, indent=2), encoding="utf-8")
     (root / "README.example.md").unlink(missing_ok=True)
     with open(root / ".gitignore", "a", encoding="utf-8") as f:
@@ -489,4 +603,5 @@ Compiler: CodeWarrior {compiler} (change `config.linker_version` in configure.py
                     ["git", "-c", "user.name=decomp.wtf", "-c", "user.email=noreply@decomp.wtf", "commit", "-q", "-m",
                      f"Start the {gid} decompilation (decomp.wtf, dtk-template)"]):
             subprocess.run(cmd, cwd=root, capture_output=True)
-    return {"platform": platform, "id": gid, "title": info["title"], "compiler": compiler, "sources": len(sources)}
+    return {"platform": platform, "id": gid, "title": info["title"], "compiler": compiler, "sources": len(sources),
+            "rebuild": rebuild}

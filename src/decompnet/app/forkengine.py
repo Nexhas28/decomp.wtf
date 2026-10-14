@@ -376,10 +376,16 @@ class ForkEngine:
         what it says is kept in the project's .decomp.wtf.json and shown on the project."""
         proj, fp, cfg = self.get(slug)
         manifest = fp.manifest or {}
-        if cfg.get("origin") != "scratch" or manifest.get("platform") != "nds":
-            raise NetworkError("only DS games started from scratch rebuild their ROM here")
+        if cfg.get("origin") != "scratch" or manifest.get("platform") not in ("nds", "gc", "wii"):
+            raise NetworkError("only games started from scratch rebuild here")
         with self._build_locks[proj["id"]]:  # not while an agent's compile builds in the same tree
-            result = scratch_dsd.check_rom(fp.root, manifest["version"], log=log)
+            if manifest.get("platform") == "nds":
+                result = scratch_dsd.check_rom(fp.root, manifest["version"], log=log)
+            else:
+                ok, tail = fp.verify(log=log)
+                diff = scratch_dtk._differing(fp.root, manifest["version"], tail) or []
+                result = {"identical": ok, "detail": "identical" if ok else
+                          f"{len(diff)} files differ: {', '.join(diff[:8])}" if diff else (tail.strip().splitlines() or ["the build failed"])[-1][-300:]}
         manifest["rebuild"] = result | {"t": time.time()}
         (fp.root / ".decomp.wtf.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return result
