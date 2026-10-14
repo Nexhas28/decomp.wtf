@@ -63,12 +63,13 @@ class _Disc:
                 src.seek(at)
                 return src.read(n)
             self._get = get
-        for size, skip in ((2048, 0), (2352, 24), (2352, 16)):
+        # 2048-byte sectors (.iso), raw 2352-byte ones (.bin: Mode 2 or Mode 1), or a CHD's frames (2352 + 96 of subcode)
+        for size, skip in ((2048, 0), (2352, 24), (2352, 16), (2448, 24), (2448, 16)):
             pvd = 16 * size + skip
             if self._get(pvd + 1, 5) == b"CD001":
                 self.size, self.skip = size, skip
                 return
-        raise RomError("not a disc image this app can read (expected an ISO 9660 .bin or .iso)")
+        raise RomError("not a disc image this app can read (expected an ISO 9660 .bin, .iso or .chd)")
 
     def sector(self, lba: int) -> bytes:
         return self._get(lba * self.size + self.skip, 2048)

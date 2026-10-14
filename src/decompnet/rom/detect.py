@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from . import gba, n64, ps2, psx
+from . import chd, gba, n64, ps2, psx
 from .n64 import RomError
 
 PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2", "gba": "Game Boy Advance"}
@@ -45,6 +45,13 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
         if path.stat().st_size <= SMALL:
             return identify(path.read_bytes(), name)
         with open(path, "rb") as f:
+            head = f.read(8)
+        if chd.is_chd(head):  # a compressed disc image: read in place, a hunk at a time
+            with chd.Chd(path) as disc:
+                if psx.is_disc(disc):
+                    return _from_disc(disc)
+            raise RomError("this CHD doesn't hold a PlayStation disc this app can read")
+        with open(path, "rb") as f:
             if psx.is_disc(f):
                 return _from_disc(f)
         raise RomError("this file is too big for a ROM and isn't a disc image this app can read")
@@ -56,7 +63,7 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
     if src[:4] == b"\x7fELF":
         raise RomError("this ELF program isn't for a console decomp.wtf can split from scratch yet")
     raise RomError("this isn't a ROM, disc or game program this app can read: pick an N64 ROM (.z64, .n64, .v64), "
-                   "a PlayStation 1 or 2 disc image (.bin, .iso) or its program file (e.g. SLUS_200.00)")
+                   "a PlayStation 1 or 2 disc image (.bin, .iso, .chd) or its program file (e.g. SLUS_200.00)")
 
 
 def _from_disc(src) -> Picked:
