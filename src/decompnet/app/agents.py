@@ -71,6 +71,7 @@ API_PRESETS = {
     "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat", "key": True},
     "ollama": {"name": "Ollama (local)", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3-coder", "key": False},
     "lmstudio": {"name": "LM Studio (local)", "base_url": "http://127.0.0.1:1234/v1", "model": "local-model", "key": False},
+    "llamacpp": {"name": "llama.cpp (local)", "base_url": "http://127.0.0.1:8080/v1", "model": "local", "key": False},
     "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5", "key": True},
     "custom": {"name": "Custom", "base_url": "", "model": "", "key": True},
 }
@@ -108,6 +109,17 @@ CLAUDE_MODELS = [("fable", "Fable", "Anthropic's most capable model"), ("opus", 
                  ("sonnet", "Sonnet", "fast and capable, cheaper"), ("haiku", "Haiku", "fastest, cheapest")]
 
 
+def _codex_config() -> dict:
+    """The user's Codex settings (~/.codex/config.toml, or $CODEX_HOME's)."""
+    import tomllib
+
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        return tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def _config_model(kind: str) -> str | None:
     """The model the user set as default in the agent's own settings, if any."""
     home = Path.home()
@@ -115,8 +127,7 @@ def _config_model(kind: str) -> str | None:
         if kind == "claude":
             return json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")).get("model") or None
         if kind == "codex":
-            import tomllib
-            return tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8")).get("model") or None
+            return _codex_config().get("model") or None
         if kind == "antigravity":
             return json.loads(agy_settings().read_text(encoding="utf-8")).get("model") or None
         if kind == "opencode":
@@ -257,7 +268,7 @@ def detect() -> list[dict]:
 # ---------------------------------------------------------------------------------- output parsing
 
 def _tool_name(name: str) -> str:
-    for prefix in ("mcp__decomp__", "mcp_decomp_", "decomp__", "decomp_", "decomp."):
+    for prefix in ("mcp__decomp__", "mcp_decomp_", "decomp_agent.", "decomp_agent__", "decomp__", "decomp_", "decomp."):
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
@@ -695,12 +706,16 @@ class Manager:
                 cmd += ["--model", model]
         elif s.kind == "codex":
             env["DECOMP_TOKEN"] = token
-            cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only",
-                   "-c", f'mcp_servers.decomp.url="{self.mcp_url}"',
-                   "-c", 'mcp_servers.decomp.bearer_token_env_var="DECOMP_TOKEN"',
-                   "-c", 'mcp_servers.decomp.default_tools_approval_mode="approve"',
-                   "-c", "mcp_servers.decomp.tool_timeout_sec=180",
-                   "-c", 'approval_policy="never"']
+            # The worker's own server, under a name of its own: `-c` settings merge into the user's config, and
+            # `decomp connect codex` gave that a stdio `decomp` entry (a url on top of it: "url is not supported for
+            # stdio"). The user's MCP servers are switched off for the run, as --strict-mcp-config does for Claude.
+            cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only"]
+            for name in (_codex_config().get("mcp_servers") or {}):
+                if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                    cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
+            cmd += ["-c", f'mcp_servers.decomp_agent={{url="{self.mcp_url}", bearer_token_env_var="DECOMP_TOKEN", '
+                          'default_tools_approval_mode="approve", tool_timeout_sec=180}',
+                    "-c", 'approval_policy="never"']
             if model:
                 cmd += ["-m", model]
             cmd.append("-")  # the prompt comes from stdin
@@ -798,6 +813,9 @@ class Manager:
     # -- built-in agent for OpenAI-compatible APIs
 
     def _run_api(self, s: Session, agent) -> bool:
+        """The agent loop for any OpenAI-compatible API. The conversation is kept within the model's context
+        (`context_tokens`, or what a local llama.cpp server says it has): older tool output is trimmed first, and
+        when the server still says it's too long, trimmed harder and sent again."""
         base = (s.options.get("base_url") or "").rstrip("/")
         model = s.options.get("model") or ""
         if not base or not model:
@@ -808,16 +826,27 @@ class Manager:
         schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)))
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
-        s.push("info", f"session {s.runs}: {model} via {base}")
         used_tool = False
         with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
+            window = context_window(client, base, s.options)
+            s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
+            budget = int(window * 0.7) - _tokens(schema)  # room for the reply and the tools' definitions
             for _step in range(int(s.options.get("max_steps", 120))):
                 if s.stop.is_set():
                     return True
-                r = client.post(f"{base}/chat/completions", headers=headers,
-                                json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
+                for _attempt in range(4):
+                    fit(messages, budget)
+                    r = client.post(f"{base}/chat/completions", headers=headers,
+                                    json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
+                    if r.status_code == 200 or not _too_long(r):
+                        break
+                    budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
                 if r.status_code != 200:
                     s.error = f"API error {r.status_code}: {r.text[:300]}"
+                    if _too_long(r):
+                        s.error = ("the model's context is too small for this work even after trimming: give it at "
+                                   "least 16K tokens (llama.cpp: -c 16384; Ollama: OLLAMA_CONTEXT_LENGTH=16384; LM "
+                                   "Studio: Context Length) and set it in Agents & models")
                     s.push("error", s.error)
                     return False
                 reply = r.json()
@@ -846,6 +875,56 @@ class Manager:
                 if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
                     return True
         return used_tool
+
+
+def _tokens(obj) -> int:
+    """A cautious token estimate: code and assembly run about 3 characters a token."""
+    return len(obj if isinstance(obj, str) else json.dumps(obj)) // 3 + 4
+
+
+def _too_long(r) -> bool:
+    """The server refused the request because it doesn't fit the model's context."""
+    return r.status_code in (400, 413, 422, 500) and bool(re.search(
+        r"context|too long|exceed|maximum.*tokens|n_ctx|prompt is too|reduce the length", r.text[:2000], re.I))
+
+
+def fit(messages: list[dict], budget: int) -> int:
+    """Shrink the conversation to `budget` tokens: older tool output goes first (a function's assembly and diffs
+    from several steps ago), then older reasoning. The instructions, the task and the latest exchange stay whole.
+    Returns the estimate after."""
+    total = sum(_tokens(m) for m in messages)
+    keep_from = max(2, len(messages) - 2)
+    for kinds in (("tool",), ("assistant",)):
+        for m in messages[2:keep_from]:
+            if total <= budget:
+                return total
+            text = m.get("content")
+            if m.get("role") in kinds and isinstance(text, str) and len(text) > 300:
+                before = _tokens(m)
+                m["content"] = text[:240] + "\n[... trimmed to save context: call the tool again if you need this]"
+                total -= before - _tokens(m)
+    return total
+
+
+def context_window(client, base: str, options: dict) -> int:
+    """The model's context in tokens: what the user set, else what a llama.cpp server reports (/props), else a
+    guess (local servers often run small contexts)."""
+    try:
+        if int(options.get("context_tokens") or 0) >= 2048:
+            return int(options["context_tokens"])
+    except (TypeError, ValueError):
+        pass
+    local = bool(re.match(r"https?://(127\.|localhost|\[::1\]|0\.0\.0\.0|192\.168\.|10\.)", base))
+    if local:
+        try:
+            r = client.get(re.sub(r"/v1$", "", base) + "/props", timeout=5)
+            n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r.status_code == 200 else None
+            if isinstance(n, int) and n >= 2048:
+                return n
+        except (httpx.HTTPError, ValueError, AttributeError):
+            pass
+        return 16384
+    return 128000
 
 
 def api_tool_schemas(fork: bool = False) -> list[dict]:
