@@ -241,7 +241,7 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **Codex CLI** | Same, with approvals limited to decomp.wtf's tools. |
 | **Antigravity CLI** | Same, through the workspace's own MCP config. Google's successor to Gemini CLI (`agy`), which it retired in June 2026. |
 | **opencode** | Same, with any provider you've set up: DeepSeek, Qwen, Kimi and more. |
-| **API key** | A built-in agent loop for any OpenAI-compatible API: DeepSeek, OpenRouter, Ollama, LM Studio. |
+| **API key** | A built-in agent loop for any OpenAI-compatible API: DeepSeek, OpenRouter, OpenAI, or a model on your own computer with llama.cpp, Ollama or LM Studio. It keeps the conversation within the model's context. |
 | **The agent you talk to** | `decomp connect` (or the Claude Code plugin above): it drives decomp.wtf from your own terminal and can start helpers. |
 | **Anything else** | Point any MCP client (Cursor, Claude Desktop, your own) at `decomp mcp`, or at the app with **Connect another agent**. |
 
@@ -249,6 +249,12 @@ Agents only get decomp.wtf's tools: no shell, and no access to your files beyond
 and tells you how to sign in. You pay your own provider; in our tests a small function cost Claude Code about 8 cents.
 Big functions take many more attempts, and cheaper models often get stuck on them on register allocation, so expect
 the easy part of a game to go fast and the rest to take real time.
+
+**Local models.** Start the model with at least 16K tokens of context (llama.cpp: `-c 16384`; Ollama:
+`OLLAMA_CONTEXT_LENGTH=16384`, or it quietly cuts the start of each request off; LM Studio: Context Length), choose
+its preset under **Agents & models → API key**, and set the context size there if it isn't llama.cpp (which says it
+itself). The agent trims older tool output to stay within it. Small models do the small functions; the big ones
+need a strong model.
 
 ## Decompile together
 
@@ -287,7 +293,7 @@ the game.
 | Platform | From scratch | Compilers | Rebuildable project | Public decomps |
 | :-- | :-- | :-- | :-- | :-- |
 | **Nintendo 64** | ✓ ROM | KMC GCC 2.7.2 · IDO 5.3 / 7.1 | ✓ export | ✓ |
-| **PlayStation** | ✓ disc or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
+| **PlayStation** | ✓ disc (.bin, .iso, .chd) or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
 | **PlayStation 2** | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
 | **GameCube · Wii** | ✓ disc (ISO, RVZ, WBFS…) or DOL | CodeWarrior GC 1.0 – Wii 1.7 | ✓ dtk-template | ✓ |
 | **Game Boy Advance** | ✓ ROM | agbcc | ✓ export | ✓ |
@@ -297,7 +303,10 @@ the game.
 **From scratch.** splat and spimdisasm split MIPS games, decomp-toolkit analyses GameCube and Wii programs inside a
 generated [dtk-template](https://github.com/encounter/dtk-template) project, [ds-decomp](https://github.com/AetiasHax/ds-decomp)
 analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the same kind, and Game Boy Advance
-ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls. Every attempt is
+ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls.
+Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
+calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
+2 overlays in a disc's other files. Every attempt is
 compiled with the game's compiler and checked byte for byte: linked at its address in the original (MIPS, ARM)
 or judged by objdiff inside the project's own build (GameCube, Wii, DS).
 
@@ -315,11 +324,15 @@ now; C++ there (mostly PS2 games) is coming. Public decomps use whatever languag
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
 tools run with a memory cap, so a runaway analysis can't take your computer down.
 
-**Windows and the Linux-only compilers.** KMC GCC (N64), the PlayStation GCCs, EE-GCC (PS2) and agbcc (GBA) only
-exist as Linux programs. On Linux the app runs them in a sandbox; on Windows it runs them inside
-[WSL 2](https://learn.microsoft.com/windows/wsl/install), which takes a one-time setup: `wsl --install` in an
-administrator PowerShell, then restart. decomp.wtf installs and runs the compilers in it by itself, and the results
-are byte-identical to Linux. Everything else (IDO, CodeWarrior, objdiff, the GUI) runs natively on Windows.
+**Windows and macOS.** Several of the compilers (KMC GCC, the PlayStation GCCs, EE-GCC, agbcc) only exist as Linux
+programs, so decomp.wtf runs in Linux everywhere: its own WSL 2 distribution on Windows, Docker on macOS. The
+installer sets that up; you use the app in your browser as usual, and the results are byte-identical on every
+computer.
+
+**When something goes wrong.** A failed import stays on screen with the reason and what happened, and **Copy for a
+bug report** puts the version, the error and the log on your clipboard for an
+[issue](https://github.com/i12bp8/decomp.wtf/issues). The full log is `.decomp/logs/decomp.log` in your projects folder
+(`~/Decomp`), also at **The full log** in that panel.
 
 ## Development
 
