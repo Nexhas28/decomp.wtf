@@ -54,11 +54,17 @@ async function followJob(id, logEl, onUpdate) {
   }
 }
 
+/* The map's still cells are drawn once into `base` (again only when one of them changes); a frame copies it and
+   draws just what moves on top: the functions being worked on, fresh matches, the selection. A big game is tens of
+   thousands of cells, and redrawing them all 60 times a second while agents or autopilot work made the app lag. */
+let base = null, baseDirty = true, moving = [];
+function mapChanged() { baseDirty = true; }
+
 /* ------------------------------------------------------------------ theme */
 const THEME_KEY = "decomp-wtf-theme";
 function applyTheme(t) {
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  colors = null;
+  colors = null; baseDirty = true;
   if (S.map.length) drawMap();
 }
 function setTheme(t) {
@@ -556,6 +562,7 @@ async function refreshMap(force = true) {
   S.map = data.rows.map((r) => { const f = {}; data.keys.forEach((k, i) => { f[k] = r[i]; }); return f; });
   S.byName = new Map(S.map.map((f, i) => [f.name, i]));
   S.map.forEach((f, i) => { f.i = i; });
+  baseDirty = true;
   $("fnTabCount").textContent = S.map.length.toLocaleString();
   if (S.tab === "overview") layoutMap(); else applyClaims(false);
   renderList();
@@ -588,6 +595,7 @@ async function poll(first) {
       if (!S.scores.has(at.function)) S.scores.set(at.function, []);
       S.scores.get(at.function).push({ score: at.score, t: at.created_at, insns: at.n_insns });
     }
+    if (!first) applyAttempts(live.attempts);
     addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
     S.sessions = live.sessions;
@@ -599,7 +607,7 @@ async function poll(first) {
     renderNow(live.claims);
     renderStats(live.overview);
     const claimSig = live.claims.map((c) => c.name + "\u0000" + c.agent).join("\n");
-    if (mapDirty || Date.now() - S.lastMapFetch > 8000) await refreshMap(mapDirty);
+    if (mapDirty || Date.now() - S.lastMapFetch > 20000) await refreshMap(mapDirty);
     else {
       applyClaims();
       if (claimSig !== S.claimSig || live.attempts.length) renderList();
@@ -1250,57 +1258,92 @@ function layoutMap() {
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   canvas.style.height = h + "px";
   geo = { size, gap, cols, w, h, dpr };
+  mapChanged();
   applyClaims();
 }
 
 function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
+  let changed = false;
   for (const f of S.map) {
-    if (f.status !== "matched" && f.status !== "asm") f.status = working.has(f.name) ? "working" : "open";
+    const status = f.status === "matched" || f.status === "asm" ? f.status : working.has(f.name) ? "working" : "open";
+    if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
-    const sc = S.scores.get(f.name);
-    if (sc) {
-      const best = Math.min(...sc.filter((x) => x.score != null).map((x) => x.score), f.best ?? Infinity);
-      if (Number.isFinite(best)) f.best = best;
-    }
   }
+  if (changed) mapChanged();
   if (draw) drawMap();
+}
+
+/* New attempts, as the live feed brings them: each function's tries and best score, without a refetch. */
+function applyAttempts(attempts) {
+  for (const at of attempts) {
+    const i = S.byName && S.byName.get(at.function);
+    if (i == null) continue;
+    const f = S.map[i];
+    f.attempts = (f.attempts || 0) + 1;
+    if (at.score != null && (f.best == null || at.score < f.best)) { f.best = at.score; mapChanged(); }
+  }
+}
+
+function cellColor(f) {
+  if (f.status === "matched") return [colors.match, 1];
+  if (f.status === "asm") return [colors.tried, 0.35];
+  if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
+  return [colors.open, 1];
+}
+
+function drawBase() {
+  const { size, gap, cols, dpr } = geo;
+  base = base || document.createElement("canvas");
+  base.width = $("map").width; base.height = $("map").height;
+  const ctx = base.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const r = size >= 10 ? 2.5 : size >= 7 ? 1.5 : 1;
+  moving = [];
+  S.map.forEach((f, i) => {
+    if (f.status === "working") { moving.push(i); return; }  // drawn every frame, pulsing
+    const x = (i % cols) * (size + gap), y = Math.floor(i / cols) * (size + gap);
+    const [c, a] = cellColor(f);
+    ctx.fillStyle = rgb(c, a);
+    ctx.beginPath(); ctx.roundRect(x, y, size, size, r); ctx.fill();
+  });
+  baseDirty = false;
 }
 
 function drawMap() {
   if (!geo || S.tab !== "overview") return;
   if (!colors) readColors();
+  if (baseDirty || !base || base.width !== $("map").width || base.height !== $("map").height) drawBase();
   const ctx = $("map").getContext("2d");
   const { size, gap, cols, dpr } = geo;
   const now = performance.now();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, $("map").width, $("map").height);
+  ctx.drawImage(base, 0, 0);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, geo.w, geo.h);
   const r = size >= 10 ? 2.5 : size >= 7 ? 1.5 : 1;
-  let live = false;
-  S.map.forEach((f, i) => {
-    const x = (i % cols) * (size + gap), y = Math.floor(i / cols) * (size + gap);
-    let c, a = 1;
-    if (f.status === "matched") c = colors.match;
-    else if (f.status === "asm") { c = colors.tried; a = 0.35; }
-    else if (f.status === "working") { c = colors.work; a = 0.55 + 0.45 * Math.sin(now / 260 + i); live = true; }
-    else if (f.best != null) c = mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3));
-    else c = colors.open;
-    ctx.fillStyle = rgb(c, a);
+  const at = (i) => [(i % cols) * (size + gap), Math.floor(i / cols) * (size + gap)];
+  let live = moving.length > 0;
+  for (const i of moving) {
+    const [x, y] = at(i);
+    ctx.fillStyle = rgb(colors.work, 0.55 + 0.45 * Math.sin(now / 260 + i));
     ctx.beginPath(); ctx.roundRect(x, y, size, size, r); ctx.fill();
-    const fl = S.flash.get(f.name);
-    if (fl) {
-      const t = (now - fl) / 1600;
-      if (t < 1) {
-        live = true;
-        const g = size * (0.6 + 1.8 * t);
-        ctx.strokeStyle = rgb(colors.match, 1 - t);
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.roundRect(x - g / 2, y - g / 2, size + g, size + g, r + 2); ctx.stroke();
-      } else S.flash.delete(f.name);
-    }
-    if (S.fn === f.name) { ctx.strokeStyle = rgb(colors.ink, 0.9); ctx.lineWidth = 1.5; ctx.strokeRect(x - 1.5, y - 1.5, size + 3, size + 3); }
-  });
-  if (live && !animating) { animating = true; requestAnimationFrame(() => { animating = false; drawMap(); }); }
+  }
+  for (const [name, fl] of S.flash) {
+    const i = S.byName && S.byName.get(name), t = (now - fl) / 1600;
+    if (i == null || t >= 1) { S.flash.delete(name); continue; }
+    live = true;
+    const [x, y] = at(i), g = size * (0.6 + 1.8 * t);
+    ctx.strokeStyle = rgb(colors.match, 1 - t);
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(x - g / 2, y - g / 2, size + g, size + g, r + 2); ctx.stroke();
+  }
+  const sel = S.fn && S.byName ? S.byName.get(S.fn) : null;
+  if (sel != null) { const [x, y] = at(sel); ctx.strokeStyle = rgb(colors.ink, 0.9); ctx.lineWidth = 1.5; ctx.strokeRect(x - 1.5, y - 1.5, size + 3, size + 3); }
+  if (live && !animating) {  // about 30 frames a second is plenty for a pulse
+    animating = true;
+    setTimeout(() => requestAnimationFrame(() => { animating = false; drawMap(); }), 33);
+  }
 }
 
 function mapIndexAt(ev) {
@@ -1330,7 +1373,7 @@ $("map").addEventListener("mouseleave", () => { $("tip").hidden = true; });
 $("map").addEventListener("click", (ev) => { const i = mapIndexAt(ev); if (i >= 0) openFn(S.map[i].name); });
 let resizeT = null;
 window.addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (S.map.length && S.tab === "overview") layoutMap(); }, 120); });
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { colors = null; drawMap(); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { colors = null; baseDirty = true; drawMap(); });
 
 /* ------------------------------------------------------------------ now working */
 function spark(points, w = 240, h = 34) {
