@@ -475,10 +475,7 @@ class ForkEngine:
         log(f"{m.get('matched_functions', 0)}/{m.get('total_functions', 0)} functions match, "
             f"{float(m.get('matched_code_percent', 0)):.2f}% of code")
         cfg["measures"] = m
-        # code no source file covers (dtk's auto_..._text units): agents can't reach it until it has a file
-        autos = [u for u in rep.get("units", []) if (u.get("metadata") or {}).get("auto_generated")
-                 and u["name"].endswith("_text") and u.get("functions")]
-        cfg["uncovered"] = {"stretches": len(autos), "functions": sum(len(u["functions"]) for u in autos)}
+        cfg["uncovered"] = self._count_uncovered(rep)
         self._save_cfg(proj, cfg)
         if cfg.get("ready"):
             self.start_indexing(slug)
@@ -951,6 +948,26 @@ class ForkEngine:
         with self._git_locks[proj["id"]]:
             fp.git("add", "--", *paths)
             fp.git("commit", "-q", "-m", message, "--", *paths)
+
+    @staticmethod
+    def _count_uncovered(rep: dict) -> dict:
+        """Code no source file covers (dtk's auto_..._text units): agents can't reach it until it has a file."""
+        autos = [u for u in rep.get("units", []) if (u.get("metadata") or {}).get("auto_generated")
+                 and u["name"].endswith("_text") and u.get("functions")]
+        return {"stretches": len(autos), "functions": sum(len(u["functions"]) for u in autos)}
+
+    def uncovered(self, slug: str) -> dict | None:
+        """{"stretches", "functions"} without a source file, from the last measurement (a project measured by an
+        older decomp.wtf: from its saved report)."""
+        proj, fp, cfg = self.get(slug)
+        if "uncovered" in cfg:
+            return cfg["uncovered"]
+        try:
+            counted = self._count_uncovered(json.loads((fp.root / STATE / "report.json").read_text()))
+        except (OSError, ValueError):
+            return None
+        self.net._update_cfg(slug, lambda c: c.setdefault("uncovered", counted))
+        return counted
 
     # ------------------------------------------------------------------ look-alike index
 
@@ -1684,7 +1701,7 @@ class ForkEngine:
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "context_version": 0, "folder": proj["root"], "room": None,
-            "measures": m, "uncovered": cfg.get("uncovered") if fp.linkable() else None,
+            "measures": m, "uncovered": self.uncovered(slug) if cfg.get("ready") and fp.linkable() else None,
         }
 
     def function_diff(self, slug: str, name: str) -> dict:

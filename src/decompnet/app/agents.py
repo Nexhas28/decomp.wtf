@@ -328,7 +328,7 @@ class Manager:
                 if not self.net.fork_slug(slug):
                     return
                 _, fp, cfg = self.net.forks.get(slug)
-                if not (cfg.get("uncovered") or {}).get("functions") or not fp.linkable():
+                if not (self.net.forks.uncovered(slug) or {}).get("functions") or not fp.linkable():
                     return
             except Exception:
                 return
