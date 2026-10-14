@@ -25,6 +25,9 @@ $Version = "0.9.8"
 $Repo = "i12bp8/decomp.wtf"
 $Distro = "decomp-wtf"
 $Wsl = Join-Path $env:SystemRoot "System32\wsl.exe"
+# Say who's downloading. salsa.debian.org (Debian's WSL image) answers browser-like agents, as Windows PowerShell's
+# default one is, with an anti-bot challenge page instead of the file.
+$UA = "decomp.wtf-installer/$Version (PowerShell)"
 $Base = Join-Path $env:LOCALAPPDATA "decomp.wtf"
 $Bin = Join-Path $Base "bin"
 $oldUtf8 = $env:WSL_UTF8
@@ -84,7 +87,7 @@ foreach ($f in @("linux-base.sh", "install.sh", "decomp.ico")) {
     $local = if ($PSScriptRoot) { Join-Path $PSScriptRoot $f } else { $null }
     $dest = Join-Path $tmp $f
     if ($local -and (Test-Path $local)) { Copy-Item $local $dest }
-    else { Invoke-WebRequest -UseBasicParsing -Uri "$web/$f" -OutFile $dest }
+    else { Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest }
     if ($f.EndsWith(".sh")) { Save-Lf ([IO.File]::ReadAllText($dest)) $dest }
 }
 Save-Lf ("#!/bin/sh`nexport DECOMP_SOURCE=`"`$(cat ./source.txt)`"`nexec bash ./install.sh --no-start`n") (Join-Path $tmp "run-install.sh")
@@ -109,17 +112,24 @@ Step ("WSL " + (((Run { & $Wsl --version }) | Select-Object -First 1) -replace "
 if ((Distros) -notcontains $Distro) {
     Step "making decomp.wtf's Linux (Debian, from Microsoft's list of WSL distributions)"
     New-Item -ItemType Directory -Force -Path $Base | Out-Null
-    $info = Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json"
-    $debian = @($info.ModernDistributions.Debian) | Where-Object { $_.Name -eq "Debian" } | Select-Object -First 1
     $made = $false
-    if ($debian -and $debian.Amd64Url.Url) {
-        $image = Join-Path $Base "debian.tar.gz"
-        Invoke-WebRequest -UseBasicParsing -Uri $debian.Amd64Url.Url -OutFile $image
-        $sum = (Get-FileHash $image -Algorithm SHA256).Hash
-        if ($sum -ne $debian.Amd64Url.Sha256) { Remove-Item $image; throw "the Debian image's checksum doesn't match ($sum)" }
-        Run { & $Wsl --import $Distro (Join-Path $Base "wsl") $image --version 2 }
-        $made = $LASTEXITCODE -eq 0
-        Remove-Item $image -ErrorAction SilentlyContinue
+    try {
+        $info = Invoke-RestMethod -UseBasicParsing -UserAgent $UA "https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json"
+        $debian = @($info.ModernDistributions.Debian) | Where-Object { $_.Name -eq "Debian" } | Select-Object -First 1
+        if ($debian -and $debian.Amd64Url.Url) {
+            $image = Join-Path $Base "debian.tar.gz"
+            Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri $debian.Amd64Url.Url -OutFile $image
+            $sum = (Get-FileHash $image -Algorithm SHA256).Hash
+            if ($sum -eq $debian.Amd64Url.Sha256) {
+                Run { & $Wsl --import $Distro (Join-Path $Base "wsl") $image --version 2 }
+                $made = $LASTEXITCODE -eq 0
+            } else {
+                Write-Host "  the downloaded Debian image isn't the one Microsoft lists (sha256 $sum): using WSL's own download instead"
+            }
+            Remove-Item $image -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Host "  couldn't get Debian's WSL image ($($_.Exception.Message)): using WSL's own download instead"
     }
     if (-not $made) {  # WSL's own way (WSL 2.4 and later)
         Run { & $Wsl --install Debian --name $Distro --location (Join-Path $Base "wsl") --no-launch }
