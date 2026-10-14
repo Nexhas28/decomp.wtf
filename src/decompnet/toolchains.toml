@@ -10,6 +10,8 @@
 #
 # Each part lists the platforms it is for (linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64,
 # windows-x86_64). Apple Silicon Macs run the x86_64 builds through Rosetta 2.
+# On Windows, a toolchain with only a linux-x86_64 build is installed from that build and runs inside
+# WSL 2 (wsl.py); a part for wsl-x86_64 replaces the Linux one there.
 
 [runtime-i386]
 name = "32-bit x86 C runtime (glibc 2.44)"
@@ -22,6 +24,12 @@ url = "https://archive.archlinux.org/packages/l/lib32-glibc/lib32-glibc-2.44%2Br
 sha256 = "a977f9a6a405ab85e594aa9f1230a0b7dddfc33e3de5f2cb66931c92a48931d8"
 subdir = "usr/lib32"
 platforms = ["linux-x86_64"]
+[[runtime-i386.parts]]
+# for WSL on Windows: the same runtime from Debian 13 (xz inside, which Windows unpacks; zstd it can't)
+url = "https://snapshot.debian.org/archive/debian/20250805T202250Z/pool/main/g/glibc/libc6-i386_2.41-12_amd64.deb"
+sha256 = "d3b984867db9cac65d89b75c75f64347964e2837eb53e7782b4349a6c2a5eaaa"
+subdir = "usr/lib32"
+platforms = ["wsl-x86_64"]
 
 ["gcc-2.7.2-kmc"]
 name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"

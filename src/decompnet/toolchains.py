@@ -7,6 +7,7 @@ sandbox mounts that directory (and any runtime it requires) read-only.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -23,7 +24,12 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
+from . import wsl
+
 MANIFEST = ".decompnet-toolchain.json"
+LINUX = "linux-x86_64"
+# Parts for WSL: Linux programs packed in a format Windows can unpack (a .deb, not a .zst)
+WSL_PLATFORM = "wsl-x86_64"
 
 
 class ToolchainError(RuntimeError):
@@ -60,9 +66,17 @@ class Toolchain:
         return [p for p in self.parts if plat in p.get("platforms", [plat])]
 
     @property
+    def via_wsl(self) -> bool:
+        """A Linux-only toolchain on Windows: installed from its Linux build and run inside WSL 2 (see wsl.py)."""
+        return wsl.wanted() and not self.git and not self.parts_for() and bool(self.parts_for(LINUX))
+
+    def linux_parts(self) -> list[dict]:
+        return [p for p in self.parts if WSL_PLATFORM in p.get("platforms", [])] or self.parts_for(LINUX)
+
+    @property
     def supported(self) -> bool:
-        """Whether this toolchain can be installed on this computer."""
-        return bool(self.git) or bool(self.parts_for())
+        """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
+        return bool(self.git) or bool(self.parts_for()) or self.via_wsl
 
 
 def current_platform() -> str:
@@ -74,9 +88,13 @@ def current_platform() -> str:
     return f"{os_name}-{machine}"
 
 
+@functools.cache
+def _registry_data() -> dict:
+    return tomllib.loads(resources.files("decompnet").joinpath("toolchains.toml").read_text(encoding="utf-8"))
+
+
 def registry() -> dict[str, Toolchain]:
-    data = tomllib.loads(resources.files("decompnet").joinpath("toolchains.toml").read_text(encoding="utf-8"))
-    return {tid: Toolchain(id=tid, **spec) for tid, spec in data.items()}
+    return {tid: Toolchain(id=tid, **spec) for tid, spec in _registry_data().items()}
 
 
 def get(tid: str) -> Toolchain:
@@ -100,26 +118,30 @@ def root() -> Path:
     return Path(env).expanduser() if env else data_dir() / "toolchains"
 
 
-def path(tid: str) -> Path:
-    return root() / tid
+def path(tid: str, linux: bool | None = None) -> Path:
+    """Where a toolchain is installed. `linux`: its Linux build for WSL (default: when that's how it runs here)."""
+    if linux is None:
+        linux = tid in _registry_data() and get(tid).via_wsl
+    return root() / "wsl" / tid if linux else root() / tid
 
 
-def installed(tid: str) -> dict | None:
-    m = path(tid) / MANIFEST
+def installed(tid: str, linux: bool | None = None) -> dict | None:
+    m = path(tid, linux) / MANIFEST
     return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
 
-def require(tid: str) -> Path:
+def require(tid: str, linux: bool | None = None) -> Path:
     """Directory of an installed toolchain, or a clear error telling the operator how to install it."""
-    if installed(tid) is None:
+    if installed(tid, linux) is None:
         raise ToolchainError(f"toolchain {tid!r} is not installed: run `decompnet toolchain install {tid}`")
-    return path(tid)
+    return path(tid, linux)
 
 
 def runtime_dirs(tid: str) -> tuple[Path, ...]:
-    """The toolchain plus everything it requires, for mounting into the sandbox."""
+    """The toolchain plus everything it requires, for mounting into the sandbox (all Linux builds for WSL)."""
     tc = get(tid)
-    return (require(tid), *(require(dep) for dep in tc.requires))
+    linux = tc.via_wsl
+    return (require(tid, linux), *(require(dep, linux) for dep in tc.requires))
 
 
 # ---------------------------------------------------------------------------- install
@@ -139,9 +161,29 @@ def _download(url: str, dest: Path, log) -> None:
         shutil.copyfileobj(r, f)
 
 
+def _deb_data(deb: Path, out: Path) -> Path:
+    """The data.tar.* inside a Debian package (an `ar` archive), written to `out`."""
+    with open(deb, "rb") as f:
+        if f.read(8) != b"!<arch>\n":
+            raise ToolchainError(f"{deb.name} isn't a Debian package")
+        while len(head := f.read(60)) == 60:
+            name, size = head[:16].decode().strip().rstrip("/"), int(head[48:58].decode().strip())
+            data = f.read(size)
+            if size % 2:
+                f.read(1)
+            if name.startswith("data.tar"):
+                (out / name).write_bytes(data)
+                return out / name
+    raise ToolchainError(f"{deb.name} has no data.tar")
+
+
 def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
-        if archive.name.endswith(".zip"):
+        if archive.name.endswith(".deb"):
+            with tempfile.TemporaryDirectory(dir=dest.parent) as raw:
+                with tarfile.open(_deb_data(archive, Path(raw))) as t:
+                    t.extractall(tmp, filter="data")
+        elif archive.name.endswith(".zip"):
             import zipfile
 
             with zipfile.ZipFile(archive) as z:
@@ -181,15 +223,23 @@ def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
             shutil.move(str(item), target)
 
 
-def install(tid: str, *, accept_license: bool = False, force: bool = False, log=print) -> Path:
+def install(tid: str, *, accept_license: bool = False, force: bool = False, log=print, linux: bool | None = None) -> Path:
+    """Install a toolchain (and what it requires). `linux`: its Linux build, to run inside WSL (default: when
+    that's how it runs on this computer)."""
     tc = get(tid)
+    linux = tc.via_wsl if linux is None else linux
+    if linux:
+        ok, why = wsl.status()
+        if not ok:
+            raise ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {why}")
     for dep in tc.requires:
-        if installed(dep) is None or force:
-            install(dep, accept_license=accept_license, force=force, log=log)
-    if installed(tid) and not force:
-        log(f"{tid}: already installed at {path(tid)}")
-        return path(tid)
-    if not tc.supported:
+        if installed(dep, linux) is None or force:
+            install(dep, accept_license=accept_license, force=force, log=log, linux=linux)
+    if installed(tid, linux) and not force:
+        log(f"{tid}: already installed at {path(tid, linux)}")
+        return path(tid, linux)
+    parts = tc.linux_parts() if linux else tc.parts_for()
+    if not parts and not tc.git:
         raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})")
     if tc.requires_java and java_version() < tc.requires_java:
         raise ToolchainError(f"{tc.name} needs Java {tc.requires_java} or newer: install it from https://adoptium.net first")
@@ -198,18 +248,18 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
             f"{tid} ({tc.name}) is proprietary software. Running it on your coordinator is your own licensing "
             f"decision; re-run with --accept-license if you accept that.")
 
-    dest = path(tid)
+    dest = path(tid, linux)
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    log(f"{tid}: installing {tc.name} [{tc.license}]")
+    log(f"{tid}: installing {tc.name} [{tc.license}]" + (" (Linux build, runs in WSL 2)" if linux else ""))
     pinned = []
     try:
         if tc.git:
             _install_git_tool(tc, dest, log)
         downloads = root() / ".downloads"
         downloads.mkdir(parents=True, exist_ok=True)
-        for part in tc.parts_for():
+        for part in parts:
             archive = downloads / Path(part["url"]).name
             if not archive.exists() or (part.get("sha256") and _sha256(archive) != part["sha256"]):
                 _download(part["url"], archive, log)
@@ -229,13 +279,16 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
                         if f.is_file():
                             os.chmod(f, 0o755)
             pinned.append({"url": part["url"], "sha256": digest})
+        if linux and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader: bring ours
+            n = wsl.wrap_i386(dest, wsl.path(path("runtime-i386", linux=True)))
+            log(f"  {n} 32-bit programs start through the pinned 32-bit runtime")
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
         raise
     (dest / MANIFEST).write_text(json.dumps({
         "id": tid, "name": tc.name, "license": tc.license, "source": tc.source,
         "parts": pinned, "commit": tc.commit or None, "installed_at": time.time(),
-        "license_accepted": bool(tc.proprietary and accept_license),
+        "license_accepted": bool(tc.proprietary and accept_license), "wsl": linux,
     }, indent=2), encoding="utf-8")
     log(f"{tid}: installed at {dest}")
     return dest
@@ -304,5 +357,6 @@ def status() -> list[dict]:
         m = installed(tc.id)
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
                      "installed": m is not None, "supported": tc.supported, "description": tc.description,
+                     "wsl": tc.via_wsl,
                      "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit)})
     return rows

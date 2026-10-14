@@ -15,6 +15,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import wsl
+
 MAX_SOURCE_BYTES = 64 * 1024
 # Per-compile resource caps (address space, CPU seconds, output file size) and a global
 # concurrency cap, so a hostile submission can't take the host down with it.
@@ -58,6 +60,7 @@ class CompilerConfig:
     ro_paths: tuple[str, ...] = ()
     include_dirs: tuple[str, ...] = ()  # absolute paths of extra (static) header dirs
     runtime32: str | None = None  # 32-bit x86 C runtime for old i386 compiler binaries (see toolchains)
+    wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
 
 
 @dataclass
@@ -68,9 +71,17 @@ class CompileResult:
 
 
 def _sandbox_mode(cfg: CompilerConfig) -> str:
+    if cfg.wsl:
+        return "wsl"
     if cfg.sandbox != "auto":
         return cfg.sandbox
     return "bwrap" if shutil.which("bwrap") else "none"
+
+
+def _root(cfg: CompilerConfig, work: Path) -> str:
+    """How the compiler sees the work folder."""
+    mode = _sandbox_mode(cfg)
+    return "/work" if mode in ("bwrap", "docker") else wsl.path(work) if mode == "wsl" else str(work)
 
 
 def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
@@ -102,11 +113,17 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
     raise RuntimeError(f"unknown sandbox mode {mode!r}")
 
 
+def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None):
+    if _sandbox_mode(cfg) == "wsl":
+        return wsl.run(argv, cwd or work, timeout)
+    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout)
+
+
 def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300) -> subprocess.CompletedProcess:
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
     Paths in `argv` must be relative to `work`."""
-    return subprocess.run(_wrap(cfg, Path(work), argv), cwd=work, capture_output=True, text=True, timeout=timeout,
-                          encoding="utf-8", errors="replace")
+    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work))
 
 
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
@@ -125,15 +142,13 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         (inc / "context.h").write_text(context_header, encoding="utf-8")
         (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8")
 
-        sandboxed = _sandbox_mode(cfg) != "none"
-        root = "/work" if sandboxed else str(work)
+        root = _root(cfg, work)
         subst = {"{src}": f"{root}/func.c", "{obj}": f"{root}/func.o", "{include}": f"{root}/include"}
         argv = [subst.get(a, a) for a in cfg.cmd]
         argv = [a.replace("{include}", subst["{include}"]) for a in argv]
         try:
             with _SLOTS:
-                proc = subprocess.run(_wrap(cfg, work, argv), capture_output=True, text=True, timeout=cfg.timeout,
-                                      encoding="utf-8", errors="replace")
+                proc = _exec(cfg, work, argv, cfg.timeout)
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")

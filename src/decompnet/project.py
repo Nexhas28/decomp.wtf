@@ -9,7 +9,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import scoring, seeds, toolchains
+from . import scoring, seeds, toolchains, wsl
 from .compiler import CompilerConfig, compile_source
 from .elfobj import extract_function, list_functions
 from .store import Store
@@ -59,12 +59,16 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     c = cfg["compiler"]
     ro_paths = [str((root / p).resolve()) for p in c.get("ro_paths", [])]
     runtime32 = None
+    linux = False
     if "toolchain" in c:
         tc = toolchains.get(c["toolchain"])
+        linux = tc.via_wsl  # Windows: a Linux toolchain, run inside WSL 2
+        if linux and not (ok := wsl.status())[0]:
+            raise toolchains.ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {ok[1]}")
         dirs = toolchains.runtime_dirs(tc.id)
-        tc_dir = str(dirs[0])
+        tc_dir = wsl.path(dirs[0]) if linux else str(dirs[0])
         ro_paths += [str(d) for d in dirs]
-        if "runtime-i386" in tc.requires:
+        if "runtime-i386" in tc.requires and not linux:  # in WSL its programs bring the runtime themselves
             runtime32 = str(toolchains.require("runtime-i386"))
         flags = c.get("flags", tc.flags)
         if c.get("cmd"):
@@ -75,7 +79,8 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
             base = [*tc.cc, *flags, "-I{include}", "{src}", "-o", "{obj}"]
         cmd = [a.replace("{tc}", tc_dir) for a in base]
         for dep in tc.requires:  # {tc:<id>} is another toolchain this one needs
-            cmd = [a.replace(f"{{tc:{dep}}}", str(toolchains.path(dep))) for a in cmd]
+            where = toolchains.path(dep, linux)
+            cmd = [a.replace(f"{{tc:{dep}}}", wsl.path(where) if linux else str(where)) for a in cmd]
     else:
         cmd = list(c["cmd"])
     return CompilerConfig(
@@ -86,6 +91,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         ro_paths=tuple(ro_paths),
         include_dirs=tuple(str((root / p).resolve()) for p in c.get("include_dirs", [])),
         runtime32=runtime32,
+        wsl=linux,
     )
 
 
