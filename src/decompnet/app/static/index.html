@@ -68,7 +68,8 @@
         <div class="cart" aria-hidden="true"><span></span></div>
         <p class="drop-title">Drop a game here</p>
         <p class="muted small">ROM, disc image or program file · or <span class="link">choose a file</span></p>
-        <div class="plat-row" aria-hidden="true"><span>N64</span><span>PS1</span><span>PS2</span><span>GameCube</span><span>Wii</span><span>GBA</span><span>DS</span></div>
+        <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span></div>
+        <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · the rest are beta</p>
         <button class="link-btn" id="pathPick" type="button">Big disc? Use its path instead</button>
       </div>
       <div class="drop-picked" id="dropPicked" hidden>
@@ -76,6 +77,7 @@
           <p class="eyebrow" id="romFile"></p>
           <h2 id="romTitle"></h2>
           <dl class="facts" id="romFacts"></dl>
+          <p class="plat-status" id="romStatus" hidden></p>
         </div>
         <label class="check"><input type="checkbox" id="own"><span>This is my own copy of this game, obtained legally (for example, dumped from my own console or cartridge). The results stay with me for my own use.</span></label>
         <div class="row" id="compilerRow">

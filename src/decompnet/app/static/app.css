@@ -170,7 +170,13 @@ button { cursor: pointer; border: 0; background: none; }
 .drop-idle { text-align: center; cursor: pointer; display: grid; justify-items: center; gap: 4px; }
 .drop-idle .link-btn { margin-top: 10px; }
 .plat-row { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
-.plat-row span { font: 600 10.5px/1 var(--mono); letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; background: var(--raise); }
+.plat-row > span { font: 600 10.5px/1 var(--mono); letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; background: var(--raise); }
+.plat-row > span.rec { color: var(--ink); border-color: var(--match); }
+.plat-row .rec-mark, .plat-legend .rec-mark { color: var(--match); margin-right: 3px; }
+.plat-legend { margin: 8px 0 0; }
+.plat-status { margin: 0; font-size: 13px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--raise); }
+.plat-status.recommended { border-color: var(--match); }
+.plat-status.beta b, .chip-s.beta { color: var(--work); }
 #compilerNote { margin-top: -6px; }
 .drop-title { font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin-top: 16px; }
 .cart { width: 92px; height: 70px; margin: 0 auto; border-radius: 10px 10px 6px 6px; background: var(--bg-alt); border: 1.5px solid var(--line); position: relative; }

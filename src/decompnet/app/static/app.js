@@ -84,7 +84,7 @@ function openFolder() {
     .catch((e) => toast(esc(e.message), "err"));
 }
 
-async function loadState() { S.st = await api("/api/state"); $("navVersion").textContent = `v${S.st.version}`; return S.st; }
+async function loadState() { S.st = await api("/api/state"); $("navVersion").textContent = `v${S.st.version}`; markPlatforms(); return S.st; }
 
 function route() {
   const h = location.hash;
@@ -338,6 +338,12 @@ async function pickFile(file) {
        info.code ? ["Game ID", info.code] : ["Entry", info.entry != null ? hex8(info.entry) : "from the disc"],
        ["Project", ["gc", "wii", "gcwii"].includes(p) ? "dtk-template" : p === "nds" ? "ds-decomp" : p === "gba" ? "luvdis" : "splat"]];
   $("romFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("");
+  const level = platformStatus(p);
+  $("romStatus").hidden = !level;
+  $("romStatus").className = `plat-status ${level || ""}`;
+  $("romStatus").innerHTML = level === "recommended"
+    ? `<b>★ Recommended platform.</b> The most tested path to a full decomp you can port and mod.`
+    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/i12bp8/decomp.wtf/issues" target="_blank" rel="noopener">reporting</a>.`;
   setupCompilers(info);
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = false;
@@ -619,9 +625,27 @@ function workingAgents() {
   return { running, outside, n: running.length + outside.length };
 }
 
+/* recommended | beta | "" for a platform key, as the browser or a project names it. */
+function platformStatus(p) {
+  const st = (S.st && S.st.platform_status) || {};
+  const key = { gcwii: "gc", ps: "psx", playstation: "psx" }[p] || p;
+  return st[key] || "";
+}
+function markPlatforms() {
+  const any = Object.keys((S.st && S.st.platform_status) || {}).length;
+  document.querySelectorAll("#platRow [data-p]").forEach((s) => {
+    const rec = platformStatus(s.dataset.p) === "recommended";
+    s.classList.toggle("rec", rec);
+    s.title = rec ? "Recommended: the most tested path to a full decomp you can port and mod" : "Beta: works, less tested on real games";
+    if (rec && !s.querySelector(".rec-mark")) s.insertAdjacentHTML("afterbegin", `<span class="rec-mark">★</span>`);
+  });
+  $("platLegend").hidden = !any;
+}
+
 function renderHeader(ov) {
   const fork = ov.kind === "fork";
   const chips = [`<span class="plat">${esc(ov.platform_name || "?")}</span>`];
+  if (platformStatus(ov.platform) === "beta") chips.push(`<span class="chip-s beta" title="This platform works and is tested on homemade games, less so on real ones yet">beta</span>`);
   if (ov.rom && ov.rom.game_code) chips.push(`<span class="chip-s mono">${esc(ov.rom.game_code)}</span>`);
   if (fork) chips.push(`<span class="chip-s">${ov.origin === "scratch" ? `from scratch · ${esc(LAYOUT[ov.platform] || "decomp")}` : "public decomp"}</span>`);
   else if (ov.rom && ov.rom.region) chips.push(`<span class="chip-s">${esc(ov.rom.region)}</span>`);

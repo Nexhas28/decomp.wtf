@@ -44,7 +44,8 @@ it doesn't count. There are two ways in:
 
 - **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance or DS: a
   ROM, a disc image or the program file. decomp.wtf finds every function and your agents take it from there. The
-  result is a project that rebuilds your game byte for byte: the base for ports and mods.
+  result is a project that rebuilds your game byte for byte: the base for ports and mods. GameCube, Wii and N64
+  are the [recommended](#platforms) platforms; the rest are in beta.
 - **Continue a public decomp.** Pick one of the [245 projects on decomp.dev](https://decomp.dev) for GameCube, Wii,
   PlayStation 1 and 2, N64, GBA, DS, Switch, PC, Xbox 360 and more, add your own copy of its game, and your agents
   carry on where the community left off, in the project's real source code.
@@ -290,15 +291,32 @@ the game.
 
 ## Platforms
 
-| Platform | From scratch | Compilers | Rebuildable project | Public decomps |
-| :-- | :-- | :-- | :-- | :-- |
-| **Nintendo 64** | ✓ ROM | KMC GCC 2.7.2 · IDO 5.3 / 7.1 | ✓ export | ✓ |
-| **PlayStation** | ✓ disc (.bin, .iso, .chd) or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
-| **PlayStation 2** | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
-| **GameCube · Wii** | ✓ disc (ISO, RVZ, WBFS…) or DOL | CodeWarrior GC 1.0 – Wii 1.7 | ✓ dtk-template | ✓ |
-| **Game Boy Advance** | ✓ ROM | agbcc | ✓ export | ✓ |
-| **Nintendo DS** | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
-| **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | ✓ |
+| Platform | Status | From scratch | Compilers | Rebuildable project | Public decomps |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| **GameCube · Wii** | ★ **Recommended** | ✓ disc (ISO, RVZ, WBFS…) or DOL | CodeWarrior GC 1.0 – Wii 1.7 | ✓ dtk-template | ✓ |
+| **Nintendo 64** | ★ **Recommended** | ✓ ROM | KMC GCC 2.7.2 · IDO 5.3 / 7.1 | ✓ export | ✓ |
+| **PlayStation** | Beta | ✓ disc (.bin, .iso, .chd) or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
+| **PlayStation 2** | Beta | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
+| **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
+| **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
+| **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
+
+**Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
+full decomp you can port and mod:
+
+- **GameCube and Wii** projects are the same kind as decomp.dev's (dtk-template): the game is rebuilt and checked
+  byte for byte on every build, and finished files are linked into it as they're done, which is where a native PC
+  port starts. Imported from scratch from Mario Party 4, Melee, Mario Kart: Double Dash, Mario Kart Wii and
+  Twilight Princess discs.
+- **Nintendo 64** imports are tested on Super Mario 64, GoldenEye and Perfect Dark, including code loaded later and
+  code shipped compressed, and the export rebuilds the ROM byte for byte. For now the export puts every function at
+  its original address: right for matching and for a port, while a mod that makes code bigger needs a shiftable
+  build, which is coming.
+
+**Beta: PlayStation, PlayStation 2, Game Boy Advance and DS.** They work end to end and are tested on homemade
+games, much less on real ones so far. Expect rough edges, and please
+[report](https://github.com/i12bp8/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
+needs. Public decomps of any platform run in their own project's build, so their status is the project's.
 
 **From scratch.** splat and spimdisasm split MIPS games, decomp-toolkit analyses GameCube and Wii programs inside a
 generated [dtk-template](https://github.com/encounter/dtk-template) project, [ds-decomp](https://github.com/AetiasHax/ds-decomp)

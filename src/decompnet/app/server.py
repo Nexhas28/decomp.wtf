@@ -34,7 +34,7 @@ from .. import __version__, hostenv, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
-from .engine import COMPILERS, MW_VERSIONS, SHORT_NAMES, TOOLS, RomNetwork
+from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
@@ -307,6 +307,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 "log_file": hostenv.shown_path(home / "logs" / "decomp.log"),
                 "projects": projects, "toolchains": tcs, "agents": agents.detect(),
                 "api_presets": agents.API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
+                "platform_status": PLATFORM_STATUS,
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
                                 "ds_installed": toolchains.installed("mwccarm") is not None, **MW_VERSIONS}}
 

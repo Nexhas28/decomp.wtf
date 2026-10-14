@@ -30,6 +30,12 @@ from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
+# How ready each platform is for a full decomp you can port and mod; the GUI and the README show it.
+# recommended: the most tested path, from import to a project that builds the game (GameCube and Wii: the same kind
+# of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
+# beta: works and is tested on homemade games, less so on real ones yet.
+PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
+                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta"}
 COMPILERS = {
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
