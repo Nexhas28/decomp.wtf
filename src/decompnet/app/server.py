@@ -85,9 +85,16 @@ class Settings:
         if api.get("api_key"):
             api["api_key"] = "•" * 8 + api["api_key"][-4:]
             api["has_key"] = True
-        return {"api": api, "per_session": self.data.get("per_session", 4), "last_project": self.data.get("last_project"),
+        return {"api": api, "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
-                "launcher": self.data.get("launcher") or {}, "recent_models": self.data.get("recent_models") or {}}
+                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
+
+
+def _launcher(saved: dict) -> dict:
+    """The last launcher choice; one saved for Gemini CLI (retired) comes back as Antigravity with its default model."""
+    if saved.get("kind") and agents.kind_id(saved["kind"]) != saved["kind"]:
+        return {**saved, "kind": agents.kind_id(saved["kind"]), "model": ""}
+    return saved
 
 
 def _static(name: str) -> bytes | None:
@@ -572,7 +579,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     async def api_agent_install(request: Request) -> Response:
         if (bad := guard(request, write=True)):
             return bad
-        kind = agents.KINDS.get(str((await body(request)).get("kind", "")))
+        kind = agents.KINDS.get(agents.kind_id(str((await body(request)).get("kind", ""))))
         if kind is None or not kind.install:
             return fail(ValueError("nothing to install"))
         cmd = kind.install["windows" if sys.platform == "win32" else "unix"]
@@ -617,7 +624,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 return fail(ValueError("choose a provider and model first"))
             options.update(api)
             options["provider_name"] = agents.API_PRESETS.get(api.get("provider", ""), {}).get("name", "API")
-        options.setdefault("per_session", settings.data.get("per_session", 4))
+        options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
         try:
             net.project_row(slug)
             ids = manager.start(kind, slug, int(data.get("count", 1)), options)

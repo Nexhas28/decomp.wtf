@@ -198,6 +198,11 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
         return f"error: bad arguments for {name}: {e}"
 
 
+# Antigravity CLI otherwise finds MCP tools on demand (an extra step each, through its generic dispatcher):
+# decomp.wtf's tools are all there is to the job, so they are loaded up front.
+ALWAYS_LOAD = {"antigravity/alwaysLoad": True}
+
+
 def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]]) -> MCPServer:
     """MCP server for CLI agents. `agent_of` maps a request to (agent, project slug)."""
     mcp = MCPServer(name="decomp", title="decomp.wtf", instructions=INSTRUCTIONS, version=__version__)
@@ -212,12 +217,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def project_info(ctx: Context) -> str:
         """Which game you're working on, its compiler, and progress so far."""
         return await run(ctx, "project_info")
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def claim_function(ctx: Context, function: str = "", strategy: str = "") -> str:
         """Claim the next function to decompile (or a specific one by name or address).
 
@@ -232,13 +237,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """
         return await run(ctx, "claim_function", function=function, strategy=strategy)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def get_function(ctx: Context, function: str) -> str:
         """Show any function (by name or address): assembly, status, best attempt, notes. Read matched
         functions to learn how this codebase is written."""
         return await run(ctx, "get_function", function=function)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
         """Compile your code for `function` and diff it against the original; score 0 = byte-identical.
 
@@ -247,93 +252,93 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         its source file, which is built with the project's build system and diffed with objdiff."""
         return await run(ctx, "compile_and_diff", function=function, source=source)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def release_function(ctx: Context, function: str, notes: str) -> str:
         """Give up a function you're stuck on. Notes are required: what you tried, what is left. Your best
         attempt is kept for the next agent."""
         return await run(ctx, "release_function", function=function, notes=notes)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:
         """The shared header (types, structs, prototypes) included before every compile."""
         return await run(ctx, "get_context", function=function)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def edit_context(ctx: Context, old: str, new: str, message: str, function: str = "") -> str:
         """Edit the shared header: replace `old` (must occur exactly once) with `new`, or append `new` when
         old is "". Accepted only if every matched function still matches. Add prototypes and structs here."""
         return await run(ctx, "edit_context", old=old, new=new, message=message, function=function)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def rename_symbol(ctx: Context, old: str, new: str, message: str = "") -> str:
         """Give a function or data address a real name (e.g. func_80001234 -> player_update). Updates the
         assembly everyone sees, matched sources and the header; never breaks a match."""
         return await run(ctx, "rename_symbol", old=old, new=new, message=message)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def split_function(ctx: Context, function: str, at: str, new_name: str = "") -> str:
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64) -> str:
         """Hex dump of ROM data at an address or symbol, with text, pointers and floats decoded."""
         return await run(ctx, "read_data", what=what, length=length)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def list_functions(ctx: Context, status: str = "open", limit: int = 40) -> str:
         """List functions by status: open, matched or all."""
         return await run(ctx, "list_functions", status=status, limit=limit)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def add_note(ctx: Context, text: str, function: str = "") -> str:
         """Leave a note for other agents, on a function or the whole project."""
         return await run(ctx, "add_note", text=text, function=function)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def search_notes(ctx: Context, query: str) -> str:
         """Search notes left by agents."""
         return await run(ctx, "search_notes", query=query)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def find_similar(ctx: Context, function: str, limit: int = 5) -> str:
         """Functions whose instructions look like this one's (copy-pasted code, the same inlined helper,
         template instances), matched ones first, with the matching source of the best one. Start there."""
         return await run(ctx, "find_similar", function=function, limit=limit)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def guide(ctx: Context, topic: str = "") -> str:
         """Decompilation know-how. Call without a topic for the list (workflow, mips, gcc-kmc, ido, m2c,
         data, structs, n64, naming)."""
         return await run(ctx, "guide", topic=topic)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def read_file(ctx: Context, path: str, start: int = 1, count: int = 200) -> str:
         """Forks only: read a file of the project (path relative to its root), with line numbers."""
         return await run(ctx, "read_file", path=path, start=start, count=count)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def search_code(ctx: Context, pattern: str, glob: str = "") -> str:
         """Forks only: search the project's C/C++ sources and headers with a regular expression. `glob`
         narrows the files (e.g. "include/**/*.h")."""
         return await run(ctx, "search_code", pattern=pattern, glob=glob)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def edit_file(ctx: Context, path: str, old: str, new: str, message: str) -> str:
         """Forks only: change a C/C++ source or header file. Replace `old` (exactly once) with `new`, or
         append `new` when old is "". The project is rebuilt and measured; the edit is undone if any matched
         function stops matching. Use it for structs, prototypes, globals and helpers."""
         return await run(ctx, "edit_file", path=path, old=old, new=new, message=message)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def file_status(ctx: Context, path: str) -> str:
         """Forks only: how far a source file (or a function's file) is from being linked into the game: which
         functions still differ, its data next to the original's (with what to fix), why the last link failed.
         A file is linked (the game built from its C) once every function and all its data match."""
         return await run(ctx, "file_status", path=path)
 
-    @mcp.tool()
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def split_file(ctx: Context, path: str, at: str, new_name: str = "", data: str = "") -> str:
         """Forks only (GameCube/Wii): divide a source file in two where the game's original files divided: the
         function `at` (name or .text offset) and every one after it in the file go to a new file `new_name`

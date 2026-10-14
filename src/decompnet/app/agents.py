@@ -1,10 +1,13 @@
 """Running the user's AI agents on a ROM project.
 
-CLI agents (Claude Code, Codex, Gemini CLI, opencode) run headless in a private working folder, connected
+CLI agents (Claude Code, Codex, Antigravity CLI, opencode) run headless in a private working folder, connected
 to this app's MCP endpoint and allowed to use only its tools. Each session works through a few functions
 and exits; the runner starts a fresh one until the user stops it or nothing is left. Models reached with
 an API key (DeepSeek, OpenRouter, a local Ollama, any OpenAI-compatible endpoint) run in a small built-in
 tool loop instead. Everything the agents print is parsed into a readable live feed.
+
+The prompt goes in on stdin, never on the command line: no length limit (Windows caps a command line at 32,767
+characters, and the prompt with its guides and the user's instructions can be long) and nothing in it is parsed.
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ from .engine import RomNetwork
 WIN = sys.platform == "win32"
 
 
+class Fatal(RuntimeError):
+    """A helper can't work until the user changes something (shown as the helper's error, not retried)."""
+
+
 @dataclass
 class Kind:
     id: str
@@ -48,9 +55,10 @@ KINDS = {
     "codex": Kind("codex", "Codex CLI", "codex", "OpenAI",
                   {"unix": "npm install -g @openai/codex", "windows": "npm install -g @openai/codex"},
                   "Run `codex login` once in a terminal.", "https://github.com/openai/codex"),
-    "gemini": Kind("gemini", "Gemini CLI", "gemini", "Google",
-                   {"unix": "npm install -g @google/gemini-cli", "windows": "npm install -g @google/gemini-cli"},
-                   "Open a terminal and run `gemini` once to sign in.", "https://github.com/google-gemini/gemini-cli"),
+    "antigravity": Kind("antigravity", "Antigravity CLI", "agy", "Google",
+                        {"unix": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+                         "windows": "irm https://antigravity.google/cli/install.ps1 | iex"},
+                        "Open a terminal and run `agy` once to sign in.", "https://antigravity.google/docs/cli"),
     "opencode": Kind("opencode", "opencode", "opencode", "any provider (DeepSeek, Qwen, Kimi, ...)",
                      {"unix": "curl -fsSL https://opencode.ai/install | bash", "windows": "npm install -g opencode-ai"},
                      "Run `opencode auth login` once to add a provider (DeepSeek, OpenRouter, ...).", "https://opencode.ai"),
@@ -66,6 +74,27 @@ API_PRESETS = {
     "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5", "key": True},
     "custom": {"name": "Custom", "base_url": "", "model": "", "key": True},
 }
+# Google retired Gemini CLI on 2026-06-18; Antigravity CLI (`agy`) replaced it. Helpers and launcher choices saved
+# by older versions as "gemini" carry on as Antigravity.
+ALIASES = {"gemini": "antigravity", "agy": "antigravity"}
+
+# decomp.wtf's tools are loaded up front in Antigravity (tools.ALWAYS_LOAD) and need no permission. Should a helper
+# reach one through agy's generic MCP dispatcher instead, a headless run can't ask, and agy quietly refuses it:
+# this rule in the user's agy settings allows decomp.wtf's tools (and nothing else).
+AGY_ALLOW = "mcp(decomp/*)"
+
+# Functions per helper session: a fresh session starts with a small, clean context (each function's assembly,
+# drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
+PER_SESSION = 2
+
+
+def kind_id(kind: str) -> str:
+    return ALIASES.get(kind, kind)
+
+
+def agy_settings() -> Path:
+    return Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+
 
 # what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
@@ -88,9 +117,8 @@ def _config_model(kind: str) -> str | None:
         if kind == "codex":
             import tomllib
             return tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8")).get("model") or None
-        if kind == "gemini":
-            m = json.loads((home / ".gemini" / "settings.json").read_text(encoding="utf-8")).get("model")
-            return (m.get("name") if isinstance(m, dict) else m) or None
+        if kind == "antigravity":
+            return json.loads(agy_settings().read_text(encoding="utf-8")).get("model") or None
         if kind == "opencode":
             base = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
             return json.loads((base / "opencode" / "opencode.json").read_text(encoding="utf-8")).get("model") or None
@@ -100,25 +128,29 @@ def _config_model(kind: str) -> str | None:
 
 
 def models(kind: str, path: str | None) -> list[dict]:
-    """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's own list
-    (whatever providers the user signed in to); for the others the user's default plus any model name they type."""
+    """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's and Antigravity's
+    own lists (what the user's sign-in offers); for Codex the user's default plus any model name they type."""
     if kind == "claude":
         return [{"id": i, "name": n, "note": note} for i, n, note in CLAUDE_MODELS]
-    if kind == "opencode" and path:
-        cached = _models.get(kind)
-        if cached and time.time() - cached[0] < 600:
-            return cached[1]
-        try:
-            res = subprocess.run(argv([path, "models"]), capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
-                                 timeout=30)
-            rows = [line.strip() for line in res.stdout.splitlines() if re.fullmatch(r"[\w.-]+/[\w.:/-]+", line.strip())]
-        except (OSError, subprocess.TimeoutExpired):
-            rows = []
+    if kind not in ("opencode", "antigravity") or not path:
+        return []
+    cached = _models.get(kind)
+    if cached and time.time() - cached[0] < 600:
+        return cached[1]
+    try:
+        res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             stdin=subprocess.DEVNULL, timeout=30)
+        lines = [line.strip() for line in res.stdout.splitlines()]
+    except (OSError, subprocess.TimeoutExpired):
+        lines = []
+    if kind == "opencode":
+        rows = [r for r in lines if re.fullmatch(r"[\w.-]+/[\w.:/-]+", r)]
         out = [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0]} for r in rows[:200]]
-        _models[kind] = (time.time(), out)
-        return out
-    return []
+    else:  # agy: "<slug>\t<name>" per model
+        rows = [r.split("\t", 1) for r in lines if re.fullmatch(r"[\w.:-]+\t.+", r)]
+        out = [{"id": slug, "name": name.strip(), "note": slug.split("-", 1)[0]} for slug, name in rows[:200]]
+    _models[kind] = (time.time(), out)
+    return out
 
 
 def search_path() -> str | None:
@@ -147,6 +179,8 @@ def _which(cmd: str) -> str | None:
     dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
     if WIN and os.environ.get("APPDATA"):
         dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
+    if WIN and os.environ.get("LOCALAPPDATA"):
+        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "agy" / "bin")  # where Antigravity's installer puts agy
     # on Windows the file without an extension next to npm's foo.cmd is a shell script Windows can't run
     names = (f"{cmd}.exe", f"{cmd}.cmd") if WIN else (cmd, f"{cmd}.cmd", f"{cmd}.exe")
     for d in dirs:
@@ -213,7 +247,7 @@ def detect() -> list[dict]:
 # ---------------------------------------------------------------------------------- output parsing
 
 def _tool_name(name: str) -> str:
-    for prefix in ("mcp__decomp__", "decomp__", "decomp_", "decomp."):
+    for prefix in ("mcp__decomp__", "mcp_decomp_", "decomp__", "decomp_", "decomp."):
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
@@ -233,8 +267,74 @@ def _args_brief(args) -> str:
     return ", ".join(parts)
 
 
-def parse_line(kind: str, line: str) -> list[tuple[str, str]]:
-    """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error."""
+def _error_text(err) -> str:
+    """The message in an agent's error object, whatever its shape (opencode nests it under data)."""
+    if isinstance(err, dict):
+        data = err.get("data") if isinstance(err.get("data"), dict) else {}
+        msg = err.get("message") or data.get("message") or ""
+        name = err.get("name") or err.get("type") or ""
+        if msg and name and name not in ("UnknownError", "Error") and name not in msg:
+            return f"{name}: {msg}"
+        return str(msg or name or json.dumps(err)[:300])
+    return str(err or "")
+
+
+def _parse_agy(obj: dict, state: dict) -> list[tuple[str, str]]:
+    """Antigravity CLI's stream-json: step_update events (text arrives in deltas, gathered per step) and a result."""
+    out: list[tuple[str, str]] = []
+    ev = obj.get("event")
+    if ev == "step_update" and isinstance(obj.get("step_update"), dict):
+        st = obj["step_update"]
+        step, kind = st.get("step_index"), st.get("step_type")
+        if kind in ("agent_response", "thinking", "planner_response"):
+            texts = state.setdefault("agy_text", {})
+            texts[step] = texts.get(step, "") + str(st.get("text_delta") or "")
+            if st.get("state") == "DONE" and texts.get(step, "").strip():
+                out.append(("think" if kind == "thinking" else "text", texts.pop(step).strip()))
+        elif kind == "tool" and st.get("state") == "ACTIVE" and step not in state.setdefault("agy_tools", set()):
+            state["agy_tools"].add(step)
+            info = st.get("tool_info") if isinstance(st.get("tool_info"), dict) else {}
+            name, params = info.get("name") or st.get("tool_name") or "", info.get("parameters")
+            if name == "call_mcp_tool" and isinstance(params, dict):  # agy reaches MCP tools through one dispatcher
+                name, params = params.get("ToolName") or name, params.get("Arguments")
+            out.append(("tool", f"{_tool_name(name)}({_args_brief(params)})"))
+    elif ev == "result" and isinstance(obj.get("result"), dict):
+        res = obj["result"]
+        usage = res.get("usage") if isinstance(res.get("usage"), dict) else {}
+        if usage.get("total_tokens"):
+            out.append(("usage", json.dumps({"tokens": usage["total_tokens"]})))
+        denied = [d for d in res.get("denied_actions") or [] if isinstance(d, dict)]
+        if any(d.get("action") == "mcp" for d in denied):
+            out.append(("error", f"Antigravity refused decomp.wtf's tools: a background run can't ask you for permission. "
+                                 f"Allow them once: add \"{AGY_ALLOW}\" to \"permissions\": {{\"allow\": [...]}} in "
+                                 f"{agy_settings()} (only decomp.wtf's tools; shell, files and the web keep asking)."))
+        if res.get("status") not in (None, "SUCCESS"):
+            out.append(("error", str(res.get("error") or f"session ended: {res.get('status')}")[:400]))
+        else:
+            turns = res.get("num_turns")
+            out.append(("info", "session finished" + (f" ({turns} turns)" if turns else "")))
+    elif ev == "error":
+        out.append(("error", _error_text(obj.get("error") or obj.get("message"))[:400]))
+    return out
+
+
+def clean_stderr(kind: str, line: str) -> str:
+    """One line of an agent's stderr as worth showing, or "" for noise."""
+    line = line.strip()
+    if kind == "opencode" and "level=" in line:  # opencode --print-logs: keep the error itself, drop stack noise
+        m = re.search(r'\berror="((?:[^"\\]|\\.)*)"', line)
+        return m.group(1).replace('\\"', '"') if m and "level=ERROR" in line else ""
+    if line.startswith("AGY_ERROR:"):  # agy: a structured error line
+        try:
+            return _error_text(json.loads(line.split(":", 1)[1]))[:300]
+        except ValueError:
+            return line
+    return line
+
+
+def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[str, str]]:
+    """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error, usage.
+    `state` carries what spans lines (Antigravity streams text in pieces) for one session."""
     line = line.strip()
     if not line:
         return []
@@ -244,6 +344,8 @@ def parse_line(kind: str, line: str) -> list[tuple[str, str]]:
         return [("info", line[:400])]
     if not isinstance(obj, dict):
         return []
+    if "event" in obj and "type" not in obj:  # Antigravity CLI
+        return [(k, v) for k, v in _parse_agy(obj, {} if state is None else state) if v]
     t = obj.get("type")
     out: list[tuple[str, str]] = []
     if t == "assistant" and isinstance(obj.get("message"), dict):  # Claude Code
@@ -254,7 +356,7 @@ def parse_line(kind: str, line: str) -> list[tuple[str, str]]:
                 out.append(("think", c["thinking"].strip()))
             elif c.get("type") == "tool_use" and c.get("name") != "ToolSearch":  # ToolSearch: Claude Code loading tools
                 out.append(("tool", f"{_tool_name(c.get('name', ''))}({_args_brief(c.get('input'))})"))
-    elif t == "result":  # Claude Code / Gemini CLI end of session
+    elif t == "result":  # Claude Code end of session
         if obj.get("is_error") or obj.get("status") == "error":
             out.append(("error", str(obj.get("result") or obj.get("error") or "session failed")[:400]))
         else:
@@ -286,15 +388,11 @@ def parse_line(kind: str, line: str) -> list[tuple[str, str]]:
         tokens = sum(v for k, v in usage.items() if k in ("input_tokens", "output_tokens") and isinstance(v, int))
         if tokens:
             out.append(("usage", json.dumps({"tokens": tokens})))
-    elif t in ("error", "turn.failed"):
-        err = obj.get("error")
-        msg = err.get("message") if isinstance(err, dict) else (obj.get("message") or err)
-        out.append(("error", str(msg)[:400]))
-    elif t == "message" and obj.get("role") == "assistant":  # Gemini CLI
-        content = obj.get("content")
-        if isinstance(content, str) and content.strip():
-            out.append(("text", content))
-    elif t == "tool_use":  # Gemini CLI / opencode
+    elif t in ("error", "turn.failed"):  # Codex; opencode: {"error": {"name", "data": {"message"}}}
+        text = _error_text(obj.get("error") or obj.get("message"))
+        if not text.startswith("Unexpected server error"):  # opencode's placeholder: its log line says what failed
+            out.append(("error", text[:400]))
+    elif t == "tool_use":  # opencode
         part = obj.get("part") if isinstance(obj.get("part"), dict) else obj
         name = part.get("tool_name") or part.get("tool") or part.get("name") or ""
         args = part.get("parameters") or (part.get("state") or {}).get("input") or part.get("input")
@@ -356,9 +454,12 @@ class Manager:
     # -- control
 
     def start(self, kind: str, slug: str, count: int = 1, options: dict | None = None) -> list[str]:
+        options = dict(options or {})
+        if kind_id(kind) != kind:
+            kind = kind_id(kind)
+            options.pop("model", None)  # a Gemini CLI model name may mean nothing to Antigravity: use its default
         if kind not in KINDS:
             raise ValueError(f"unknown agent kind {kind!r}")
-        options = options or {}
         ids = []
         self._prepare(slug)
         with self._lock:
@@ -497,6 +598,9 @@ class Manager:
             before = self._progress(agent.id)
             try:
                 ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
+            except Fatal as e:  # needs the user first: retrying can't help
+                s.state, s.error = "error", str(e)
+                break
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
@@ -552,13 +656,14 @@ class Manager:
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
-                                            count=s.options.get("per_session", 4),
+                                            count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
         guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
             "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", 4), compiler_guide=guide)
+        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION), compiler_guide=guide)
 
-    def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict]:
+    def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
+        """The agent's command line, environment and what goes in on stdin (the prompt)."""
         k = KINDS[s.kind]
         exe = _which(k.command)
         if not exe:
@@ -573,7 +678,7 @@ class Manager:
             cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,
                                                                   "headers": {"Authorization": f"Bearer {token}"}}}}),
                            encoding="utf-8")
-            cmd = [exe, "-p", prompt, "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
+            cmd = [exe, "-p", "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
                    "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools",
                    "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
             if model:
@@ -588,74 +693,90 @@ class Manager:
                    "-c", 'approval_policy="never"']
             if model:
                 cmd += ["-m", model]
-            cmd.append(prompt)
-        elif s.kind == "gemini":
-            (workdir / ".gemini").mkdir(exist_ok=True)
-            (workdir / ".gemini" / "settings.json").write_text(json.dumps({
-                "mcpServers": {"decomp": {"httpUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"},
-                                          "trust": True}},
-                "tools": {"exclude": ["run_shell_command", "write_file", "replace", "web_fetch", "google_web_search"]},
-            }), encoding="utf-8")
-            cmd = [exe, "-p", prompt, "-o", "stream-json", "--skip-trust", "--allowed-mcp-server-names", "decomp"]
+            cmd.append("-")  # the prompt comes from stdin
+        elif s.kind == "antigravity":
+            # the workspace's own MCP config; tool permission comes from the user's rule for decomp's tools (AGY_ALLOW)
+            (workdir / ".agents").mkdir(exist_ok=True)
+            (workdir / ".agents" / "mcp_config.json").write_text(json.dumps({"mcpServers": {"decomp": {
+                "serverUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"}}}}), encoding="utf-8")
+            # a session works through several functions: more than agy's default 5 minutes
+            cmd = [exe, "--output-format", "stream-json", "--input-format", "stream-json", "--print-timeout", "2h"]
             if model:
-                cmd += ["-m", model]
+                cmd += ["--model", model]
+            prompt = json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
         elif s.kind == "opencode":
+            # "deny" takes the tools out of the request, and OpenCode Zen's free models then refuse it ("can only be
+            # used from within OpenCode"). "ask" keeps the usual tools, and `opencode run` rejects every ask itself.
+            zen = (model or _config_model("opencode") or "opencode/").startswith("opencode/")
+            never = "ask" if zen else "deny"
             (workdir / "opencode.json").write_text(json.dumps({
                 "$schema": "https://opencode.ai/config.json",
                 "mcp": {"decomp": {"type": "remote", "url": self.mcp_url, "enabled": True,
                                    "headers": {"Authorization": f"Bearer {token}"}}},
-                "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
+                "permission": {"edit": never, "bash": never, "webfetch": never},
             }), encoding="utf-8")
-            cmd = [exe, "run", "--format", "json", "--dir", str(workdir)]
+            # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed
+            cmd = [exe, "run", "--format", "json", "--dir", str(workdir), "--print-logs", "--log-level", "ERROR"]
             if model:
                 cmd += ["-m", model]
-            cmd.append(prompt)
         else:
             raise RuntimeError(s.kind)
-        cmd = argv(cmd)
-        if WIN and len(subprocess.list2cmdline(cmd)) > 32000:  # Windows' limit for a whole command line
-            raise RuntimeError("the prompt is too long for Windows' command line: shorten this project's instructions")
-        return cmd, env
+        return argv(cmd), env, prompt
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
-        cmd, env = self._command(s, token, workdir)
+        cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
-        proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 creationflags=flags, start_new_session=not WIN)
         s.proc = proc
         errors: collections.deque = collections.deque(maxlen=20)
 
+        def feed_prompt():
+            try:
+                proc.stdin.write(prompt)
+                proc.stdin.close()  # end of input: the agent works on this one prompt, then exits
+            except OSError:  # it exited before reading (stderr says why)
+                pass
+
         def drain_err():
             for line in proc.stderr:
-                if line.strip():
-                    errors.append(line.strip())
+                if (text := clean_stderr(s.kind, line)) and (not errors or errors[-1] != text):
+                    errors.append(text)
+        threading.Thread(target=feed_prompt, daemon=True).start()
         threading.Thread(target=drain_err, daemon=True).start()
         saw_tool = False
         said: collections.deque = collections.deque(maxlen=20)
+        state: dict = {}
+        last_error = refused = ""
         for line in proc.stdout:
-            for kind, text in parse_line(s.kind, line):
+            for kind, text in parse_line(s.kind, line, state):
                 if kind == "usage":
                     self._account(s, json.loads(text))
                     continue
                 saw_tool |= kind == "tool"
                 said.append(text)
+                if kind == "error":
+                    last_error = text
+                    refused = refused or (text if text.startswith("Antigravity refused") else "")
                 s.push(kind, text)
             if s.stop.is_set():
                 _terminate(proc)
                 break
         code = proc.wait()
         s.proc = None
+        if refused and not s.stop.is_set():
+            raise Fatal(refused)  # every retry would be refused the same way
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
             s.signed_out = True
             s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {KINDS[s.kind].signin}"
             s.push("error", s.error)
             return False
         if code != 0 and not s.stop.is_set():
-            tail = " · ".join(list(errors)[-3:]) or f"exited with code {code}"
+            tail = " · ".join(list(errors)[-3:]) or last_error or f"exited with code {code}"
             s.error = tail[:300]
-            s.push("error", tail[:600])
+            s.push("error", f"exited with code {code}: {tail[:600]}" if tail != f"exited with code {code}" else tail)
             return False
         if not saw_tool and not s.stop.is_set():
             s.error = "the agent never used the decomp tools" + (f": {list(errors)[-1]}" if errors else "")

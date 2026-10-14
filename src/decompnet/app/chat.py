@@ -1,4 +1,4 @@
-"""Tools for the agent the user talks to: Claude Code, Codex, Gemini CLI or opencode in the user's own terminal,
+"""Tools for the agent the user talks to: Claude Code, Codex, Antigravity CLI or opencode in the user's own terminal,
 connected with `decomp mcp`. They let that agent do what the user would do in the app: list and open projects,
 import the user's game, start helper agents, follow progress, export, and show the live view. Helper agents the app
 starts itself only get the work tools (a helper can't start more helpers)."""
@@ -73,7 +73,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         settings.data["last_project"] = slug
         settings.save()
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def list_projects(ctx: Context) -> str:
         """The games in decomp.wtf on this computer, with progress. Open one with open_project."""
         agent = chat_agent(ctx)
@@ -89,7 +89,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             return "No projects yet. import_game(path) starts one from the user's own copy of a game."
         return "\n".join(out) + (f"\nOpen now: {cur}" if cur else "\nNone is open: open_project(slug).")
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def open_project(ctx: Context, project: str) -> str:
         """Work on this project (slug or part of its title). The work tools then act on it."""
         agent = chat_agent(ctx)
@@ -98,7 +98,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         info = await anyio.to_thread.run_sync(lambda: tools.project_info(net, slug))
         return f"{info}\nShow the user the live view with open_gui()."
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def import_game(ctx: Context, path: str, own_copy: bool = False, compiler: str = "") -> str:
         """Start decompiling a game from scratch: the user's own ROM, disc image or program file on this computer
         (N64, PlayStation 1/2, GameCube, Wii, Game Boy Advance, DS). Finds every function and the compiler, then
@@ -146,7 +146,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         return (f"Imported as {slug}.{ap}\n{info}\nNext: open_gui() so the user can watch, then claim_function(), "
                 f"and start_agents() for helpers on a big game.")
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def import_status(ctx: Context, job: str) -> str:
         """Keep waiting for an import that was still running."""
         chat_agent(ctx)
@@ -154,7 +154,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             raise ToolError("no such import")
         return await _follow(job)
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def open_gui(ctx: Context) -> str:
         """Open decomp.wtf's live view of the current project in the user's browser: the function map, what every
         agent is doing, diffs, progress. Do this once when you start, so the user can watch."""
@@ -166,17 +166,17 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         return (f"Opened the live view in the user's browser ({where})." if ok else
                 f"Couldn't open a browser here; the user can run `decomp` to open the app ({where}).")
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def start_agents(ctx: Context, count: int = 1, kind: str = "", per_session: int = 0) -> str:
         """Start helper agents that decompile the current project in parallel with you (headless, shown live in
-        the app). `kind`: claude, codex, gemini or opencode (default: the first one installed)."""
+        the app). `kind`: claude, codex, antigravity or opencode (default: the first one installed)."""
         agent = chat_agent(ctx)
         slug = current(agent)
         if not kind:
             kind = next((a["id"] for a in agents.detect() if a["installed"] and a["id"] != "api"), "")
             if not kind:
-                raise ToolError("no agent CLI is installed for helpers (Claude Code, Codex, Gemini CLI or opencode)")
-        options = {"per_session": per_session or settings.data.get("per_session", 4)}
+                raise ToolError("no agent CLI is installed for helpers (Claude Code, Codex, Antigravity CLI or opencode)")
+        options = {"per_session": per_session or settings.data.get("per_session", agents.PER_SESSION)}
         try:
             ids = manager.start(kind, slug, max(1, min(int(count), 8)), options)
         except ValueError as e:
@@ -184,7 +184,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         return (f"Started {', '.join(ids)} on {slug}. They claim functions you aren't working on; progress() and "
                 f"the live view show their work. stop_agents() stops them.")
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def stop_agents(ctx: Context) -> str:
         """Stop the helper agents working on the current project."""
         agent = chat_agent(ctx)
@@ -194,7 +194,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             manager.stop(sid)
         return f"Stopped {', '.join(stopped)}." if stopped else "No helper agents were running on this project."
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def progress(ctx: Context) -> str:
         """Where the current project stands: matched code, who is working on what, autopilot, recent matches."""
         agent = chat_agent(ctx)
@@ -219,7 +219,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
 
         return await anyio.to_thread.run_sync(build)
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def run_autopilot(ctx: Context) -> str:
         """Try every open function's machine draft again (free matches). Worth it after types and names improved."""
         agent = chat_agent(ctx)
@@ -230,7 +230,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             raise ToolError(str(e)) from None
         return f"Autopilot is trying {st['total']} functions' machine drafts in the background; progress() shows it."
 
-    @mcp.tool()
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def export_project(ctx: Context) -> str:
         """Write the project as a normal decomp source tree (matched C, the rest as assembly, a build script) and
         check that it rebuilds the game byte for byte. Returns where it is."""

@@ -88,8 +88,6 @@ def test_parse_agent_output():
     codex = json.dumps({"type": "item.started", "item": {"type": "mcp_tool_call", "server": "decomp", "tool": "claim_function",
                                                         "arguments": {"strategy": "easiest"}}})
     assert agents.parse_line("codex", codex) == [("tool", "claim_function(easiest)")]
-    gemini = json.dumps({"type": "tool_use", "tool_name": "read_data", "parameters": {"what": "D_80001234"}})
-    assert agents.parse_line("gemini", gemini) == [("tool", "read_data(D_80001234)")]
     opencode = json.dumps({"type": "text", "part": {"text": "done"}})
     assert agents.parse_line("opencode", opencode) == [("text", "done")]
     assert agents.parse_line("claude", "not json at all") == [("info", "not json at all")]
@@ -128,7 +126,7 @@ def test_an_agent_nobody_signed_in_to_stops_and_says_so(tmp_path, monkeypatch):
     """Claude Code without a sign-in exits at once: say that (not "exited with code 1") and don't keep retrying."""
     manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
     code = "print('Not logged in \\u00b7 Please run /login'); raise SystemExit(1)"
-    monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ)))
+    monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ), ""))
     s = agents.Session("claude-1", "claude", "Claude Code #1", "game", "claude-1", {})
     assert manager._run_cli(s, "token", tmp_path) is False
     assert s.signed_out and "isn't signed in" in s.error and "/login" in s.error
@@ -191,3 +189,14 @@ def test_an_older_app_still_running_after_an_upgrade_is_replaced(tmp_path):
     state.write_text(json.dumps({"port": server.server_address[1], "secret": "s"}))
     assert replace_older(state, log=lambda *_: None) is None and quit_called.is_set()
     server.server_close()
+
+
+def test_an_older_bridge_never_stops_a_newer_app(tmp_path, monkeypatch):
+    """An agent set up with an older install's `decomp mcp` must use the newer app that's running, not replace it."""
+    from decompnet.app import cli
+
+    monkeypatch.setattr(cli, "_running_version", lambda port: "99.0.0")
+    state = tmp_path / "server.json"
+    state.write_text(json.dumps({"port": 1234, "secret": "s"}))
+    assert cli.replace_older(state, log=lambda *_: None) == {"port": 1234, "secret": "s"}
+    assert cli._version_key("0.10.0") > cli._version_key("0.9.4")

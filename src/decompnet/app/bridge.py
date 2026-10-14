@@ -1,6 +1,6 @@
 """`decomp mcp`: decomp.wtf for the agent you talk to.
 
-Add it once to Claude Code, Codex, Gemini CLI or opencode (`claude mcp add decomp -- decomp mcp`, ...). When that
+Add it once to Claude Code, Codex, Antigravity CLI or opencode (`claude mcp add decomp -- decomp mcp`, ...). When that
 agent uses it, this starts decomp.wtf in the background if it isn't running, gets the agent its own identity, and
 passes the app's tools through over stdio: the agent can import your game, work on it, start helper agents and open
 the live view, and everything it does shows up in the app as it happens.
@@ -38,7 +38,7 @@ def ensure_app(home: Path) -> dict:
     """The running app's {port, secret}, starting it in the background first if needed."""
     internal = home / ".decomp"
     state = internal / "server.json"
-    if replace_older(state, log=_log) and (info := _running(state)):  # an older version is restarted as this one
+    if replace_older(state, log=_log) and (info := _running(state)):  # this version or newer; an older one restarts
         return info
     internal.mkdir(parents=True, exist_ok=True)
     _log("starting decomp.wtf in the background")

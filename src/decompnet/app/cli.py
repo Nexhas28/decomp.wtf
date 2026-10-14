@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -37,9 +38,14 @@ def _running_version(port: int) -> str | None:
         return None
 
 
+def _version_key(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:3]) or (0,)
+
+
 def replace_older(state_file: Path, log=print) -> dict | None:
-    """The running app's {port, secret} when it's this version. An older one (still running after an upgrade) is
-    stopped, so the new version starts in its place: returns None then, and when nothing runs."""
+    """The running app's {port, secret} when it's this version or newer. An older one (still running after an
+    upgrade) is stopped, so the new version starts in its place: returns None then, and when nothing runs. A newer
+    app is never stopped by an older `decomp mcp` (an agent may still be set up with an older install's path)."""
     try:
         prev = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -48,7 +54,7 @@ def replace_older(state_file: Path, log=print) -> dict | None:
     if running is None:
         return None
     mine = __import__("decompnet").__version__
-    if running == mine:
+    if running == mine or _version_key(running) > _version_key(mine):
         return prev
     log(f"decomp.wtf {running} is still running; restarting it as {mine}")
     req = urllib.request.Request(f"http://127.0.0.1:{prev['port']}/api/quit", method="POST", data=b"{}",
@@ -179,14 +185,17 @@ def connect_agents(args) -> int:
     """Give the AI agents you use decomp.wtf's tools: then ask them to decompile your game."""
     from . import agents, connect
 
+    if "gemini" in args.agents:
+        print("Gemini CLI was retired by Google; its successor is Antigravity CLI (agy): connecting that instead.")
+    args.agents = [agents.kind_id(a) for a in args.agents]
     unknown = [a for a in args.agents if a not in connect.LABEL]
     if unknown:
-        print(f"unknown agent {unknown[0]!r}: use claude, codex, gemini or opencode")
+        print(f"unknown agent {unknown[0]!r}: use claude, codex, antigravity or opencode")
         return 2
     found = [a for a in agents.detect() if a["id"] in connect.LABEL and a["installed"]]
     wanted = [a for a in found if not args.agents or a["id"] in args.agents]
     if not found:
-        print("No agent CLI found (Claude Code, Codex, Gemini CLI or opencode). Install one, then run `decomp connect`.")
+        print("No agent CLI found (Claude Code, Codex, Antigravity CLI or opencode). Install one, then run `decomp connect`.")
         return 1
     for a in wanted:
         if args.list:
@@ -332,8 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
     sub.add_parser("stop", help="stop the running app")
     sub.add_parser("shortcut", help="add decomp.wtf to your apps menu / desktop")
-    c = sub.add_parser("connect", help="give your AI agents (Claude Code, Codex, Gemini CLI, opencode) decomp.wtf's tools")
-    c.add_argument("agents", nargs="*", metavar="agent", help="claude, codex, gemini or opencode (default: every one installed)")
+    c = sub.add_parser("connect", help="give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools")
+    c.add_argument("agents", nargs="*", metavar="agent", help="claude, codex, antigravity (agy) or opencode (default: every one installed)")
     c.add_argument("--list", action="store_true", help="only show which are connected")
     sh = sub.add_parser("share", help="share a project with your team (the app must be running)")
     sh.add_argument("project", help="the project's slug (see the app, or `decomp share x` lists them)")
