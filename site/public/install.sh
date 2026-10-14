@@ -24,7 +24,7 @@
 # The same through the environment: DECOMP_SOURCE=..., DECOMP_BRANCH=<name>.
 set -euo pipefail
 
-VERSION="0.9.8"
+VERSION="0.10.0"
 REPO="i12bp8/decomp.wtf"
 START=1
 DOCKER=0
