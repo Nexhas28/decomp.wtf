@@ -31,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from .. import __version__, hostenv, toolchains
+from ..forks.catalog import CatalogError
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
@@ -537,7 +538,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     async def api_catalog(request: Request) -> Response:
         if (bad := guard(request)):
             return bad
-        return JSONResponse({"projects": await call(net.forks.catalog)})
+        try:
+            return JSONResponse({"projects": await call(net.forks.catalog)})
+        except CatalogError as e:
+            return fail(e, 502)
 
     @mcp.custom_route("/api/fork", methods=["POST"])
     async def api_fork(request: Request) -> Response:

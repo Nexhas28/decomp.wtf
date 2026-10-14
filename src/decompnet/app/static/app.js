@@ -1056,7 +1056,11 @@ function ago(iso) {
 async function showCatalog() {
   show("catalog");
   $("catGrid").innerHTML = `<p class="muted">Loading projects from decomp.dev…</p>`;
-  try { await loadCatalog(); } catch (e) { $("catGrid").innerHTML = `<p class="muted">Couldn't reach decomp.dev (${esc(e.message)}). You can still fork a repository by its address below.</p>`; return; }
+  try { await loadCatalog(); } catch (e) {
+    $("catGrid").innerHTML = `<p class="muted">${esc(e.message)}. You can still continue any public decomp: paste its repository address below.</p>`;
+    $("catNote").textContent = ""; $("catChips").innerHTML = "";
+    return;
+  }
   if (!S.st) await loadState().catch(() => {});
   renderCatalog();
 }

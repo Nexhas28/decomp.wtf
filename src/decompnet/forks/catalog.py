@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -37,16 +38,35 @@ def normalize(raw: dict) -> list[dict]:
     return out
 
 
-def catalog(cache: Path, max_age: float = 6 * 3600) -> list[dict]:
-    """Projects from decomp.dev, cached on disk; falls back to the cache when offline."""
+class CatalogError(RuntimeError):
+    """decomp.dev's list couldn't be had, and there's no earlier copy: the reason, in words."""
+
+
+def _cached(cache: Path) -> list[dict] | None:
     try:
-        if cache.exists() and time.time() - cache.stat().st_mtime < max_age:
-            return normalize(json.loads(cache.read_text(encoding="utf-8")))
+        return normalize(json.loads(cache.read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def catalog(cache: Path, max_age: float = 6 * 3600) -> list[dict]:
+    """Projects from decomp.dev, cached on disk. When it can't be fetched, the last copy (however old) is used; with
+    none, CatalogError says why instead of an empty list that looks like "no projects"."""
+    if cache.exists() and time.time() - cache.stat().st_mtime < max_age and (fresh := _cached(cache)) is not None:
+        return fresh
+    try:
         raw = _fetch()
+        normalized = normalize(raw)
+    except urllib.error.HTTPError as e:
+        why = (f"decomp.dev declined decomp.wtf's request for its project list ({e.code} Access denied)" if e.code == 403
+               else f"decomp.dev answered {e.code} to the request for its project list")
+    except (OSError, ValueError, KeyError) as e:
+        why = f"decomp.dev couldn't be reached ({getattr(e, 'reason', None) or e})"
+    else:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(raw), encoding="utf-8")
-        return normalize(raw)
-    except (OSError, ValueError):
-        if cache.exists():
-            return normalize(json.loads(cache.read_text(encoding="utf-8")))
-        return []
+        return normalized
+    old = _cached(cache)
+    if old is not None:
+        return old
+    raise CatalogError(why)

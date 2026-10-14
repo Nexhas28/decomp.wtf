@@ -465,6 +465,29 @@ def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, st
     return sorted(out, key=lambda u: (u[0] or "", u[1]))
 
 
+def _drop_module(root: Path, game_id: str, log_tail: str) -> str | None:
+    """A REL module decomp-toolkit can't analyse is left out (its code isn't decompiled; the game keeps the original
+    module): Mario Party 6's m433Dll refers to an address the program doesn't have ("Failed to locate DOL section"),
+    and the community's MP6 decomp leaves it out the same way. Returns its name."""
+    m = re.search(r"Failed: [^\n]*\bmodule (\w+)", log_tail)
+    if not m:
+        return None
+    name = m.group(1)
+    cfg = root / "config" / game_id / "config.yml"
+    text = cfg.read_text(encoding="utf-8")
+    block = re.search(rf"^- object: [^\n]*/{re.escape(name)}\.rel\n(?:  [^\n]*\n)*", text, re.M)
+    if not block:
+        return None
+    left_out = f"# left out: decomp-toolkit can't analyse it ({m.group(0)[8:].strip()})\n" \
+        + "".join(f"# {ln}\n" for ln in block.group(0).splitlines())
+    cfg.write_text(text[:block.start()] + left_out + text[block.end():], encoding="utf-8")
+    sha = root / "config" / game_id / "build.sha1"
+    if sha.exists():
+        sha.write_text("".join(ln for ln in sha.read_text(encoding="utf-8").splitlines(keepends=True)
+                               if f"/{name}/{name}.rel" not in ln), encoding="utf-8")
+    return name
+
+
 def create(root: Path, game: Path, *, compiler: str | None = None, log=print) -> dict:
     """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
     info = game_info(game)
@@ -530,6 +553,9 @@ write_asm: true
         elif (named := _standard_module_sections(root, gid)):
             log(f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
                 "analysing again")
+        elif (dropped := _drop_module(root, gid, tail)):
+            log(f"left out the module {dropped}: decomp-toolkit can't analyse it (the community's decomps of games "
+                "like this leave such modules out too); the game keeps your copy's")
         elif (newer := _next_linker(compiler, tail)):
             if (diff := _differing(root, gid, tail)) is not None and (closest is None or len(diff) < closest[0]):
                 closest = (len(diff), compiler)

@@ -394,3 +394,21 @@ def test_a_public_decomp_together(tmp_path):
     assert host._function("lerp", slug)["status"] == "matched"
     guest.links[gslug].sync()
     assert head(groot) == head(hroot)
+
+
+def test_a_catalog_that_cant_be_had_says_why(tmp_path, monkeypatch):
+    """decomp.dev declining the request used to look like a catalog with no projects in it."""
+    import json
+    import os
+    import urllib.error
+
+    def refused():
+        raise urllib.error.HTTPError(catalog.URL, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(catalog, "_fetch", refused)
+    cache = tmp_path / "catalog.json"
+    with pytest.raises(catalog.CatalogError, match="declined"):
+        catalog.catalog(cache)
+    cache.write_text(json.dumps({"projects": [{"owner": "o", "repo": "r", "platform": "gc"}]}))
+    os.utime(cache, (0, 0))  # an old copy is better than nothing
+    assert [p["id"] for p in catalog.catalog(cache)] == ["o/r"]
