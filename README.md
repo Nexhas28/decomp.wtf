@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-157a49?style=flat-square"></a>
-  <img alt="Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-15140f?style=flat-square">
+  <img alt="Linux, Windows and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS%20(beta)-15140f?style=flat-square">
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-3.12%2B-15140f?style=flat-square">
   <img alt="Works with any MCP agent" src="https://img.shields.io/badge/agents-any%20MCP%20client-157a49?style=flat-square">
 </p>
