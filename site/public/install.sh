@@ -14,7 +14,7 @@
 # Options: --no-start (install only)
 set -euo pipefail
 
-VERSION="0.9.0"
+VERSION="0.9.1"
 WHEEL="${DECOMP_WHEEL:-https://decomp.wtf/dl/decompnet-${VERSION}-py3-none-any.whl}"
 START=1
 for arg in "$@"; do
