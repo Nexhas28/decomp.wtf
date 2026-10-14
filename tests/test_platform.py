@@ -3,6 +3,7 @@ started, UTF-8 output and files, HTTPS, startup apps, dtk's build paths."""
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -153,6 +154,18 @@ def test_running_at_log_on_needs_no_administrator(monkeypatch):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, k)
             except OSError:
                 pass
+
+
+def test_builds_find_decomp_wtfs_own_ninja(tmp_path, monkeypatch):
+    """ninja comes in decomp.wtf's own environment, which isn't on PATH once decomp.wtf is installed (a GameCube game's
+    first build ran `ninja`: on Windows it wasn't found)."""
+    own = os.path.normcase(os.path.dirname(sys.executable))
+    monkeypatch.setenv("PATH", os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
+                                               if os.path.normcase(p.rstrip("\\/")) != own))
+    if shutil.which("ninja"):
+        pytest.skip("another ninja is on PATH")
+    ok, out = ForkProject(tmp_path).run(["ninja", "--version"], log=lambda *_: None)
+    assert ok, out
 
 
 @pytest.mark.parametrize("target", ["build/G1E751/ok", r"build\G1E751\ok"])

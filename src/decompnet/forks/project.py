@@ -282,6 +282,9 @@ class ForkProject:
         are added to `failed`."""
         env = dict(os.environ)
         env["PATH"] = os.pathsep.join([str(Path(sys.executable).parent), env.get("PATH", "")])
+        # found on that PATH (decomp.wtf's own ninja): Linux looks a command up there itself, Windows only in this
+        # process's PATH, where decomp.wtf's environment isn't when it's installed
+        cmd = [shutil.which(cmd[0], path=env["PATH"]) or cmd[0], *cmd[1:]]
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
             proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
