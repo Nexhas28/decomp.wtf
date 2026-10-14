@@ -3,6 +3,7 @@
 
     python tools/configure.py VERSION --dsd PATH --compilers DIR [--wibo PATH]
 
+`ninja` builds everything and checks the ROM; `ninja prepare` only what decompiling needs; `ninja rom` the ROM check.
 The build extracts your copy of the game (extract/baserom.nds), delinks its code into objects with ds-decomp (dsd),
 compiles src/ with CodeWarrior for DS, links everything with CodeWarrior's linker, rebuilds the ROM and checks it
 against your copy, byte for byte. objdiff.json (for objdiff and decomp.wtf) compares every source file with the
@@ -104,6 +105,10 @@ def main() -> None:
         n.build(str(BUILD / "check.ok"), "check", str(BUILD / "arm9.o"))
         n.build("objdiff.json", "objdiff", dsd_configs)
         n.build("rom", "phony", str(BUILD / "rom.ok"))
+        # what decompiling needs (each function is judged against its delinked original): `ninja prepare`; every
+        # source file's object, keeping going past work in progress: `ninja -k 0 all_source`
+        n.build("all_source", "phony", objs)
+        n.build("prepare", "phony", ["objdiff.json", *targets, *objs])
         n.build("build.ninja", "configure", [__file__, *dsd_configs, *[str(s) for s in sources()]])
         n.default(["objdiff.json", str(BUILD / "rom.ok"), *objs])
 

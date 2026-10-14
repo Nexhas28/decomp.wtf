@@ -74,3 +74,30 @@ def test_agents_match_functions(ds):
     net.release(agent, other, "", slug)
     root = Path(net.project_row(slug)["root"])
     assert "Match func_" in subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
+
+
+def test_a_trimmed_copy_imports(tmp_path):
+    """Issue #6: most DS dumps in the wild are trimmed (the cartridge's unused end cut off). ds-decomp rebuilds the
+    full cartridge, which differed from such a copy, and the import stopped. Now it's the same game; and a ROM that
+    really doesn't come out identical yet only gets a note, since agents compare each function with the copy's code."""
+    import struct
+
+    rom = ROM.read_bytes()
+    trimmed = tmp_path / "trimmed.nds"
+    trimmed.write_bytes(rom[:struct.unpack_from("<I", rom, 0x80)[0]])
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    slug = net.import_rom(trimmed, confirmed=True, log=lambda *_: None)
+    ov = net.overview(slug)
+    assert ov["ready"] and ov["functions"] >= 100
+    assert ov["rebuild"]["identical"] and "trimmed" in ov["rebuild"]["detail"]
+    root = Path(net.project_row(slug)["root"])
+    assert subprocess.run([str(Path(sys.executable).parent / "ninja")], cwd=root, capture_output=True).returncode == 0
+
+    gap = struct.unpack_from("<I", rom, 0x30)[0] - 0x10  # garbage in the padding before the ARM7 program
+    odd = bytearray(rom)
+    odd[gap] ^= 0x55
+    (tmp_path / "odd.nds").write_bytes(bytes(odd))
+    slug = net.import_rom(tmp_path / "odd.nds", confirmed=True, log=lambda *_: None)
+    ov = net.overview(slug)
+    assert ov["ready"] and not ov["rebuild"]["identical"] and "padding" in ov["rebuild"]["detail"]
+    assert net.forks.check_rom(slug, log=lambda *_: None)["identical"] is False

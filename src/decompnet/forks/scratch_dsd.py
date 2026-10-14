@@ -208,18 +208,20 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     log(f"{len(sources)} source files for agents to write into")
 
     fp = ForkProject(root)
-    setup = [[sys.executable, "tools/configure.py", version, *args], ["ninja"]]
+    setup = [[sys.executable, "tools/configure.py", version, *args], ["ninja", "prepare"]]
     for cmd in setup:
         ok, tail = fp.run(cmd, log=log, timeout=3600)
         if not ok:
-            raise ForkError(f"the first build didn't rebuild the game identically:\n{tail[-1500:]}")
-    if not (root / "build" / version / "rom.ok").exists() or not (root / "objdiff.json").exists():
-        raise ForkError("the first build finished without rebuilding the ROM or writing objdiff.json")
+            raise ForkError(f"the first build failed:\n{tail[-1500:]}")
+    if not (root / "objdiff.json").exists():
+        raise ForkError("the first build finished without writing objdiff.json")
+    rebuild = check_rom(root, version, log=log)
 
     (root / ".decomp.wtf.json").write_text(json.dumps({
         "created": "from scratch", "platform": "nds", "version": version, "compiler": f"DS/{compiler}",
         "game": {"what": "your copy of the game (.nds)", "path": "extract/baserom.nds", "sha1": info["sha1"]},
-        "setup": [["python", "tools/configure.py", version, *args], ["ninja"]],
+        "setup": [["python", "tools/configure.py", version, *args], ["ninja", "prepare"]],
+        "rebuild": rebuild,
     }, indent=2), encoding="utf-8")
     (root / ".gitignore").write_text("# made from your copy of the game, or by the build\nextract/\nbuild/\nbuild.ninja\n"
                                      ".ninja_*\nobjdiff.json\n__pycache__/\n.decomp-wtf/\n", encoding="utf-8")
@@ -241,4 +243,24 @@ Compiler: CodeWarrior for DS {compiler} (change `MWCC_VERSION` in tools/configur
                      f"Start the {info['id']} decompilation (decomp.wtf, ds-decomp)"]):
             subprocess.run(cmd, cwd=root, capture_output=True)
     return {"platform": "nds", "id": info["id"], "title": info["title"], "compiler": f"DS/{compiler}",
-            "sources": len(sources), "sha1": info["sha1"]}
+            "sources": len(sources), "sha1": info["sha1"], "rebuild": rebuild}
+
+
+def check_rom(root: Path, version: str, log=print) -> dict:
+    """Rebuild the ROM from everything delinked and compiled, and compare it with the user's copy (`ninja rom`).
+
+    Decompiling doesn't depend on it (each function is compared with its own delinked original), so a ROM that doesn't
+    come out identical yet is reported, not fatal: tools/same.py says which part differs (issue #6: a Pokemon
+    Platinum copy whose rebuild differed stopped the whole import)."""
+    ok, tail = ForkProject(root).run(["ninja", "rom"], log=lambda *_: None, timeout=3600)
+    stamp = root / "build" / version / "rom.ok"
+    if ok and stamp.exists():
+        note = stamp.read_text(encoding="utf-8").strip()
+        detail = "identical up to the padding at the end (your copy is trimmed)" if "padding" in note else "identical"
+        log(f"the rebuilt ROM is your copy, byte for byte{' up to the padding at its end' if 'padding' in note else ''}")
+        return {"identical": True, "detail": detail}
+    lines = [line.strip()[2:] for line in tail.splitlines() if line.strip().startswith("- ")]
+    detail = "; ".join(lines) or (tail.strip().splitlines() or ["the ROM build failed"])[-1][-300:]
+    log(f"note: the rebuilt ROM isn't your copy byte for byte yet ({detail}). Decompiling works anyway: every "
+        "function is compared with your copy's own code.")
+    return {"identical": False, "detail": detail}
