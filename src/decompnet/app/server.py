@@ -310,6 +310,15 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
                                 "ds_installed": toolchains.installed("mwccarm") is not None, **MW_VERSIONS}}
 
+    def autopilot(slug: str) -> None:
+        """Free matches first, in the background, when the user wants that (the default): a game started from
+        scratch, on any platform, as soon as it's ready. A public decomp, or one not set up yet, says no."""
+        if settings.data.get("autopilot", True):
+            try:
+                net.start_autopilot(slug)
+            except NetworkError:
+                pass
+
     def project_list() -> list[dict]:
         """The sidebar: every project with its progress and how many helper agents work on it right now."""
         running: dict[str, int] = {}
@@ -379,11 +388,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     shutil.rmtree(game.parent, ignore_errors=True)
             settings.data["last_project"] = slug
             settings.save()
-            if settings.data.get("autopilot", True) and not net.fork_slug(slug):  # free matches first, in the background
-                try:
-                    net.start_autopilot(slug)
-                except NetworkError:
-                    pass
+            autopilot(slug)
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
@@ -580,9 +585,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def work(log):
             try:
-                return net.forks.setup(slug, tmp, name, log=log, move=True)
+                res = net.forks.setup(slug, tmp, name, log=log, move=True)
             finally:
                 tmp.unlink(missing_ok=True)
+            autopilot(slug)
+            return res
         return JSONResponse({"job": jobs.start("fork-setup", work)})
 
     @mcp.custom_route("/api/fork/setup", methods=["POST"])
@@ -605,9 +612,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 return fail(ValueError(f"no file at {src}"))
 
         def work(log):
-            if path:
-                return net.forks.setup(slug, src, src.name, log=log)
-            return net.forks.setup(slug, None, log=log)
+            res = net.forks.setup(slug, src, src.name, log=log) if path else net.forks.setup(slug, None, log=log)
+            autopilot(slug)
+            return res
         return JSONResponse({"job": jobs.start("fork-setup", work)})
 
     @mcp.custom_route("/api/fork/check", methods=["POST"])

@@ -2096,7 +2096,7 @@ function renderPrio() {
 /* Autopilot: every function's machine draft, tried through the judge before any agent spends a token. */
 function renderAutopilot(ov) {
   const box = $("autopilot"), ap = ov.autopilot;
-  const canRun = ov.kind !== "fork" && ov.functions - ov.matched > 0;
+  const canRun = (ov.kind !== "fork" || (ov.origin === "scratch" && ov.ready)) && ov.functions - ov.matched > 0;
   box.hidden = !ap && !canRun;
   if (box.hidden) return;
   const running = ap && ap.state === "running";

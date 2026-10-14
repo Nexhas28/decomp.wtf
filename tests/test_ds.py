@@ -76,6 +76,20 @@ def test_agents_match_functions(ds):
     assert "Match func_" in subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
 
 
+def test_autopilot_tries_machine_drafts(ds):
+    """The DS project's own build and objdiff judge every function's ARM draft before any agent."""
+    net, slug = ds
+    if toolchains.installed("m2c") is None:
+        pytest.skip("needs m2c")
+    proj = net.project_row(slug)
+    root = Path(proj["root"])
+    agent, _ = net.local_agent("autopilot")
+    outcomes = [net.forks.autopilot_one(agent, proj, fid) for fid in net.forks.autopilot_prepare(slug)[:20]]
+    print(outcomes)
+    assert "match" in outcomes
+    assert subprocess.run(["git", "status", "--porcelain", "src"], cwd=root, capture_output=True, text=True).stdout == ""
+
+
 def test_a_trimmed_copy_imports(tmp_path):
     """Issue #6: most DS dumps in the wild are trimmed (the cartridge's unused end cut off). ds-decomp rebuilds the
     full cartridge, which differed from such a copy, and the import stopped. Now it's the same game; and a ROM that

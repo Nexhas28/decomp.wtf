@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -22,7 +23,7 @@ from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from .. import similarity
+from .. import similarity, toolchains
 from ..forks import catalog, csource, datadiff, drafts, dtksplits, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
@@ -798,9 +799,10 @@ class ForkEngine:
                         sp.files.append(dtksplits.FileSplit(name, {".text": (start, end)}))
                         p = fp.root / src / name
                         p.parent.mkdir(parents=True, exist_ok=True)
+                        common = '#include "common.h"\n' if (fp.root / "include" / "common.h").is_file() else ""
                         p.write_text(f"// Code of {module} that had no source file yet: decomp.wtf gave it this one.\n"
-                                     "// split_file divides it into the game's real files (file_status shows its range).\n",
-                                     encoding="utf-8")
+                                     "// split_file divides it into the game's real files (file_status shows its range).\n"
+                                     + common, encoding="utf-8")
                         made.append(p)
                     sp_path.write_text(sp.render(), encoding="utf-8")
                     text = dtksplits.add_objects(text, module, [name for _, name, _, _, _ in items])
@@ -1368,8 +1370,10 @@ class ForkEngine:
                for r in rows]
         return "\n".join(out) or "none"
 
-    def attempt(self, agent: Agent, slug: str, function: str, source: str) -> dict:
-        res = self._attempt(agent, slug, function, source)
+    def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True) -> dict:
+        """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
+        is undone and kept only as the function's best attempt (autopilot's drafts)."""
+        res = self._attempt(agent, slug, function, source, keep)
         link = self.net.links.get(slug)
         if link is None or res["score"] is None:
             return res
@@ -1406,7 +1410,7 @@ class ForkEngine:
         except NetworkError:
             pass
 
-    def _attempt(self, agent: Agent, slug: str, function: str, source: str) -> dict:
+    def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True) -> dict:
         proj, fp, cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -1501,10 +1505,15 @@ class ForkEngine:
                 return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
                                 f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
                         "matched": False}
-            self._keep_scores(proj, unit, after, d.unit_scores)
             pct = d.match_percent if d.match_percent is not None else 0.0
             score = max(1, len(d.literals)) if d.literals else scaled(pct, fn["n_insns"])
             matched = d.matched
+            if not matched and not keep and not was_matched:  # tried, not kept: the file stays as it was
+                undo()
+                self.net._record(fn, agent, score, code, 0, compiled=True)
+                return {"text": f"{percent_text(pct)} match (score {score}); not kept in {unit.source}", "score": score,
+                        "matched": False, "percent": pct}
+            self._keep_scores(proj, unit, after, d.unit_scores)
             self._hold(fn, code if d.literals else None)
             if was_matched:  # a rewrite of a matched function must keep matching
                 if not matched:
@@ -1531,6 +1540,66 @@ class ForkEngine:
             return {"text": f"score {score} (0 = identical). {d.literals_note()}", "score": score, "matched": False}
         return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}", "score": score,
                 "matched": False}
+
+    # ------------------------------------------------------------------ autopilot
+
+    def autopilot_prepare(self, slug: str) -> list[int]:
+        """The open functions autopilot tries in a game started from scratch, smallest first. Raises NetworkError
+        when it can't run here."""
+        proj, fp, cfg = self.get(slug)
+        if cfg.get("origin") != "scratch":
+            raise NetworkError("autopilot works on games started from scratch: a public decomp's headers don't have "
+                               "what machine drafts need, and its easy functions are done already")
+        if not cfg.get("ready"):
+            raise NetworkError("finish setting the project up first")
+        if not drafts.supported(cfg.get("platform") or "") or toolchains.installed("m2c") is None:
+            raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
+        if drafts.add_m2c_macros(fp.root / "include" / "common.h"):  # projects made before autopilot ran on them
+            self._commit(proj, fp, "include/common.h", "Add the macros machine drafts use\n\nWritten by decomp.wtf's autopilot.")
+        rows = self.net.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' ORDER BY n_insns, id",
+                                  proj["id"])
+        return [r["id"] for r in rows]
+
+    def autopilot_one(self, agent: Agent, proj, fid: int) -> str:
+        """match | near | far | fail | skip, for one function's machine draft, built and diffed like an agent's."""
+        now = time.time()
+        with self.net.store.tx() as db:
+            self.net._expire_claims(db)
+            fn = db.execute("SELECT * FROM functions WHERE id=?", (fid,)).fetchone()
+            if fn is None or fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
+                return "skip"
+            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, agent.id, now, now + 300))
+        try:
+            _, fp, cfg = self.get(proj["slug"])
+            unit = fp.unit(fn["unit"])
+            if not unit.source:
+                return "skip"
+            meta = self._meta(fn)
+            hint = (unit.scratch or {}).get("compiler", "") or json.dumps(fp.needs(cfg.get("version")))
+            text = drafts.draft(fp.root, cfg.get("platform") or "", unit.name, meta.get("symbol") or fn["name"],
+                                unit.source, compiler_hint=hint, valid=True)
+            _, span = self._find(text, self._names(meta, fn)) if text else (None, None)
+            if span is None:
+                return "fail"
+            try:
+                current = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+            except OSError:
+                current = ""
+            code = "/* machine draft (m2c), tried by autopilot */\n" + drafts.self_contained(text, span, current)
+            res = self.attempt(agent, proj["slug"], fn["name"], code, keep=False)
+            if res["matched"]:
+                return "match"
+            if res["score"] is None:
+                why = [ln for ln in res["text"].splitlines() if re.search(r"error|Error", ln) and "ninja" not in ln]
+                logging.getLogger("decomp.wtf").info("autopilot: %s's draft didn't build: %s", fn["name"],
+                                                     " | ".join(why[:4])[:600] or res["text"][-300:])
+            return "fail" if res["score"] is None else "near" if (res.get("percent") or 0) >= 90 else "far"
+        except (NetworkError, OSError, subprocess.SubprocessError) as e:
+            logging.getLogger("decomp.wtf").info("autopilot: %s not tried: %s", fn["name"], str(e)[:500])
+            return "fail"
+        finally:
+            with self.net.store.tx() as db:
+                db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
 
     def _insert_in_order(self, proj, fp: ForkProject, unit, fn, text: str, code: str) -> str:
         """Place a new function where it was in the original: after the closest earlier function present in the

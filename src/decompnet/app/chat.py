@@ -121,7 +121,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
 
         def work(log):
             slug = net.import_rom(game, toolchain=compiler or None, confirmed=True, name=game.name, log=log)
-            if settings.data.get("autopilot", True) and not net.fork_slug(slug):
+            if settings.data.get("autopilot", True):  # free matches first (a public decomp says no)
                 try:
                     net.start_autopilot(slug)
                 except NetworkError:

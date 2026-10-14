@@ -123,3 +123,29 @@ def test_code_without_a_file_gets_one(gc):
     # (the start-up code in .init stays assembly: it's hand-written)
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='nosource'", pid)["n"] == asm_only
     assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=?", pid)["n"] == total
+
+
+def test_autopilot_matches_from_machine_drafts(gc):
+    """Drop a game, and before any agent: every function's machine draft is built and judged by the project's own
+    build and objdiff. What matches is committed; what doesn't is kept as the best attempt, and the source file
+    stays as it was."""
+    net, slug = gc
+    if toolchains.installed("m2c") is None:
+        pytest.skip("needs m2c")
+    proj = net.project_row(slug)
+    root = Path(proj["root"])
+    ids = net.forks.autopilot_prepare(slug)
+    assert "M2C_DEFINES" in (root / "include" / "common.h").read_text()
+    agent, _ = net.local_agent("autopilot")
+    outcomes = {}
+    for fid in ids[:25]:
+        outcomes[fid] = net.forks.autopilot_one(agent, proj, fid)
+    print(sorted(outcomes.values()))
+    assert "match" in outcomes.values()
+    assert subprocess.run(["git", "status", "--porcelain", "src"], cwd=root, capture_output=True, text=True).stdout == ""
+    log = subprocess.run(["git", "log", "--format=%s"], cwd=root, capture_output=True, text=True).stdout
+    assert "Match " in log
+    tried = [fid for fid, o in outcomes.items() if o in ("near", "far")]
+    if tried:  # a draft that didn't match is the function's best attempt, for the agents that come after
+        row = net.store.one("SELECT best_agent_id, status FROM functions WHERE id=?", tried[0])
+        assert row["status"] == "open" and row["best_agent_id"] == agent.id

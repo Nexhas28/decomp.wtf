@@ -919,7 +919,7 @@ class RomNetwork(Network):
 
     def _yield_autopilot(self, function: str | None, project: str | None) -> None:
         """The autopilot holds a function only while its draft compiles: an agent that wants it waits for that."""
-        if not function or self.fork_slug(project):
+        if not function:
             return
         try:
             fid = self._function(function, project)["id"]
@@ -932,9 +932,9 @@ class RomNetwork(Network):
             time.sleep(0.2)
 
     def attempt(self, agent: Agent, function: str, source: str, project: str | None = None) -> dict:
+        self._yield_autopilot(function, project)
         if (fork := self.fork_slug(project)):
             return self.forks.attempt(agent, fork, function, source)
-        self._yield_autopilot(function, project)
         link = self._link(project)
         before = self._function(function, project)["best_score"] if link else None
         res = super().attempt(agent, function, source, project)
@@ -1273,23 +1273,26 @@ class RomNetwork(Network):
         background. Whatever already matches is saved before any agent spends a token on it; drafts that compile
         become the function's best attempt, so agents start from them. Agents and autopilot never collide: a
         function is held only while its draft compiles, and claimed ones are skipped."""
-        if self.fork_slug(slug):
-            raise NetworkError("autopilot works on games started from scratch; a public decomp already has its code")
-        if not seeds.available():
-            raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
-        proj = self._project(slug)
-        tc = self.cfg(proj)["compiler"]["toolchain"]
-        if not seeds.M2C_TARGETS.get(tc):
-            raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
         state = self.autopilots.get(slug)
         if state and state["state"] == "running":
             return state
-        rows = self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' ORDER BY n_insns, vram",
-                              proj["id"])
-        state = {"state": "running", "total": len(rows), "tried": 0, "matched": 0, "near": 0, "started_at": time.time(),
+        if (fork := self.fork_slug(slug)):  # a GameCube, Wii or DS game started from scratch: its own build judges
+            ids = self.forks.autopilot_prepare(fork)
+            try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
+        else:
+            if not seeds.available():
+                raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
+            proj = self._project(slug)
+            tc = self.cfg(proj)["compiler"]["toolchain"]
+            if not seeds.M2C_TARGETS.get(tc):
+                raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
+            ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
+                                                   "ORDER BY n_insns, vram", proj["id"])]
+            try_one = self._autopilot_one
+        state = {"state": "running", "total": len(ids), "tried": 0, "matched": 0, "near": 0, "started_at": time.time(),
                  "stop": threading.Event()}
         self.autopilots[slug] = state
-        threading.Thread(target=self._autopilot_run, args=(slug, [r["id"] for r in rows], state, workers),
+        threading.Thread(target=self._autopilot_run, args=(slug, ids, state, workers, try_one),
                          daemon=True, name=f"autopilot-{slug}").start()
         return state
 
@@ -1304,17 +1307,18 @@ class RomNetwork(Network):
         last = self.cfg(self._project(slug)).get("autopilot")  # the last run, from before the app restarted
         return {"state": "done", **last} if last else None
 
-    def _autopilot_run(self, slug: str, ids: list[int], state: dict, workers: int) -> None:
+    def _autopilot_run(self, slug: str, ids: list[int], state: dict, workers: int, try_one=None) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
         agent, _ = self.local_agent("autopilot")
         proj = self._project(slug)
+        try_one = try_one or self._autopilot_one
 
         def one(fid: int) -> None:
             if state["stop"].is_set():
                 return
             try:
-                outcome = self._autopilot_one(agent, proj, fid)
+                outcome = try_one(agent, proj, fid)
             except Exception:  # one odd function must not stop the rest
                 outcome = "fail"
             state["tried"] += 1
