@@ -16,10 +16,11 @@ PLATFORMS = {
 }
 
 
-# How often the list is asked for: once a day at most, and after decomp.dev declines, once a week (in case it changes
-# its mind). Every request says what it is: decomp.dev decides whether it serves decomp.wtf, and its answer stands.
+# How often the list is asked for: once a day at most per install, also after decomp.dev refuses (its automatic rate
+# limit counts every decomp.wtf as one client, so many installs asking every few hours tripped it). Every request
+# says what it is: decomp.dev decides whether it serves decomp.wtf.
 MAX_AGE = 24 * 3600
-AFTER_REFUSAL = 7 * 24 * 3600
+AFTER_REFUSAL = 24 * 3600
 AFTER_ERROR = 3600
 
 
@@ -65,7 +66,7 @@ def _cached(cache: Path) -> list[dict] | None:
 def catalog(cache: Path, max_age: float = MAX_AGE) -> list[dict]:
     """Projects from decomp.dev, cached on disk for a day. When it can't be had, the last copy (however old) is used;
     with none, CatalogError says why instead of an empty list that looks like "no projects". A refusal is remembered
-    (next to the cache) and not asked again for a week; another failure for an hour."""
+    (next to the cache) and not asked again for a day; another failure for an hour."""
     if cache.exists() and time.time() - cache.stat().st_mtime < max_age and (fresh := _cached(cache)) is not None:
         return fresh
     failed = cache.with_suffix(".failed.json")
@@ -82,8 +83,8 @@ def catalog(cache: Path, max_age: float = MAX_AGE) -> list[dict]:
             normalized = normalize(raw)
         except urllib.error.HTTPError as e:
             code = e.code
-            why = ("decomp.dev declines decomp.wtf's requests for its project list" if code in (401, 403)
-                   else f"decomp.dev answered {code} to the request for its project list")
+            why = ("decomp.dev's rate limit is refusing decomp.wtf's requests for its project list for now"
+                   if code in (401, 403, 429) else f"decomp.dev answered {code} to the request for its project list")
         except (OSError, ValueError, KeyError) as e:
             code, why = None, f"decomp.dev couldn't be reached ({getattr(e, 'reason', None) or e})"
         else:

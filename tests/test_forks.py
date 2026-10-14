@@ -408,9 +408,9 @@ def test_a_catalog_that_cant_be_had_says_why(tmp_path, monkeypatch):
     asked = []
     monkeypatch.setattr(catalog, "_fetch", lambda: asked.append(1) or refused())
     cache = tmp_path / "catalog.json"
-    with pytest.raises(catalog.CatalogError, match="declines"):
+    with pytest.raises(catalog.CatalogError, match="rate limit"):
         catalog.catalog(cache)
-    with pytest.raises(catalog.CatalogError, match="declines"):  # a refusal stands: not asked again for a week
+    with pytest.raises(catalog.CatalogError, match="rate limit"):  # not asked again the same day
         catalog.catalog(cache)
     assert len(asked) == 1
     cache.write_text(json.dumps({"projects": [{"owner": "o", "repo": "r", "platform": "gc"}]}))
