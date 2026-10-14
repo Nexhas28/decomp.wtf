@@ -291,6 +291,7 @@ class Manager:
         self.sessions: dict[str, Session] = {}
         self.assignments: dict[int, str] = {}  # agent id -> project slug
         self._lock = threading.Lock()
+        self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
 
@@ -301,6 +302,7 @@ class Manager:
             raise ValueError(f"unknown agent kind {kind!r}")
         options = options or {}
         ids = []
+        self._prepare(slug)
         with self._lock:
             for _ in range(max(1, min(int(count), 8))):
                 n = 1 + sum(1 for s in self.sessions.values() if s.kind == kind)
@@ -315,6 +317,34 @@ class Manager:
                 ids.append(sid)
         self.persist(self.running())
         return ids
+
+    def _prepare(self, slug: str) -> None:
+        """Agents on a GameCube/Wii decomp where code has no source file yet: give it files first (start_files,
+        checked against the game's checksum), or they'd all share the few hard functions that are left."""
+        with self._lock:
+            if slug in self._prep:
+                return
+            try:
+                if not self.net.fork_slug(slug):
+                    return
+                _, fp, cfg = self.net.forks.get(slug)
+                if not (cfg.get("uncovered") or {}).get("functions") or not fp.linkable():
+                    return
+            except Exception:
+                return
+            done = self._prep[slug] = threading.Event()
+
+        def run() -> None:
+            try:
+                self.net.forks.start_files(slug, log=lambda *_: None)
+            except Exception:  # the agents still work on what has files
+                pass
+            finally:
+                done.set()
+                with self._lock:
+                    self._prep.pop(slug, None)
+
+        threading.Thread(target=run, daemon=True, name=f"start-files-{slug}").start()
 
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
@@ -381,6 +411,9 @@ class Manager:
         workdir.mkdir(parents=True, exist_ok=True)
         failures = 0
         s.push("info", f"{s.label} starting on {s.slug}")
+        if (prep := self._prep.get(s.slug)) is not None:
+            s.push("info", "first giving the game's code without a source file one (about a minute)")
+            prep.wait(900)
         while not s.stop.is_set():
             if self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")

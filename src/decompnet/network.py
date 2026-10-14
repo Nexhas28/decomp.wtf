@@ -25,9 +25,11 @@ from .store import Store
 CLAIM_TTL = 30 * 60
 STRATEGIES = {
     "easiest": "f.abandons > 0, f.n_insns ASC",
-    # the files closest to done first (a file is linked into the game once all of it matches), small ones first
-    "finish": "f.abandons > 0, (SELECT COUNT(*) FROM functions g WHERE g.project_id=f.project_id AND g.unit=f.unit "
-              "AND g.status='open') ASC, f.n_insns ASC",
+    # what nobody gave up on, small first; among functions of about the same size, the files closest to done (a
+    # file is linked into the game once all of it matches). Leftovers agents released again and again come last,
+    # or a crowd of agents spends its time passing the hardest functions around.
+    "finish": "f.abandons ASC, (f.n_insns + 31) / 32 ASC, (SELECT COUNT(*) FROM functions g WHERE "
+              "g.project_id=f.project_id AND g.unit=f.unit AND g.status='open') ASC, f.n_insns ASC",
     "closest": "f.best_score IS NULL, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
