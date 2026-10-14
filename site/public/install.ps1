@@ -15,7 +15,7 @@
 # stay behind there.
 & {
 $ErrorActionPreference = "Stop"
-$Version = "0.9.2"
+$Version = "0.9.3"
 $Wheel = if ($env:DECOMP_WHEEL) { $env:DECOMP_WHEEL } else { "https://decomp.wtf/dl/decompnet-$Version-py3-none-any.whl" }
 
 function Step($text) { Write-Host "> " -ForegroundColor Green -NoNewline; Write-Host $text }
