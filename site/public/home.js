@@ -9,7 +9,7 @@
     document.querySelectorAll(".install [data-os]:not(button)").forEach((el) => { el.hidden = el.dataset.os !== os; });
   };
   document.querySelectorAll(".os button").forEach((b) => b.addEventListener("click", () => choose(b.dataset.os)));
-  choose(/Windows/i.test(navigator.userAgent) ? "win" : "unix");
+  choose(/Windows/i.test(navigator.userAgent) ? "win" : /Macintosh|Mac OS X/i.test(navigator.userAgent) ? "mac" : "unix");
   document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", () => {
     navigator.clipboard.writeText(b.dataset.copy).then(() => {
       b.textContent = "Copied";

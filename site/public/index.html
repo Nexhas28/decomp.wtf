@@ -48,13 +48,15 @@
     <p class="lede">Point the AI agent you already use at a game you own. decomp.wtf turns it back into C, one function at a time, and checks every function byte for byte against the original.</p>
     <div class="install" id="get">
       <div class="os" role="tablist" aria-label="Your system">
-        <button role="tab" type="button" data-os="unix" class="on" aria-selected="true">macOS &amp; Linux</button>
+        <button role="tab" type="button" data-os="unix" class="on" aria-selected="true">Linux</button>
         <button role="tab" type="button" data-os="win" aria-selected="false">Windows</button>
+        <button role="tab" type="button" data-os="mac" aria-selected="false">macOS</button>
       </div>
       <div class="cmd" data-os="unix"><span>$</span><code>curl -fsSL https://decomp.wtf/install.sh | bash</code><button type="button" class="copy" data-copy="curl -fsSL https://decomp.wtf/install.sh | bash">Copy</button></div>
       <div class="cmd" data-os="win" hidden><span>&gt;</span><code>irm https://decomp.wtf/install.ps1 | iex</code><button type="button" class="copy" data-copy="irm https://decomp.wtf/install.ps1 | iex">Copy</button></div>
       <small data-os="unix">Paste into Terminal. It installs everything and opens the app. After that, start it any time from your apps menu or by typing <code>decomp</code>. <a href="/install.sh">Read the script</a></small>
       <small data-os="win" hidden>Paste into PowerShell. It installs everything and opens the app. After that, start it any time from the Start menu or your desktop, or by typing <code>decomp</code>. <a href="/install.ps1">Read the script</a></small>
+      <small data-os="mac" hidden><b>macOS support is coming later.</b> I don't have a Mac to test on yet, and rather than ship something that half works, decomp.wtf runs on Linux and Windows until it's been tested properly on macOS.</small>
     </div>
   </div>
 
@@ -109,7 +111,7 @@
     </div>
     <ol class="steps">
       <li><span class="n">01</span><h3>Open your game</h3><p>Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance or DS, as a ROM, disc image or program file. decomp.wtf finds every function. Or continue a public decomp for any platform. Your file never leaves your computer.</p></li>
-      <li><span class="n">02</span><h3>Add your agent</h3><p>Claude Code, Codex, Gemini CLI, opencode, or any model with an API key. Run several at once: each takes a different function, and they share what they learn.</p></li>
+      <li><span class="n">02</span><h3>Add your agent</h3><p>Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key. Run several at once: each takes a different function, and they share what they learn.</p></li>
       <li><span class="n">03</span><h3>Watch it match</h3><p>The map fills in as functions match. Every attempt, score and name is live. Export the source whenever you like, or decompile it as a team: everyone with their own copy and their own agents.</p></li>
     </ol>
   </div>
@@ -166,7 +168,7 @@
     <div class="chips">
       <span class="chip">Claude Code <small>Anthropic</small></span>
       <span class="chip">Codex <small>OpenAI</small></span>
-      <span class="chip">Gemini CLI <small>Google</small></span>
+      <span class="chip">Antigravity CLI <small>Google</small></span>
       <span class="chip">opencode <small>DeepSeek, Qwen, Kimi…</small></span>
       <span class="chip">API key <small>DeepSeek, OpenRouter</small></span>
       <span class="chip">Local models <small>Ollama, LM Studio</small></span>
@@ -181,12 +183,12 @@
     <div class="head">
       <p class="kicker">From your terminal</p>
       <h2>Or just ask your agent.</h2>
-      <p>Connect decomp.wtf to Claude Code, Codex, Gemini CLI or opencode once. Then ask for what you want: it confirms the game is your own copy, imports it, opens the live view and works with every tool here, including helper agents running in parallel.</p>
+      <p>Connect decomp.wtf to Claude Code, Codex, Antigravity CLI or opencode once. Then ask for what you want: it confirms the game is your own copy, imports it, opens the live view and works with every tool here, including helper agents running in parallel.</p>
     </div>
     <div class="install ask">
       <div class="cmd"><span>$</span><code>decomp connect</code><button type="button" class="copy" data-copy="decomp connect">Copy</button></div>
       <div class="cmd say"><span>&gt;</span><code>decompile my game at ~/roms/game.z64</code></div>
-      <small>Claude Code users can also add it as a plugin: <code>/plugin marketplace add i12bp8/decomp.wtf</code>. Gemini CLI: <code>gemini extensions install https://github.com/i12bp8/decomp.wtf</code>.</small>
+      <small>Claude Code users can also add it as a plugin: <code>/plugin marketplace add i12bp8/decomp.wtf</code>. Antigravity CLI (<code>agy</code>, Gemini CLI's successor): <code>decomp connect antigravity</code>.</small>
     </div>
   </div>
 </section>
@@ -212,6 +214,8 @@
       <details><summary>Why "decomp.wtf"?</summary><p>WTF stands for <b>What The Function</b>: what everyone says the first time they stare at a page of MIPS assembly. decomp.wtf answers it, one function at a time.</p></details>
       <details><summary>Why not just ask a general AI agent to decompile my game?</summary><p>You can, and with decomp.wtf connected that's exactly what happens, minus the hours of setup. Matching decompilation needs the game's original compiler at the right version and flags, a splitter that finds every function, a judge that compiles each attempt and compares it with the game byte for byte, and a way to keep many agents from colliding. decomp.wtf brings all of that, pinned and ready in seconds, plus free matches from machine drafts before your agent spends a token, a live view, and an export that rebuilds the game.</p></details>
       <details><summary>Which games work?</summary><p>From scratch: Nintendo 64 (KMC GCC, IDO), PlayStation and PlayStation 2 (PSY-Q GCC, EE-GCC), GameCube and Wii (CodeWarrior, as a dtk-template project), Game Boy Advance (agbcc) and DS (CodeWarrior for DS, as a ds-decomp project). PC, Switch and more are coming. Beyond that, any public decomp whose build produces an objdiff report, which covers practically every project on decomp.dev, on every platform.</p></details>
+      <details><summary>Which computers does it run on?</summary><p><b>Linux and Windows.</b> On Windows, the compilers that only exist for Linux (KMC GCC for N64, the PlayStation GCCs, EE-GCC for PS2, agbcc for GBA) run inside WSL 2: a one-time <code>wsl --install</code> in an administrator PowerShell, then a restart, and decomp.wtf sets the compilers up there by itself. Everything else runs natively. <b>macOS support is coming later</b>: it isn't offered until it's been tested on a real Mac.</p></details>
+      <details><summary>C or C++?</summary><p>Both. GameCube, Wii and DS games are often C++, and decomp.wtf handles it: code with C++ symbol names goes into <code>.cpp</code> files, drafts come out as C++, and agents get a guide to classes, vtables, constructors and name mangling. N64, PlayStation, PS2 and GBA games started from scratch are written in C for now; C++ there (mostly PS2) is coming. Public decomps use whatever language the project uses.</p></details>
       <details><summary>Can we decompile a game as a team?</summary><p>Yes, as many people as you like, each on their own computer with their own copy of the game and their own agents. One of you hosts the room on a home PC or a server (<code>decomp host</code>), public or private, and decides who's in. Functions are handed out so nobody collides, every match is checked against the host's copy, and names, structs and notes are shared. Nothing goes through decomp.wtf: you host it, and you decide who sees the code.</p></details>
       <details><summary>Can I use the result for a port or a mod?</summary><p>That's the idea. Export project writes a normal decompilation project, matched functions as C and the rest as assembly, that rebuilds your game byte for byte (GameCube, Wii and DS projects do that on every build). On GameCube and Wii, finished files are linked as you go: the game is built from their C, the way decomp.dev projects count "linked", which is what a native PC port starts from. Keep going with any tool or agent until it's all C. Game code and data stay out of git and are regenerated from your own copy.</p></details>
       <details><summary>Will my agents' code end up in the community's project?</summary><p>Not by itself. In a public decomp, every match is a commit on your own local branch and nothing is sent anywhere. Many projects don't accept AI-written contributions, and the ones that do expect a person to stand behind every line: read the project's contribution rules, review the code yourself and say how it was made before you open a pull request.</p></details>
@@ -229,7 +233,7 @@
     <div class="install">
       <div class="cmd" data-os="unix"><span>$</span><code>curl -fsSL https://decomp.wtf/install.sh | bash</code><button type="button" class="copy" data-copy="curl -fsSL https://decomp.wtf/install.sh | bash">Copy</button></div>
       <div class="cmd" data-os="win" hidden><span>&gt;</span><code>irm https://decomp.wtf/install.ps1 | iex</code><button type="button" class="copy" data-copy="irm https://decomp.wtf/install.ps1 | iex">Copy</button></div>
-      <small>macOS, Linux and Windows. Free, open source, and easy to remove. Start it again any time by typing <code>decomp</code>.</small>
+      <small>Linux and Windows (macOS support is coming later). Free, open source, and easy to remove. Start it again any time by typing <code>decomp</code>.</small>
     </div>
   </div>
 </section>

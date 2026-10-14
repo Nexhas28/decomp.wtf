@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-157a49?style=flat-square"></a>
-  <img alt="macOS, Linux and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-15140f?style=flat-square">
+  <img alt="Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-15140f?style=flat-square">
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-3.12%2B-15140f?style=flat-square">
   <img alt="Works with any MCP agent" src="https://img.shields.io/badge/agents-any%20MCP%20client-157a49?style=flat-square">
 </p>
@@ -56,7 +56,9 @@ Everything runs on your computer. No account, no telemetry, nothing uploaded.
 
 ## Install
 
-**macOS and Linux**
+decomp.wtf runs on **Linux** and **Windows**.
+
+**Linux**
 
 ```
 curl -fsSL https://decomp.wtf/install.sh | bash
@@ -67,6 +69,9 @@ curl -fsSL https://decomp.wtf/install.sh | bash
 ```
 irm https://decomp.wtf/install.ps1 | iex
 ```
+
+**macOS: coming later.** I don't have a Mac to test on, and rather than ship something that half works, macOS
+support comes once it's been tested properly.
 
 One line sets up everything: [uv](https://docs.astral.sh/uv/), the app, the period compilers (pinned and
 checksum-verified) and the m2c draft decompiler. It then adds **decomp.wtf** to your apps and opens it in your
@@ -79,7 +84,7 @@ terminal. Remove it any time with `uv tool uninstall decompnet`.
 
 ## Or just ask your agent
 
-Already living in Claude Code, Codex, Gemini CLI or opencode? Give it decomp.wtf's tools once:
+Already living in Claude Code, Codex, Antigravity CLI or opencode? Give it decomp.wtf's tools once:
 
 ```
 decomp connect
@@ -97,8 +102,7 @@ when needed; you can also add it yourself (`claude mcp add decomp -- decomp mcp`
 | Agent | Install it as a package instead |
 | :-- | :-- |
 | **Claude Code** | `/plugin marketplace add i12bp8/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (adds a "decompile" skill) |
-| **Gemini CLI** | `gemini extensions install https://github.com/i12bp8/decomp.wtf` |
-| **Codex, opencode** | `decomp connect codex`, `decomp connect opencode` |
+| **Codex, Antigravity CLI, opencode** | `decomp connect codex`, `decomp connect antigravity`, `decomp connect opencode` |
 
 ## How it works
 
@@ -196,10 +200,11 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | :-- | :-- |
 | **Live view** | A map of every function in the game, each agent's tool calls, scores falling to zero, all in real time. |
 | **Autopilot** | Every function's machine draft goes through the judge first: whatever already matches costs no agent time (a fifth of the demo games in seconds). |
-| **Your agent, your terminal** | `decomp connect`, then ask Claude Code, Codex or Gemini CLI to decompile your game: it imports, opens the live view and works. |
+| **Your agent, your terminal** | `decomp connect`, then ask Claude Code, Codex or Antigravity CLI to decompile your game: it imports, opens the live view and works. |
 | **Edit it yourself** | Every function has an editor: write C, press Ctrl+Enter, see the judge's diff. You count as an agent. |
 | **Byte-for-byte check** | Candidates are linked at the real address, so calls, globals, strings and jump tables are verified too. |
-| **Any agent** | Claude Code, Codex, Gemini CLI, opencode, or any model with an API key, several at once. |
+| **Any agent** | Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key, several at once. |
+| **Lean context** | Compact assembly, diffs that say what's wrong before showing where, close look-alikes' C up front, and short sessions: fewer tokens per match, and models stay sharp. |
 | **Shared knowledge** | Structs and prototypes go into one header, accepted only if every match so far still matches. |
 | **Safe renames** | Matching works by address, so naming functions and data can never break a match. |
 | **Public decomps** | Fork any of 245 community projects from decomp.dev and keep going with your agents, judged by objdiff. |
@@ -218,10 +223,10 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | :-- | :-- |
 | **Claude Code** | Runs headless against the app's local MCP server. |
 | **Codex CLI** | Same, with approvals limited to decomp.wtf's tools. |
-| **Gemini CLI** | Same, through a project-level MCP config. |
+| **Antigravity CLI** | Same, through the workspace's own MCP config. Google's successor to Gemini CLI (`agy`), which it retired in June 2026. |
 | **opencode** | Same, with any provider you've set up: DeepSeek, Qwen, Kimi and more. |
 | **API key** | A built-in agent loop for any OpenAI-compatible API: DeepSeek, OpenRouter, Ollama, LM Studio. |
-| **The agent you talk to** | `decomp connect` (or the plugin/extension above): it drives decomp.wtf from your own terminal and can start helpers. |
+| **The agent you talk to** | `decomp connect` (or the Claude Code plugin above): it drives decomp.wtf from your own terminal and can start helpers. |
 | **Anything else** | Point any MCP client (Cursor, Claude Desktop, your own) at `decomp mcp`, or at the app with **Connect another agent**. |
 
 Agents only get decomp.wtf's tools: no shell, and no access to your files beyond a fork's own source tree. The app installs missing agents for you
@@ -285,10 +290,19 @@ GameCube and Wii projects are dtk-template projects and DS projects are ds-decom
 every build, and GameCube and Wii files are linked as they're finished. Game code and data stay out of git: they're regenerated from your own copy, so the tree can be shared
 and continued with any tool or agent.
 
+**C and C++.** GameCube, Wii and DS games are often C++, and decomp.wtf handles it there: code with C++ symbol
+names goes into `.cpp` files, drafts come out as C++, and agents get a guide to classes, vtables, constructors,
+inlines and name mangling. On N64, PlayStation, PS2 and GBA, functions started from scratch are written in C for
+now; C++ there (mostly PS2 games) is coming. Public decomps use whatever language the project does.
+
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
-tools run with a memory cap, so a runaway analysis can't take your computer down. KMC GCC, EE-GCC and agbcc are
-Linux programs (the app runs them in a sandbox); on macOS and Windows those platforms work through public decomps
-for now.
+tools run with a memory cap, so a runaway analysis can't take your computer down.
+
+**Windows and the Linux-only compilers.** KMC GCC (N64), the PlayStation GCCs, EE-GCC (PS2) and agbcc (GBA) only
+exist as Linux programs. On Linux the app runs them in a sandbox; on Windows it runs them inside
+[WSL 2](https://learn.microsoft.com/windows/wsl/install), which takes a one-time setup: `wsl --install` in an
+administrator PowerShell, then restart. decomp.wtf installs and runs the compilers in it by itself, and the results
+are byte-identical to Linux. Everything else (IDO, CodeWarrior, objdiff, the GUI) runs natively on Windows.
 
 ## Development
 
@@ -308,6 +322,7 @@ uv run pytest
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
+| `src/decompnet/toolchains.py`, `wsl.py` | The pinned compilers: verified downloads, installs, and on Windows the Linux-only ones inside WSL 2. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it: every function of the original source matches. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
 | `projects/demo-fork/` | A small decomp project in the community's shape (objdiff.json, ninja), for `tests/test_forks.py`. |

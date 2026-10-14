@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# decomp.wtf installer for macOS and Linux.
+# decomp.wtf installer for Linux (Windows: install.ps1; macOS support is coming later).
 #
 #   curl -fsSL https://decomp.wtf/install.sh | bash
 #
@@ -38,8 +38,11 @@ ask() {
 
 bold "decomp.wtf setup"
 case "$(uname -s)" in
-  Linux|Darwin) ;;
-  *) fail "this installer is for macOS and Linux; on Windows run in PowerShell: irm https://decomp.wtf/install.ps1 | iex" ;;
+  Linux) ;;
+  Darwin)
+    # not tested on a Mac yet, so not offered there: better than a half-working install
+    [ "${DECOMP_ALLOW_MACOS:-}" = 1 ] || fail "decomp.wtf supports Linux and Windows for now; macOS support is coming later (https://decomp.wtf)" ;;
+  *) fail "this installer is for Linux; on Windows run in PowerShell: irm https://decomp.wtf/install.ps1 | iex" ;;
 esac
 command -v curl >/dev/null || fail "curl is required"
 
@@ -67,7 +70,7 @@ step "downloading the compilers and tools"
 
 # Your AI agents with decomp.wtf's tools: only when someone is there to say yes (it changes their configs)
 if has_tty && "$BIN/decomp" connect --list 2>/dev/null | grep -q "not connected"; then
-  if ask "Give your AI agents (Claude Code, Codex, Gemini CLI, opencode) decomp.wtf's tools, so you can just ask them to decompile a game?"; then
+  if ask "Give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools, so you can just ask them to decompile a game?"; then
     "$BIN/decomp" connect | sed 's/^/  /'
   fi
 fi

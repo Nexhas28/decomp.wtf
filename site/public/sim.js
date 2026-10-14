@@ -13,7 +13,7 @@
     { name: "Claude Code", model: "Anthropic" },
     { name: "opencode", model: "DeepSeek" },
     { name: "Codex", model: "OpenAI" },
-    { name: "Gemini CLI", model: "Google" },
+    { name: "Antigravity CLI", model: "Google" },
     { name: "Ollama", model: "qwen3-coder · local" },
     { name: "Claude Code", model: "Anthropic" },
   ];
