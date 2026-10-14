@@ -394,6 +394,34 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
+    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by")
+
+    @mcp.custom_route("/api/map", methods=["GET"])
+    async def api_map(request: Request) -> Response:
+        """Every function, for the map and the table. `since`: the signature the GUI has; when nothing changed, the
+        answer is just that (a big game's map is megabytes, and the GUI asks every few seconds). Rows go as arrays
+        under `keys`, gzipped when the browser takes it."""
+        if (bad := guard(request)):
+            return bad
+        slug = request.query_params.get("slug", "")
+
+        def build() -> dict:
+            sig = net.map_signature(slug)
+            if request.query_params.get("since") == sig:
+                return {"sig": sig, "same": True}
+            rows = net.function_map(slug)
+            return {"sig": sig, "keys": MAP_KEYS, "rows": [[r.get(k) for k in MAP_KEYS] for r in rows]}
+        try:
+            data = await call(build)
+        except (NetworkError, ValueError) as e:
+            return fail(e)
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        if len(raw) > 4096 and "gzip" in request.headers.get("accept-encoding", ""):
+            import gzip
+            return Response(gzip.compress(raw, 1), media_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return Response(raw, media_type="application/json")
+
     @mcp.custom_route("/api/log", methods=["GET"])
     async def api_log(request: Request) -> Response:
         """The end of decomp.wtf's log, to read or attach to a bug report (the app's data folder isn't always at
@@ -517,7 +545,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return net.overview(slug)
 
     routes = {
-        "/api/project": (p_overview, ["GET"]), "/api/map": (lambda s, r, d: net.function_map(s), ["GET"]),
+        "/api/project": (p_overview, ["GET"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),

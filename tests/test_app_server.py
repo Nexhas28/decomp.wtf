@@ -65,7 +65,9 @@ def test_import_demo_and_follow_it_live(app):
     slug = j["result"]["slug"]
     st = client.get("/api/state").json()
     assert st["projects"][0]["slug"] == slug and any(a["id"] == "api" for a in st["agents"])
-    assert len(client.get(f"/api/map?slug={slug}").json()) >= 95
+    full = client.get(f"/api/map?slug={slug}").json()
+    assert len(full["rows"]) >= 95 and "name" in full["keys"]
+    assert client.get(f"/api/map?slug={slug}&since={full['sig']}").json() == {"sig": full["sig"], "same": True}
     live = client.get(f"/api/live?slug={slug}").json()
     assert live["overview"]["functions"] >= 95 and live["events"][0]["kind"] == "import"
     detail = client.get(f"/api/function?slug={slug}&name=func_80000460").json()

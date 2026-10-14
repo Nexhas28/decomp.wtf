@@ -483,7 +483,7 @@ $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 
 async function openProject(slug, tab = "overview") {
   show("project");
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
-  S.apFeed = null; S.stats = null; S.map = []; geo = null;
+  S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
   $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; $("now").innerHTML = ""; $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
   try {
     if (!S.st) await loadState();
@@ -545,10 +545,16 @@ document.querySelectorAll("[data-goto]").forEach((a) => {
   };
 });
 
-async function refreshMap() {
-  S.map = await api(`/api/map?slug=${S.slug}`);
-  S.byName = new Map(S.map.map((f, i) => [f.name, i]));
+/* The whole map only when something changed (`force`: a rename or a split, which the signature can't see). */
+async function refreshMap(force = true) {
+  const slug = S.slug;
+  const data = await api(`/api/map?slug=${slug}${!force && S.mapSig ? `&since=${encodeURIComponent(S.mapSig)}` : ""}`);
+  if (slug !== S.slug) return;
   S.lastMapFetch = Date.now();
+  if (data.same) return;
+  S.mapSig = data.sig;
+  S.map = data.rows.map((r) => { const f = {}; data.keys.forEach((k, i) => { f[k] = r[i]; }); return f; });
+  S.byName = new Map(S.map.map((f, i) => [f.name, i]));
   S.map.forEach((f, i) => { f.i = i; });
   $("fnTabCount").textContent = S.map.length.toLocaleString();
   if (S.tab === "overview") layoutMap(); else applyClaims(false);
@@ -593,7 +599,7 @@ async function poll(first) {
     renderNow(live.claims);
     renderStats(live.overview);
     const claimSig = live.claims.map((c) => c.name + "\u0000" + c.agent).join("\n");
-    if (mapDirty || Date.now() - S.lastMapFetch > 8000) await refreshMap();
+    if (mapDirty || Date.now() - S.lastMapFetch > 8000) await refreshMap(mapDirty);
     else {
       applyClaims();
       if (claimSig !== S.claimSig || live.attempts.length) renderList();

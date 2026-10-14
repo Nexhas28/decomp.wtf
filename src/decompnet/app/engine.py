@@ -1221,6 +1221,20 @@ class RomNetwork(Network):
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"]} for r in rows]
 
+    def map_signature(self, slug: str) -> str:
+        """What the function map shows, summed up: it changes when a function is added, matched, tried or claimed.
+        A few sums over indexed rows, so the GUI can ask "anything new?" every few seconds without fetching tens of
+        thousands of functions (renames and splits come with events, which refetch anyway)."""
+        proj = self._project(slug)
+        f = self.store.one("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS hi, COALESCE(SUM(attempts), 0) AS at, "
+                           "COALESCE(SUM(status='matched'), 0) AS m, COALESCE(SUM(best_score), 0) AS bs, "
+                           "COALESCE(MAX(matched_at), 0) AS ma FROM functions WHERE project_id=?", proj["id"])
+        c = self.store.one("SELECT COUNT(*) AS n, COALESCE(SUM(c.function_id * 31 + c.agent_id), 0) AS k FROM claims c "
+                           "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
+        link = self.links.get(slug)
+        remote = sorted(str(x.get("vram") or x.get("name")) + x.get("agent", "") for x in (link.claims if link else []))
+        return f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+
     # ------------------------------------------------------------------ what agents spend, and steering them
 
     def _update_cfg(self, slug: str, change) -> dict:
