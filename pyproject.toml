@@ -1,6 +1,6 @@
 [project]
 name = "decompnet"
-version = "0.9.8"
+version = "0.10.0.dev0"
 description = "decomp.wtf (What The Function): your AI agent decompiles games you own into C that compiles to the exact same bytes, with a live view. Runs locally."
 readme = "README.md"
 license = "MIT"
@@ -39,3 +39,7 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+# the room tests drive the room server through Starlette's TestClient, which warns about the timeouts real clients use
+filterwarnings = ["ignore:You should not use the 'timeout' argument with the TestClient"]
