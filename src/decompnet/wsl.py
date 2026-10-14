@@ -11,6 +11,8 @@ splits a Windows command line.
 from __future__ import annotations
 
 import os
+import posixpath
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -108,10 +110,33 @@ def mount() -> str:
     return _mount
 
 
-def run(argv: list[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess:
+def stage_dir() -> str:
+    """A new folder in WSL's own file system, for run(stage=...)."""
+    return f"/tmp/decompnet-{secrets.token_hex(8)}"
+
+
+def run(argv: list[str], cwd: Path, timeout: float, *, outputs: list[str] | None = None,
+        inputs: list[str] | None = None, stage: str | None = None) -> subprocess.CompletedProcess:
     """Run `argv` (WSL paths) inside WSL in `cwd` (a Windows folder). The command travels as a small script in the
-    temp folder, so nothing depends on how wsl.exe splits a Windows command line."""
-    body = f"cd {shlex.quote(path(cwd))} || exit 1\nexec {shlex.join(argv)}\n"
+    temp folder, so nothing depends on how wsl.exe splits a Windows command line.
+
+    With `outputs`, it runs in `stage` (a folder in WSL's own file system, a new one by default) instead: `inputs`
+    (paths relative to `cwd`, all of it by default) are copied in first and `outputs` copied back after. The old
+    32-bit compilers need that: a Windows drive's file IDs don't fit in their inode numbers, so every file they look
+    up there fails with "Value too large for defined data type"."""
+    q, here = shlex.quote, path(cwd)
+    if outputs is None:
+        body = f"cd {q(here)} || exit 1\nexec {shlex.join(argv)}\n"
+    else:
+        stage = stage or stage_dir()
+        lines = [f"rm -rf {q(stage)} && mkdir -p {q(stage)} || exit 1", f"trap {q('rm -rf ' + q(stage))} EXIT"]
+        for i in inputs if inputs is not None else ["."]:
+            into = posixpath.join(stage, posixpath.dirname(i))
+            lines.append(f"mkdir -p {q(into)} && cp -R {q(posixpath.join(here, i))} {q(into + '/')} || exit 1")
+        lines += [f"mkdir -p {q(posixpath.join(stage, posixpath.dirname(o)))} || exit 1" for o in outputs]
+        lines += [f"cd {q(stage)} || exit 1", shlex.join(argv), "rc=$?"]
+        lines += [f"[ ! -e {q(o)} ] || cp {q(o)} {q(posixpath.join(here, o))} || rc=1" for o in outputs]
+        body = "\n".join([*lines, 'exit "$rc"', ""])
     fd, script = tempfile.mkstemp(prefix="decomp-wsl-", suffix=".sh")
     try:
         with os.fdopen(fd, "wb") as f:

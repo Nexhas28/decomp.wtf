@@ -141,7 +141,7 @@ def build_objects(todo: list[tuple[str, str, str]]) -> None:
             run([as_, *B["as_flags"], "-o", obj, src])
         else:
             argv = [a.replace("{src}", src).replace("{obj}", obj).replace("{include}", "include") for a in cfg.cmd]
-            res = run_in(cfg, ROOT, argv)
+            res = run_in(cfg, ROOT, argv, inputs=[src, "include"], outputs=[obj])
             if res.returncode != 0 or not target.exists():
                 fail(f"compiling {src} failed:\n{(res.stdout + res.stderr)[-3000:]}")
             trim(target)

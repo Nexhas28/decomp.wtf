@@ -79,9 +79,9 @@ def _sandbox_mode(cfg: CompilerConfig) -> str:
 
 
 def _root(cfg: CompilerConfig, work: Path) -> str:
-    """How the compiler sees the work folder."""
+    """How the compiler sees the work folder (in WSL it works on a copy, see wsl.run)."""
     mode = _sandbox_mode(cfg)
-    return "/work" if mode in ("bwrap", "docker") else wsl.path(work) if mode == "wsl" else str(work)
+    return "/work" if mode in ("bwrap", "docker") else wsl.stage_dir() if mode == "wsl" else str(work)
 
 
 def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
@@ -113,17 +113,21 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
     raise RuntimeError(f"unknown sandbox mode {mode!r}")
 
 
-def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None):
+def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None, **stage):
+    """`stage`: in WSL, run on a copy in WSL's own file system (wsl.run's outputs, inputs and stage)."""
     if _sandbox_mode(cfg) == "wsl":
-        return wsl.run(argv, cwd or work, timeout)
+        return wsl.run(argv, cwd or work, timeout, **stage)
     return subprocess.run(_wrap(cfg, work, argv), cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout)
 
 
-def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300) -> subprocess.CompletedProcess:
+def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300, *,
+           inputs: list[str] | None = None, outputs: list[str] | None = None) -> subprocess.CompletedProcess:
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
-    Paths in `argv` must be relative to `work`."""
-    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work))
+    Paths in `argv` must be relative to `work`. In WSL, naming the files it reads (`inputs`) and writes (`outputs`)
+    lets old 32-bit compilers work on a copy in WSL's own file system, which they need (see wsl.run)."""
+    return _exec(cfg, Path(work), argv, timeout, cwd=Path(work),
+                 **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
 
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
@@ -139,8 +143,10 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         inc.mkdir()
         for d in cfg.include_dirs:
             shutil.copytree(d, inc, dirs_exist_ok=True)
-        (inc / "context.h").write_text(context_header, encoding="utf-8")
-        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8")
+        # LF on every platform: to the old GCCs a backslash before CRLF doesn't continue a line ("stray '\' in program")
+        (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
+        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8",
+                                     newline="\n")
 
         root = _root(cfg, work)
         subst = {"{src}": f"{root}/func.c", "{obj}": f"{root}/func.o", "{include}": f"{root}/include"}
@@ -148,7 +154,8 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         argv = [a.replace("{include}", subst["{include}"]) for a in argv]
         try:
             with _SLOTS:
-                proc = _exec(cfg, work, argv, cfg.timeout)
+                proc = _exec(cfg, work, argv, cfg.timeout,
+                             **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {}))
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")

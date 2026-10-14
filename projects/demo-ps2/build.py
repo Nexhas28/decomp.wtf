@@ -49,7 +49,7 @@ def main() -> None:
     objs = []
     for src, extra in jobs:
         obj = f"{Path(src).stem}.o"
-        res = run_in(cfg, BUILD, [*cc, "-O2", "-G8", *extra, src, "-o", obj])
+        res = run_in(cfg, BUILD, [*cc, "-O2", "-G8", *extra, src, "-o", obj], inputs=["src"], outputs=[obj])
         if res.returncode != 0:
             sys.exit(f"failed: {src}\n{res.stdout}{res.stderr}")
         objs.append(obj)

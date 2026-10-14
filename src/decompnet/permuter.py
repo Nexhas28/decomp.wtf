@@ -20,8 +20,9 @@ import urllib.request
 from pathlib import Path
 
 from . import scoring, toolchains
-from .compiler import CompilerConfig, compile_source
+from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
+from .project import compiler_config
 
 TYPES_32 = ["int", "unsigned", "unsigned int", "long", "unsigned long", "s32", "u32", "uInt", "uLong"]
 CASTS = ["(int)", "(unsigned)", "(s32)", "(u32)", "(uInt)", "(uLong)", "(short)", "(unsigned short)"]
@@ -150,7 +151,6 @@ class LocalScorer:
             if tc.proprietary:
                 raise toolchains.ToolchainError(f"{tc.id} is proprietary; install it yourself if you accept its license")
             toolchains.install(tc.id, log=log)
-        dirs = toolchains.runtime_dirs(tc.id)
         self._tmp = tempfile.TemporaryDirectory(prefix="decompnet-worker-")
         inc = Path(self._tmp.name)
         for rel, text in job.get("include_files", {}).items():
@@ -158,11 +158,11 @@ class LocalScorer:
             if inc.resolve() not in dest.parents:
                 raise ValueError(f"refusing include path {rel!r}")
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(text, encoding="utf-8")
-        base = job.get("cmd") or [*tc.cc, *(job.get("flags") or tc.flags), "-I{include}", "{src}", "-o", "{obj}"]
-        self.cc = CompilerConfig(cmd=[a.replace("{tc}", str(dirs[0])) for a in base], ro_paths=tuple(map(str, dirs)),
-                                 include_dirs=(str(inc),),
-                                 runtime32=str(toolchains.require("runtime-i386")) if "runtime-i386" in tc.requires else None)
+            dest.write_text(text, encoding="utf-8", newline="\n")
+        # the coordinator's own way to run the toolchain (on Windows, Linux-only ones go through WSL)
+        compiler = {"toolchain": tc.id, "include_dirs": [str(inc)]}
+        compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k)})
+        self.cc = compiler_config(inc, {"compiler": compiler})
         t = job["target"]
         self.target = FunctionObj(job["function"], t["arch"], t["big_endian"], base64.b64decode(t["code"]),
                                   [Reloc.from_json(r) for r in t["relocs"]])

@@ -143,7 +143,7 @@ def build_objects() -> tuple[list[dict], dict[str, str]]:
         obj = f"build/{Path(src).with_suffix('.o').as_posix()}"
         (ROOT / obj).parent.mkdir(parents=True, exist_ok=True)
         argv = [a.replace("{src}", src).replace("{obj}", obj).replace("{include}", "include") for a in cfg.cmd]
-        res = run_in(cfg, ROOT, argv)
+        res = run_in(cfg, ROOT, argv, inputs=[src, "include"], outputs=[obj])
         if res.returncode != 0 or not (ROOT / obj).exists():
             fail(f"compiling {src} failed:\n{(res.stdout + res.stderr)[-3000:]}")
         trim(ROOT / obj)

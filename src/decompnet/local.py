@@ -10,8 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import scoring, toolchains
-from .compiler import CompilerConfig, compile_source
+from .compiler import compile_source
 from .elfobj import extract_function
+from .project import compiler_config
 
 
 def asm(obj: Path, function: str) -> str:
@@ -33,11 +34,10 @@ def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path |
     target = extract_function(obj.read_bytes(), function)
     if target is None:
         raise SystemExit(f"{obj} has no function {function!r}")
-    tc = toolchains.get(toolchain)
-    dirs = toolchains.runtime_dirs(tc.id)
-    cc = CompilerConfig(cmd=[a.replace("{tc}", str(dirs[0])) for a in [*tc.cc, *(flags or tc.flags), "-I{include}", "{src}", "-o", "{obj}"]],
-                        ro_paths=tuple(map(str, dirs)), include_dirs=tuple(str(d.resolve()) for d in include_dirs),
-                        runtime32=str(toolchains.require("runtime-i386")) if "runtime-i386" in tc.requires else None)
+    compiler = {"toolchain": toolchains.get(toolchain).id, "include_dirs": [str(d.resolve()) for d in include_dirs]}
+    if flags:
+        compiler["flags"] = flags
+    cc = compiler_config(Path("."), {"compiler": compiler})  # on Windows, Linux-only toolchains go through WSL
     res = compile_source(cc, context.read_text(encoding="utf-8") if context else "", source.read_text(encoding="utf-8"))
     if not res.ok:
         return f"COMPILE ERROR\n{res.log}"
