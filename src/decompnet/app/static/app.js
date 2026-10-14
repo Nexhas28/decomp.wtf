@@ -77,6 +77,13 @@ const S = {
 const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage"];
 const TABS = ["overview", "functions", "agents", "activity", "team", "source", "settings"];
 
+/* The project folder in the computer's file manager (decomp.wtf in Docker says where it is instead). */
+function openFolder() {
+  return api("/api/open", { method: "POST", body: { slug: S.slug } })
+    .then((r) => { if (r && r.message) toast(esc(r.message)); })
+    .catch((e) => toast(esc(e.message), "err"));
+}
+
 async function loadState() { S.st = await api("/api/state"); $("navVersion").textContent = `v${S.st.version}`; return S.st; }
 
 function route() {
@@ -598,7 +605,7 @@ function renderHeader(ov) {
 }
 $("phWorking").onclick = () => { location.hash = `#/p/${S.slug}/agents`; };
 $("phRoom").onclick = () => { location.hash = `#/p/${S.slug}/team`; };
-$("phFolder").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+$("phFolder").onclick = () => openFolder();
 
 /* Forks: how much of the game is built from linked C (decomp.dev's "linked"), next to what matches. */
 function linkedText(ov) {
@@ -746,7 +753,7 @@ async function renderTeam() {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
       <p class="muted">Team rooms work for games started from a ROM (N64, PlayStation, GBA). This project is a git source tree: share it the git way, with a repository your team owns (keep it private; the code of a commercial game belongs to its rights holder). Each teammate adds their own copy of the game and their own agents.</p>
       <div class="row"><button class="ghost" id="tmFolder" type="button">Open the project folder</button><button class="ghost" id="tmJoin" type="button">Join a team's room</button></div>`;
-    $("tmFolder").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+    $("tmFolder").onclick = () => openFolder();
     $("tmJoin").onclick = openJoin;
     return;
   }
@@ -851,6 +858,8 @@ function renderHost(box, info) {
 /* Start decomp.wtf with the computer (systemd user service, launchd, or a log-on task). */
 function serviceRow(row, offText) {
   if (!row) return;
+  if (S.st && S.st.runtime === "docker") { row.innerHTML = `<span class="muted small">Docker keeps decomp.wtf running in the background.</span>`; return; }
+  if (S.st && S.st.runtime === "wsl") { row.innerHTML = `<span class="muted small">decomp.wtf runs while its window is open (the Start menu's decomp.wtf).</span>`; return; }
   api("/api/service").then((sv) => {
     if (!row.isConnected) return;
     row.innerHTML = sv.installed ? `<span class="ok-mark">decomp.wtf starts with this computer</span><button class="ghost small-btn" data-svc="remove" type="button">Don't</button>`
@@ -1089,7 +1098,7 @@ async function renderForkSetup() {
     wireCopies(box);
     $("fsCheck").onclick = () => run(() => api("/api/fork/check", { method: "POST", body: { slug: S.slug } }));
   }
-  $("fsFolder").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+  $("fsFolder").onclick = () => openFolder();
 }
 
 /* ------------------------------------------------------------------ map */
@@ -1937,7 +1946,9 @@ async function connectRows(box) {
     return r;
   } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; }
 }
+const HOST_NAMES = { windows: "Windows", macos: "your Mac", linux: "this computer" };
 async function openConnect() {
+  if (S.st && S.st.runtime && S.st.runtime !== "native") return openHostConnect();
   const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
     ${cmdBox("decompile my game at ~/roms/game.z64")}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
@@ -1946,6 +1957,23 @@ async function openConnect() {
       <p class="muted small">It starts decomp.wtf when needed; no token, nothing to update when the app restarts.</p></div>`);
   const r = await connectRows(body.querySelector("#connectRows"));
   if (r) body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
+}
+
+/* decomp.wtf in WSL (Windows) or Docker (macOS): the agents you talk to run on the computer itself, so they're
+   connected from there, by the `decomp` command the installer put on it. */
+async function openHostConnect() {
+  const host = HOST_NAMES[S.st.host_os] || "your computer";
+  const shell = S.st.host_os === "windows" ? "PowerShell" : "a terminal";
+  const body = dialog("Use decomp.wtf from your AI agent", `<p>Run this once in ${esc(shell)} on ${esc(host)}: it connects Claude Code, Codex, Antigravity CLI and opencode there.</p>
+    ${cmdBox("decomp connect")}
+    <p>Then ask your agent, for example:</p>
+    ${cmdBox(S.st.host_os === "windows" ? "decompile my game at C:\\Games\\game.z64" : "decompile my game at ~/roms/game.z64")}
+    <p class="muted small">decomp.wtf runs in ${S.st.runtime === "wsl" ? "its own WSL 2 Linux on Windows" : "Docker"}; your agent reaches it through the command below. Anything it does shows up here as it happens.</p>
+    <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre></div>`);
+  try {
+    const r = await api("/api/connect");
+    body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
+  } catch (e) { body.querySelector("#bridgeJson").textContent = e.message; }
 }
 
 /* ------------------------------------------------------------------ steering: instructions, next in line */
@@ -2046,7 +2074,7 @@ function renderSource(ov) {
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";
 }
-$("srcOpen").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+$("srcOpen").onclick = () => openFolder();
 $("srcExport").onclick = async () => {
   $("srcExport").disabled = true;
   $("expLog").hidden = false;
@@ -2090,7 +2118,7 @@ $("setTcSave").onclick = async () => {
     toast("Compiler settings saved.");
   } catch (e) { toast(esc(e.message), "err"); }
 };
-$("folderBtn").onclick = () => api("/api/open", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
+$("folderBtn").onclick = () => openFolder();
 $("deleteBtn").onclick = () => {
   dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decomp.wtf? Matched functions and notes are deleted.</p>
     <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
@@ -2193,8 +2221,28 @@ async function showSettingsPage() {
     <div class="field"><span>Appearance</span><div class="seg" id="themeSeg">${[["", "System"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-theme="${k}" class="${theme === k ? "on" : ""}">${l}</button>`).join("")}</div></div>
     <div class="field"><span>Start with this computer (keeps team rooms open, resumes agents)</span><div class="row" id="svcRow2"><span class="muted small">Checking…</span></div></div>
     <div class="field"><span>Projects live in</span>${cmdBox(st.home)}</div>`;
-  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
+  const where = { wsl: " (in its own WSL 2 Linux)", docker: " (in Docker)" }[st.runtime] || "";
+  const inst = st.install || {};
+  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on decomp.wtf";
+  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
+    <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
+    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "decomp.wtf which version is current"}; nothing about you or your projects is sent).</span></label>
+    <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
     <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/i12bp8/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
+  const showUpdate = (u) => {
+    if (!$("upText") || !u) return;
+    $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";
+    if (u.available && !$("upGo2")) {
+      const b = document.createElement("button");
+      b.className = "primary small-btn"; b.id = "upGo2"; b.type = "button"; b.textContent = "Update now";
+      b.onclick = offerUpdate;
+      $("upCheck").before(b);
+    }
+  };
+  checkUpdate(false, false).then(showUpdate);
+  $("upCheck").onclick = async () => { $("upText").textContent = "Checking…"; showUpdate(await checkUpdate(true, false)); };
+  $("checkUpdateSet").onchange = () => save({ check_updates: $("checkUpdateSet").checked }, $("checkUpdateSet").checked ? "decomp.wtf looks for updates." : "decomp.wtf won't look for updates (Check now still does).");
+  $("autoUpdateSet").onchange = () => save({ auto_update: $("autoUpdateSet").checked }, $("autoUpdateSet").checked ? "decomp.wtf installs updates by itself." : "decomp.wtf asks before updating.");
   wireCopies($("setComputer"));
   serviceRow($("svcRow2"), "decomp.wtf runs while you have it open.");
   $("themeSeg").querySelectorAll("[data-theme]").forEach((b) => { b.onclick = () => { setTheme(b.dataset.theme); $("themeSeg").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); }; });
@@ -2204,6 +2252,81 @@ async function showSettingsPage() {
   $("budgetSet").onchange = () => save({ budget_usd: Number($("budgetSet").value) || 0 }, "Budget saved.");
 }
 
+/* ------------------------------------------------------------------ updates (app/updates.py)
+   The app checks now and then; when there's something newer, it asks once (per version) and installs it with one
+   click: it restarts in place, and this tab reloads itself once the new version answers. */
+const UPDATE_SKIP = "decomp-wtf-skip-update";
+let updateInfo = null;
+const updateTarget = (u) => (u && u.latest ? u.latest.commit || u.latest.version || "" : "");
+function updateName(u) {
+  const l = u.latest || {}, c = u.current || {};
+  if (c.channel === "branch") return `${c.branch} @ ${(l.commit || "").slice(0, 7)}${l.version && l.version !== c.version ? ` (${l.version})` : ""}`;
+  return `decomp.wtf ${l.version}`;
+}
+async function checkUpdate(refresh = false, ask = true) {
+  try { updateInfo = await api(`/api/update${refresh ? "?refresh=1" : ""}`); } catch { return null; }
+  $("navUpdate").hidden = !updateInfo.available;
+  const job = updateInfo.job || {};
+  if (job.state === "installing" || job.state === "restarting") { showUpdating(); return updateInfo; }
+  let skipped = "";
+  try { skipped = localStorage.getItem(UPDATE_SKIP) || ""; } catch { /* storage off */ }
+  if (ask && updateInfo.available && skipped !== updateTarget(updateInfo) && $("dialog").hidden && $("drawer").hidden) offerUpdate();
+  return updateInfo;
+}
+function offerUpdate() {
+  const u = updateInfo;
+  if (!u) return;
+  const c = u.current || {};
+  const notes = (u.notes || []).map((n) => `<li>${esc(n)}</li>`).join("");
+  const body = dialog("A new decomp.wtf is ready", `<p>${c.channel === "branch"
+      ? `New on the <b>${esc(c.branch)}</b> branch: <code>${esc((u.latest.commit || "").slice(0, 7))}</code> (you have <code>${esc((c.commit || "?").slice(0, 7))}</code>).`
+      : `decomp.wtf <b>${esc(u.latest.version)}</b> is out. You have ${esc(c.version)}.`}</p>
+    ${notes ? `<ul class="up-notes">${notes}</ul>` : ""}
+    ${u.link ? `<p class="small"><a class="link" href="${esc(u.link)}" target="_blank" rel="noopener">Every change</a></p>` : ""}
+    <p class="muted small">${u.can_apply ? "One click: decomp.wtf installs it and restarts by itself, and this tab follows along. Helper agents pause for a moment and carry on." : esc(u.why_not)}</p>
+    <div class="row"><button class="primary" id="upGo" type="button" ${u.can_apply ? "" : "disabled"}>Update now</button><button class="ghost" id="upLater" type="button">Later</button></div>`);
+  body.querySelector("#upLater").onclick = () => {
+    try { localStorage.setItem(UPDATE_SKIP, updateTarget(u)); } catch { /* storage off */ }
+    closeAll();
+  };
+  body.querySelector("#upGo").onclick = async (e) => {
+    e.target.disabled = true;
+    try { await api("/api/update", { method: "POST", body: { apply: true } }); } catch (err) { e.target.disabled = false; return toast(esc(err.message), "err"); }
+    showUpdating();
+  };
+}
+async function showUpdating() {
+  if (S.updating) return;
+  S.updating = true;
+  const was = { version: S.st ? S.st.version : "", build: S.st ? S.st.build || "" : "" };
+  dialog("Updating decomp.wtf", `<p id="upStep">Installing the update…</p><pre class="joblog tall" id="upLog"></pre>
+    <p class="muted small">This tab reloads by itself once the new version is running.</p>`);
+  let away = 0;
+  for (;;) {
+    await sleep(1000);
+    let u = null;
+    try { u = await api("/api/update"); away = 0; } catch { away++; }
+    const job = (u && u.job) || {};
+    if (u && $("upLog")) { $("upLog").textContent = (job.log || []).join("\n"); $("upLog").scrollTop = $("upLog").scrollHeight; }
+    if (job.state === "error") {
+      S.updating = false;
+      if ($("upStep")) $("upStep").textContent = `The update didn't go through: ${job.error}`;
+      return;
+    }
+    if (job.state === "restarting" && $("upStep")) $("upStep").textContent = "Restarting…";
+    try {
+      const h = await (await fetch("/health", { cache: "no-store" })).json();
+      if (h.version !== was.version || (h.build || "") !== was.build) { location.reload(); return; }
+    } catch { /* not back yet */ }
+    if (away > 180) {
+      S.updating = false;
+      if ($("upStep")) $("upStep").textContent = "decomp.wtf didn't come back after the update. Start it again (decomp.wtf in your apps, or the decomp command).";
+      return;
+    }
+  }
+}
+$("navUpdate").onclick = () => (updateInfo && updateInfo.available ? offerUpdate() : checkUpdate(true, true));
+
 $("quitBtn").onclick = async () => {
   if (!confirm("Quit decomp.wtf? Running agents stop.")) return;
   await api("/api/quit", { method: "POST" }).catch(() => {});
@@ -2212,3 +2335,5 @@ $("quitBtn").onclick = async () => {
 
 loadNav();
 route();
+setTimeout(() => checkUpdate(false, true), 4000);
+setInterval(() => checkUpdate(false, true), 10 * 60 * 1000);

@@ -66,7 +66,13 @@ def mint(info: dict, name: str) -> str:
     return data["token"]
 
 
-async def proxy(port: int, token: str) -> None:
+async def proxy(info: dict, token: str, name: str) -> None:
+    """Pass the app's tools through. When the app restarts (an update, or the user quit and started it again) the
+    session is gone: connect again, with a new identity if it's a new app, and repeat the call.
+
+    One task owns the connection (anyio wants a client opened and closed by the same task); a call that finds the
+    session lost asks it for a new one and waits."""
+    import anyio
     import httpx2
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -75,20 +81,79 @@ async def proxy(port: int, token: str) -> None:
 
     from .chat import CHAT_INSTRUCTIONS
 
-    http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {token}"}, timeout=httpx2.Timeout(900, connect=10))
-    async with Client(streamable_http_client(f"http://127.0.0.1:{port}/mcp", http_client=http),
-                      read_timeout_seconds=900) as remote:
+    conn: dict = {"info": info, "token": token, "remote": None, "gen": 0}
+    changed = asyncio.Condition()
+    want_new = asyncio.Event()
+
+    async def keep_connected() -> None:
+        failures = 0
+        while True:
+            try:
+                port = conn["info"]["port"]
+                http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {conn['token']}"},
+                                          timeout=httpx2.Timeout(900, connect=10))
+                async with Client(streamable_http_client(f"http://127.0.0.1:{port}/mcp", http_client=http),
+                                  read_timeout_seconds=900) as remote:
+                    async with changed:
+                        conn["remote"], conn["gen"] = remote, conn["gen"] + 1
+                        changed.notify_all()
+                    failures = 0
+                    await want_new.wait()
+                    want_new.clear()
+            except Exception as e:  # a broken session can fail on the way out too
+                if conn["gen"] == 0:
+                    raise  # never connected: main says why
+                failures += 1
+                _log(f"connection to decomp.wtf lost ({e}); retrying")
+                await anyio.sleep(min(10, failures))
+            _log("decomp.wtf restarted: connecting again")
+            try:
+                fresh = await asyncio.to_thread(ensure_app, home_dir())
+                if (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"]):
+                    conn["token"] = await asyncio.to_thread(mint, fresh, name)  # a new app: a new identity
+                conn["info"] = fresh
+            except (OSError, ValueError, KeyError, SystemExit) as e:
+                _log(f"decomp.wtf isn't answering yet ({e})")
+                await anyio.sleep(2)
+
+    def lost(e: Exception) -> bool:
+        text = str(e).lower()
+        return ("session terminated" in text or "connect" in text or "closed" in text
+                or not _alive(conn["info"]["port"]))
+
+    async def remote_call(fn):
+        for attempt in range(2):
+            async with changed:
+                await changed.wait_for(lambda: conn["remote"] is not None)
+                remote, gen = conn["remote"], conn["gen"]
+            try:
+                return await fn(remote)
+            except Exception as e:
+                if attempt or not lost(e):
+                    raise
+                async with changed:
+                    if conn["gen"] == gen:  # the first call to notice: ask for a new session
+                        conn["remote"] = None
+                        want_new.set()
+                    await changed.wait_for(lambda: conn["gen"] > gen)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(keep_connected)
+        async with changed:
+            await changed.wait_for(lambda: conn["remote"] is not None)
+
         async def list_tools(ctx, params):
-            return await remote.list_tools(cursor=params.cursor if params else None)
+            return await remote_call(lambda r: r.list_tools(cursor=params.cursor if params else None))
 
         async def call_tool(ctx, params):
-            return await remote.call_tool(params.name, params.arguments or {})
+            return await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
 
         server = Server("decomp", version=__version__, title="decomp.wtf",
-                        instructions=CHAT_INSTRUCTIONS + "\n" + (remote.instructions or ""),
+                        instructions=CHAT_INSTRUCTIONS + "\n" + (conn["remote"].instructions or ""),
                         on_list_tools=list_tools, on_call_tool=call_tool)
         async with stdio_server() as (read, write):
             await server.run(read, write, server.create_initialization_options())
+        tg.cancel_scope.cancel()
 
 
 def main(name: str = "chat") -> int:
@@ -99,7 +164,7 @@ def main(name: str = "chat") -> int:
         _log(f"couldn't connect to decomp.wtf: {e}. Try `decomp stop`, then use this again.")
         return 1
     try:
-        asyncio.run(proxy(info["port"], token))
+        asyncio.run(proxy(info, token, name))
     except KeyboardInterrupt:
         pass
     return 0

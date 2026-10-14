@@ -215,10 +215,20 @@ def argv(cmd: list[str]) -> list[str]:
     return [node, *m["opts"].split(), str(script), *cmd[1:]]
 
 
+def signin(k: Kind) -> str:
+    """How to sign in to an agent, said for where decomp.wtf runs (WSL/Docker: in decomp.wtf's own terminal)."""
+    from .. import hostenv
+
+    if not k.signin or hostenv.runtime() == "native":
+        return k.signin
+    text = k.signin.removeprefix("Open a terminal, ").removeprefix("Open a terminal and ")
+    return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
+
+
 def detect() -> list[dict]:
     out = []
     for k in KINDS.values():
-        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": k.signin, "docs": k.docs,
+        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
                "install": k.install.get("windows" if WIN else "unix", "")}
         if not k.command:
             row.update(installed=True, version=None, path=None)
@@ -617,7 +627,7 @@ class Manager:
             if failures >= 3:
                 s.state = "error"
                 s.error = s.error or "the agent failed three times in a row"
-                s.push("error", f"stopping: {s.error}. {KINDS[s.kind].signin}".strip())
+                s.push("error", f"stopping: {s.error}. {signin(KINDS[s.kind])}".strip())
                 break
             s.state = "waiting"
             s.stop.wait(3 if ok else min(60, 5 * failures + max(0, 10 - (time.time() - t0))))
@@ -770,7 +780,7 @@ class Manager:
             raise Fatal(refused)  # every retry would be refused the same way
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
             s.signed_out = True
-            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {KINDS[s.kind].signin}"
+            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {signin(KINDS[s.kind])}"
             s.push("error", s.error)
             return False
         if code != 0 and not s.stop.is_set():

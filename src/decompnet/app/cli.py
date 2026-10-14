@@ -14,10 +14,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import webbrowser
 from pathlib import Path
 
-DEFAULT_PORT = 6464
+from .. import hostenv
+
+DEFAULT_PORT = int(os.environ.get("DECOMP_PORT") or 6464)
 
 
 def home_dir() -> Path:
@@ -71,28 +72,49 @@ def replace_older(state_file: Path, log=print) -> dict | None:
     return None
 
 
-def _listen(start: int) -> socket.socket:
+def _bind_address() -> str:
+    """127.0.0.1, except in decomp.wtf's Docker container: there the published port (127.0.0.1 on the computer
+    itself) arrives from outside the container. Host headers are still checked on every request (server.py)."""
+    return os.environ.get("DECOMP_BIND") or ("0.0.0.0" if hostenv.runtime() == "docker" else "127.0.0.1")
+
+
+def _listen(start: int, exact: bool = False) -> socket.socket:
     """A listening socket on the first free port from `start`, kept open and handed to the server: two decomp.wtf
-    instances starting at the same moment can't both pick the same port."""
-    for port in range(start, start + 50):
+    instances starting at the same moment can't both pick the same port. `exact`: that port or nothing (a restart
+    into an update keeps its port, so the open browser tab carries on; Docker publishes one port)."""
+    for port in range(start, start + (1 if exact else 50)):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            sock.bind(("127.0.0.1", port))
-            sock.listen(128)
-            return sock
-        except OSError:
-            sock.close()
-    raise SystemExit("no free port for decomp.wtf")
+        if sys.platform != "win32":  # the previous run's connections may linger in TIME_WAIT for a minute
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        for attempt in range(50 if exact else 1):
+            try:
+                sock.bind((_bind_address(), port))
+                sock.listen(128)
+                return sock
+            except OSError:
+                time.sleep(0.2 if exact else 0)
+        sock.close()
+    raise SystemExit(f"port {start} is taken" if exact else "no free port for decomp.wtf")
 
 
 def _open_when_ready(url: str, port: int) -> None:
     def wait():
         for _ in range(100):
             if _alive(port):
-                webbrowser.open(url)
+                hostenv.open_url(url)
                 return
             time.sleep(0.2)
     threading.Thread(target=wait, daemon=True).start()
+
+
+def _restart_state() -> dict | None:
+    """Set by updates.restart: this process just became the new version and keeps the old one's port and secret."""
+    raw = os.environ.pop("DECOMP_RESTART", "")
+    try:
+        data = json.loads(raw) if raw else None
+        return data if isinstance(data, dict) and data.get("port") and data.get("secret") else None
+    except ValueError:
+        return None
 
 
 def run(args) -> int:
@@ -107,17 +129,18 @@ def run(args) -> int:
     if sys.stdout is None:  # started without a console (pythonw: Windows' startup apps): what it says goes to app.log
         sys.stdout = sys.stderr = open(internal / "app.log", "a", encoding="utf-8", buffering=1)
     state_file = internal / "server.json"
-    prev = replace_older(state_file)
+    restarted = _restart_state()
+    prev = None if restarted else replace_older(state_file)
     if prev:
         url = f"http://127.0.0.1:{prev['port']}/?k={prev['secret']}"
         print(f"decomp.wtf is already running: {url}")
-        if not args.no_browser:
-            webbrowser.open(url)
+        if not args.no_browser and not hostenv.open_url(url):
+            print("open that address in your browser")
         return 0
 
-    sock = _listen(args.port)
+    sock = _listen(restarted["port"] if restarted else args.port, exact=bool(restarted) or _fixed_port())
     port = sock.getsockname()[1]
-    secret = secrets.token_urlsafe(24)
+    secret = restarted["secret"] if restarted else secrets.token_urlsafe(24)
     state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}), encoding="utf-8")
     try:
         os.chmod(state_file, 0o600)
@@ -127,14 +150,73 @@ def run(args) -> int:
     mcp, manager, security = build(net, internal, port, secret)
     app = mcp.streamable_http_app(transport_security=security, max_request_body_size=80 * 1024 * 1024, host="127.0.0.1")
     url = f"http://127.0.0.1:{port}/?k={secret}"
-    print(f"decomp.wtf {__import__('decompnet').__version__} on {url}\nyour projects: {home}\nstop with Ctrl-C")
-    if not args.no_browser:
+    print(f"decomp.wtf {__import__('decompnet').__version__} on {url}\nyour projects: {hostenv.shown_path(home)}"
+          + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C"), flush=True)
+    if not args.no_browser and not restarted:
         _open_when_ready(url, port)
     try:
         uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
     finally:
         manager.stop()
         manager.on_stop()
+    return 0
+
+
+def _fixed_port() -> bool:
+    """Docker publishes exactly one port: decomp.wtf must listen on it, not on the next free one."""
+    return hostenv.runtime() == "docker" and bool(os.environ.get("DECOMP_PORT"))
+
+
+def url_cmd(args) -> int:
+    """Print the address that opens the app (starting it in the background first if needed)."""
+    from .bridge import ensure_app
+
+    info = ensure_app(home_dir())
+    print(f"http://127.0.0.1:{info['port']}/?k={info['secret']}")
+    return 0
+
+
+def update_cmd(args) -> int:
+    """Look for a newer decomp.wtf and install it (the running app restarts into it)."""
+    from . import updates
+
+    state_file = home_dir() / ".decomp" / "server.json"
+    running = None
+    try:
+        running = json.loads(state_file.read_text(encoding="utf-8"))
+        if not _alive(running.get("port", 0)):
+            running = None
+    except (OSError, ValueError):
+        pass
+    found = updates.check()
+    cur = found["current"]
+    where = f" ({cur['branch']} @ {(cur.get('commit') or '?')[:7]})" if cur["channel"] == "branch" else ""
+    if found.get("error"):
+        print(found["error"])
+        return 1
+    if not found["available"]:
+        print(f"decomp.wtf {cur['version']}{where} is up to date")
+        return 0
+    latest = found["latest"]
+    print(f"update: {latest.get('version') or ''} {('@ ' + latest['commit'][:7]) if latest.get('commit') else ''}".strip())
+    for note in found.get("notes") or []:
+        print(f"  - {note}")
+    if args.check:
+        return 0
+    if running:  # the app installs it and restarts itself (its page follows along)
+        _api("/api/update", {"apply": True})
+        print("decomp.wtf is installing the update and restarts when it's done")
+        return 0
+    updates.install(found, log=print)
+    print("updated")
+    return 0
+
+
+def install_info(args) -> int:
+    """Remember how decomp.wtf was installed (by the installers): where its updates come from."""
+    from . import updates
+
+    print(json.dumps(updates.record(args.channel, args.branch, args.commit, args.repo)))
     return 0
 
 
@@ -329,6 +411,10 @@ def share(args) -> int:
 def shortcut(args) -> int:
     from .launcher import install_launcher
 
+    if hostenv.runtime() != "native":
+        print("the installer adds decomp.wtf to your computer's menu (this is decomp.wtf's own Linux)")
+        return 0
+
     print(install_launcher())
     return 0
 
@@ -341,6 +427,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
     sub.add_parser("stop", help="stop the running app")
     sub.add_parser("shortcut", help="add decomp.wtf to your apps menu / desktop")
+    sub.add_parser("url", help="print the address that opens the app (starts it if needed)")
+    up = sub.add_parser("update", help="install the newest decomp.wtf (the running app restarts into it)")
+    up.add_argument("--check", action="store_true", help="only say whether there is one")
+    ii = sub.add_parser("install-info", help=argparse.SUPPRESS)  # the installers: where updates come from
+    ii.add_argument("--channel", choices=["release", "branch"], default="release")
+    ii.add_argument("--branch", default="")
+    ii.add_argument("--commit", default="")
+    ii.add_argument("--repo", default="i12bp8/decomp.wtf")
     c = sub.add_parser("connect", help="give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools")
     c.add_argument("agents", nargs="*", metavar="agent", help="claude, codex, antigravity (agy) or opencode (default: every one installed)")
     c.add_argument("--list", action="store_true", help="only show which are connected")
@@ -374,7 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         from .bridge import main as bridge
         return bridge(args.name)
     return {"setup": setup, "stop": stop, "shortcut": shortcut, "connect": connect_agents, "share": share,
-            "host": host, "join": join, "service": service_cmd}.get(args.cmd, run)(args)
+            "host": host, "join": join, "service": service_cmd, "url": url_cmd, "update": update_cmd,
+            "install-info": install_info}.get(args.cmd, run)(args)
 
 
 if __name__ == "__main__":

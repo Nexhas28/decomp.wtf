@@ -6,13 +6,13 @@ starts itself only get the work tools (a helper can't start more helpers)."""
 from __future__ import annotations
 
 import time
-import webbrowser
 from pathlib import Path
 
 import anyio
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
+from .. import hostenv
 from ..network import NetworkError
 from . import agents, tools
 
@@ -113,9 +113,11 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         if not own_copy:
             raise ToolError("ask the user to confirm this is their own legally obtained copy of the game, then call "
                             "import_game again with own_copy=true")
-        game = Path(path).expanduser()
+        game = hostenv.local_path(path)
         if not game.is_file():
-            raise ToolError(f"no file at {game}")
+            hint = {"wsl": " (decomp.wtf runs in WSL: Windows drives are under /mnt, e.g. C:\\ is /mnt/c)",
+                    "docker": " (decomp.wtf runs in Docker and sees your home folder only)"}.get(hostenv.runtime(), "")
+            raise ToolError(f"no file at {game}{hint}")
 
         def work(log):
             slug = net.import_rom(game, toolchain=compiler or None, confirmed=True, name=game.name, log=log)
@@ -161,10 +163,13 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         agent = chat_agent(ctx)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
         url = f"http://127.0.0.1:{port}/?k={secret}" + (f"#/p/{slug}" if slug else "")
-        ok = await anyio.to_thread.run_sync(lambda: webbrowser.open(url))
+        ok = await anyio.to_thread.run_sync(lambda: hostenv.open_url(url))
         where = f"http://127.0.0.1:{port}/" + (f"#/p/{slug}" if slug else "")
-        return (f"Opened the live view in the user's browser ({where})." if ok else
-                f"Couldn't open a browser here; the user can run `decomp` to open the app ({where}).")
+        if ok:
+            return f"Opened the live view in the user's browser ({where})."
+        if hostenv.runtime() == "docker":  # the container can't reach the user's browser: hand them the link
+            return f"Give the user this link to open the live view (it signs their browser in): {url}"
+        return f"Couldn't open a browser here; the user can run `decomp` to open the app ({where})."
 
     @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def start_agents(ctx: Context, count: int = 1, kind: str = "", per_session: int = 0) -> str:

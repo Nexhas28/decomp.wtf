@@ -56,7 +56,9 @@ Everything runs on your computer. No account, no telemetry, nothing uploaded.
 
 ## Install
 
-decomp.wtf runs on **Linux** and **Windows**.
+decomp.wtf runs on **Linux**, **Windows** and **macOS**. The compilers it runs are Linux programs, so it runs on
+Linux everywhere: on Linux itself, on Windows in its own small Linux (a WSL 2 distribution called `decomp-wtf`),
+on macOS in Docker. The same Linux, set up by the same script, on every computer.
 
 **Linux**
 
@@ -70,13 +72,27 @@ curl -fsSL https://decomp.wtf/install.sh | bash
 irm https://decomp.wtf/install.ps1 | iex
 ```
 
-**macOS: coming later.** I don't have a Mac to test on, and rather than ship something that half works, macOS
-support comes once it's been tested properly.
+It turns on WSL 2 if it isn't yet (Windows asks for permission once, and may want a restart), makes decomp.wtf's
+Linux from Debian's official WSL image and installs everything in it. You get a `decomp` command, a Start menu entry
+and a desktop shortcut. Your projects are at `\\wsl.localhost\decomp-wtf\home\decomp\Decomp`.
+
+**macOS** (needs [Docker Desktop](https://www.docker.com/products/docker-desktop/), [OrbStack](https://orbstack.dev)
+or [Colima](https://github.com/abiosoft/colima))
+
+```
+curl -fsSL https://decomp.wtf/install.sh | bash
+```
+
+decomp.wtf runs in a Docker container (`decomp-wtf`) with your projects in the volume `decomp-wtf-home`; you get a
+`decomp` command and a decomp.wtf app in ~/Applications. `decomp shell` opens a terminal inside.
 
 One line sets up everything: [uv](https://docs.astral.sh/uv/), the app, the period compilers (pinned and
-checksum-verified) and the m2c draft decompiler. It then adds **decomp.wtf** to your apps and opens it in your
-browser. After that, start it any time from your apps menu (the Start menu on Windows) or by typing `decomp` in a
-terminal. Remove it any time with `uv tool uninstall decompnet`.
+checksum-verified) and the m2c draft decompiler. It then opens decomp.wtf in your browser. After that, start it any
+time from your apps menu (the Start menu on Windows) or by typing `decomp` in a terminal.
+
+**Updates** come by themselves: when there's a new version, decomp.wtf asks once, and one click installs it and
+restarts the app in the same tab (helper agents carry on). Settings has "check now", "install updates by itself" and
+"don't look for updates".
 
 > [!TIP]
 > No ROM at hand? The app ships with **Demo Quest 64**, a real N64 ROM built from public-domain code and zlib.
@@ -322,13 +338,29 @@ uv run pytest
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
-| `src/decompnet/toolchains.py`, `wsl.py` | The pinned compilers: verified downloads, installs, and on Windows the Linux-only ones inside WSL 2. |
+| `src/decompnet/toolchains.py` | The pinned compilers: verified downloads and installs. |
+| `src/decompnet/hostenv.py`, `app/updates.py` | Where decomp.wtf runs (Linux itself, its WSL 2 distribution on Windows, Docker on macOS) and what crosses to the computer around it; updates. |
+| `site/public/install.sh`, `install.ps1`, `linux-base.sh`, `Dockerfile` | The installers: decomp.wtf's own Linux (WSL on Windows, Docker on macOS) is made by `linux-base.sh` on Debian. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it: every function of the original source matches. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
 | `projects/demo-fork/` | A small decomp project in the community's shape (objdiff.json, ninja), for `tests/test_forks.py`. |
 | `site/` | The website (Cloudflare Workers static assets), its simulation data (`site/tools/build_sim.py`) and legal pages. |
 
 Rebuild the demo ROM with `uv run python projects/demo-rom/build.py` (needs `gcc-2.7.2-kmc` and `ld.lld`).
+
+**Testing a branch on Windows or macOS.** Run the installer from a checkout of the branch: it installs that checkout,
+and the installed app then follows the branch on GitHub (every new commit pushed there shows up as an update in the
+app: one click installs it).
+
+```
+git clone -b <branch> https://github.com/i12bp8/decomp.wtf && cd decomp.wtf
+powershell -ExecutionPolicy Bypass -File site\public\install.ps1      # Windows
+bash site/public/install.sh                                           # macOS (or Linux; --docker to use Docker)
+```
+
+Without a checkout: `$env:DECOMP_BRANCH = "<branch>"; irm https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.ps1 | iex`
+on Windows, `curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.sh | DECOMP_BRANCH=<branch> bash`
+on macOS. `decomp update` (or the app's Settings) installs the newest commit by hand.
 
 </details>
 

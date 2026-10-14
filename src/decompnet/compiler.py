@@ -117,7 +117,9 @@ def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd:
     """`stage`: in WSL, run on a copy in WSL's own file system (wsl.run's outputs, inputs and stage)."""
     if _sandbox_mode(cfg) == "wsl":
         return wsl.run(argv, cwd or work, timeout, **stage)
-    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+    # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
+    # current directory is / ("Bad file descriptor"), which it is for decomp.wtf started by a service or in Docker
+    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout)
 
 

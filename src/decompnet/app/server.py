@@ -27,10 +27,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import __version__, toolchains
+from .. import __version__, hostenv, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
-from . import agents, chat, collab, connect, tools
+from . import agents, chat, collab, connect, tools, updates
 from .engine import COMPILERS, MW_VERSIONS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
@@ -87,6 +87,7 @@ class Settings:
             api["has_key"] = True
         return {"api": api, "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
+                "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
 
@@ -106,17 +107,9 @@ def _static(name: str) -> bytes | None:
         return None
 
 
-def open_folder(path: Path) -> None:
-    if sys.platform == "win32":
-        os.startfile(str(path))  # noqa: S606 (opening the user's own folder)
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def build(net: RomNetwork, home: Path, port: int, secret: str):
     mcp_url = f"http://127.0.0.1:{port}/mcp"
+    build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
     manager = agents.Manager(net, home, mcp_url)
     jobs = Jobs()
     settings = Settings(home / "settings.json")
@@ -229,7 +222,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "app": "decomp-wtf", "version": __version__})
+        return JSONResponse({"ok": True, "app": "decomp-wtf", "version": __version__, "build": build_id})
 
     # ------------------------------------------------------------------ state
 
@@ -244,7 +237,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
             t["name"] = SHORT_NAMES.get(t["id"], t["name"])
-        return {"version": __version__, "platform": toolchains.current_platform(), "home": str(home.parent),
+        return {"version": __version__, "build": build_id, "install": updates.installed(), **hostenv.info(),
+                "platform": toolchains.current_platform(), "home": hostenv.shown_path(home.parent),
                 "projects": projects, "toolchains": tcs, "agents": agents.detect(),
                 "api_presets": agents.API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
@@ -292,7 +286,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if q.get("confirmed") != "1":
                 return fail(ValueError("confirm that this is your own legally obtained copy of the game"))
             if q.get("path"):
-                game = Path(q["path"].strip().strip('"')).expanduser()
+                game = hostenv.local_path(q["path"])
                 if not game.is_file():
                     return fail(ValueError(f"no file at {game}"))
                 name = game.name
@@ -378,8 +372,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"job": jobs.start("export", work)}
 
     def p_open(slug, request, data):
-        open_folder(Path(net.project_row(slug)["root"]))
-        return {"ok": True}
+        why = hostenv.open_folder(Path(net.project_row(slug)["root"]))
+        return {"ok": why is None, "message": why}
 
     def p_delete(slug, request, data):
         manager.stop()
@@ -660,6 +654,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 linked = list(pool.map(lambda a: a["installed"] and connect.status(a["id"]), found))
             return [{"id": a["id"], "name": a["name"], "installed": a["installed"], "connected": ok,
                      "command": connect.shown(a["id"])} for a, ok in zip(found, linked)]
+        if (host := hostenv.host_bridge()) is not None:  # the user's agents live outside decomp.wtf's Linux
+            return JSONResponse({"agents": [], "bridge": host, "host_bridge": host, **hostenv.info()})
         return JSONResponse({"agents": await anyio.to_thread.run_sync(rows), "bridge": connect.bridge_command()})
 
     @mcp.custom_route("/api/agents/token", methods=["POST"])
@@ -709,8 +705,49 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             settings.data["autopilot"] = bool(data["autopilot"])
         if "budget_usd" in data:
             settings.data["budget_usd"] = max(0.0, float(data["budget_usd"] or 0))
+        if "auto_update" in data:
+            settings.data["auto_update"] = bool(data["auto_update"])
+        if "check_updates" in data:
+            settings.data["check_updates"] = bool(data["check_updates"])
         settings.save()
         return JSONResponse(settings.public())
+
+    # ------------------------------------------------------------------ updates (updates.py)
+
+    @mcp.custom_route("/api/update", methods=["GET", "POST"])
+    async def api_update(request: Request) -> Response:
+        """Whether a newer decomp.wtf is out (checked now and then; ?refresh=1 now) and, POSTed, installing it."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        if request.method == "POST":
+            try:
+                await call(updater.apply)
+            except ValueError as e:
+                return fail(e)
+        refresh = request.query_params.get("refresh") == "1"
+        if not refresh and not checking():  # the user turned checks off: only "Check now" asks
+            return JSONResponse({"disabled": True, "available": False, "current": updates.installed(),
+                                 "job": updater.job, "runtime": hostenv.runtime()})
+        return JSONResponse(await call(lambda: updater.status(refresh)))
+
+    def checking() -> bool:
+        return settings.data.get("check_updates", True) is not False and os.environ.get("DECOMP_UPDATES") != "off"
+
+    def watch_updates() -> None:
+        """Check now and then; with "install updates automatically" on, install one while no helper is working."""
+        time.sleep(20)
+        while True:
+            if not checking():
+                time.sleep(300)
+                continue
+            try:
+                st = updater.status()
+                busy = any(s.state in ("starting", "working") for s in manager.sessions.values())
+                if st.get("available") and st.get("can_apply") and settings.data.get("auto_update") and not busy:
+                    updater.apply()
+            except (ValueError, OSError):
+                pass
+            time.sleep(300)
 
     @mcp.custom_route("/api/quit", methods=["POST"])
     async def api_quit(request: Request) -> Response:
@@ -935,6 +972,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             link.stop()
 
     manager.on_stop = shutdown_rooms
+
+    def before_restart() -> None:  # what quitting does: helpers stop now and resume in the new version
+        manager.stop()
+        manager.on_stop()
+    updater = updates.Updater(before_restart, port, secret)
+    threading.Thread(target=watch_updates, daemon=True, name="updates").start()
 
     security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=sorted(allowed_hosts),
                                          allowed_origins=[f"http://{h}" for h in sorted(allowed_hosts)])
