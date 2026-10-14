@@ -154,9 +154,18 @@ def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
                     if mode & 0o111 and not info.is_dir():
                         os.chmod(target, 0o755)
         elif archive.name.endswith(".zst"):
-            # GNU tar picks the zstd decompressor itself; never restore owners from the archive.
-            subprocess.run(["tar", "-xf", str(archive), "-C", tmp, "--no-same-owner", "--no-same-permissions"],
-                           check=True, capture_output=True)
+            # GNU tar extracts it; never restore owners from the archive. The zstd layer is undone here first: tar
+            # would run the zstd command for it, which many systems don't have (tar then just fails with code 2)
+            import zstandard
+
+            plain = Path(tmp).with_name(Path(tmp).name + ".tar")
+            try:
+                with open(archive, "rb") as src, open(plain, "wb") as out:
+                    zstandard.ZstdDecompressor().copy_stream(src, out)
+                subprocess.run(["tar", "-xf", str(plain), "-C", tmp, "--no-same-owner", "--no-same-permissions"],
+                               check=True, capture_output=True)
+            finally:
+                plain.unlink(missing_ok=True)
         else:
             # gz/xz in pure Python, so this works on Windows and macOS too. The "data" filter refuses
             # absolute paths, links out of the tree and device files, and drops setuid bits.

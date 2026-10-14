@@ -58,7 +58,9 @@ class Jobs:
             except (NetworkError, RomError, toolchains.ToolchainError, ValueError, RuntimeError, OSError) as e:
                 job["error"], job["state"] = str(e), "error"
             except subprocess.CalledProcessError as e:
-                job["error"], job["state"] = f"command failed ({e.returncode})", "error"
+                said = e.stderr or e.output or ""  # what the command said, so the error shows why
+                said = (said.decode("utf-8", "replace") if isinstance(said, bytes) else said).strip()
+                job["error"], job["state"] = f"command failed ({e.returncode})" + (f": {said[-400:]}" if said else ""), "error"
         threading.Thread(target=run, daemon=True, name=f"job-{kind}").start()
         return jid
 

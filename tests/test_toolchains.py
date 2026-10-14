@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import shutil
 import tarfile
 
 import pytest
@@ -57,3 +59,28 @@ def test_install_records_a_manifest(tc_root, monkeypatch):
     m = json.loads((toolchains.path("fake") / toolchains.MANIFEST).read_text())
     assert m["parts"][0]["sha256"] == digest and (toolchains.path("fake") / "cc").exists()
     assert toolchains.require("fake") == toolchains.path("fake")
+
+
+def test_zst_archives_need_no_zstd_command(tmp_path, monkeypatch):
+    """The 32-bit runtime EE-GCC needs is a .tar.zst: GNU tar would run the zstd command for it, which many systems
+    don't have (the install then failed with "command failed (2)")."""
+    zstandard = pytest.importorskip("zstandard")
+    if not shutil.which("tar"):
+        pytest.skip("needs tar")
+    (tmp_path / "src" / "usr" / "lib32").mkdir(parents=True)
+    (tmp_path / "src" / "usr" / "lib32" / "ld-linux.so.2").write_bytes(b"\x7fELF")
+    plain = tmp_path / "pkg.tar"
+    with tarfile.open(plain, "w") as t:
+        t.add(tmp_path / "src" / "usr", arcname="usr")
+    archive = tmp_path / "pkg.tar.zst"
+    archive.write_bytes(zstandard.ZstdCompressor().compress(plain.read_bytes()))
+    if os.name != "nt":  # a zstd command that always fails, as a missing one does: tar must not need it
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "zstd").write_text("#!/bin/sh\nexit 2\n")
+        (tmp_path / "bin" / "zstd").chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    dest = tmp_path / "out"
+    dest.mkdir()
+    toolchains._extract(archive, dest, "usr/lib32")
+    assert (dest / "ld-linux.so.2").read_bytes() == b"\x7fELF"
+    assert not list(tmp_path.glob("tmp*"))  # no leftovers
