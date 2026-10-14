@@ -17,6 +17,21 @@ The loop
 5. Need a struct, prototype, global, static helper or `#include`? `edit_file` on a header or the top of
    the source file. The whole project is rebuilt and measured; the edit is undone if any match breaks.
 
+The goal: linked files
+A decomp is done when the game is built from its C, file by file, and still comes out byte for byte: that's what
+"linked" means on decomp.dev, and what ports (Aurora on GameCube/Wii) and mods start from. A file is linked once
+every function *and all its data* match: decomp.wtf then marks it Matching in configure.py, builds the whole game
+and keeps it only if the project's checksum check passes. `claim_function` gives you the files closest to done
+first, and the match that finishes a file's functions shows its data next to the original's. `file_status(path)`
+shows that any time. The usual fixes:
+- Functions in the original's order: literals (floats, doubles, strings) are pooled in the order the functions
+  use them, so a function in the wrong place shuffles the pool.
+- Data in the right section: `const` tables go to .rodata, the rest to .data; a static the original keeps inside
+  a function (`name$123`) belongs inside that function.
+- Data the file defines must be defined in it, with the original's values, not declared `extern` (a linker error
+  "undefined: 'lbl_…'" in file_status means the file uses a label its own data should provide).
+- Once linked, a file must keep building the same game: a change that alters it is undone.
+
 Conventions
 - Follow the project's style: naming (`m_` members, `g`/`s` prefixes, `func_8001234` leftovers), types
   (`s32`, `u8`, `BOOL`, `f32`), its macros and inline helpers. If AGENTS.md or CONTRIBUTING.md exists,

@@ -619,7 +619,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
                            "notes and a draft.", s(function=st("optional name or address"),
-                                                     strategy=st("easiest | closest | hardest | random"))),
+                                                     strategy=st("finish | easiest | closest | hardest | random"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched.", s(function=st("function name", True), source=st("C source", True))),
@@ -648,6 +648,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "edit_file": ("Replace `old` (exactly once) with `new` in a source/header file, or append when old is empty. "
                       "Undone if any match breaks.", s(path=st("file", True), old=st("text to replace, or empty", True),
                                                        new=st("replacement", True), message=st("why", True))),
+        "file_status": ("How far a source file (or a function's file) is from being linked: functions left, its data "
+                        "next to the original's, why the last link failed.", s(path=st("file or function", True))),
     }
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "

@@ -94,7 +94,10 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    Fix structure first (control flow, calls), then types and expressions, registers last.
 4. 100% = matched, committed to git. Structs, prototypes, globals or helpers you need go in with
    edit_file (a header or the top of the source file); an edit that breaks any match is undone.
-5. Stuck after ~25 compiles without progress? release_function with precise notes (what you tried,
+5. The goal is linked files: the game built from the C, byte for byte. When a match finishes a file's
+   functions, you're shown its data next to the original's: fix what differs (order, const, statics,
+   values) with edit_file until file_status says it matches; decomp.wtf then links the file.
+6. Stuck after ~25 compiles without progress? release_function with precise notes (what you tried,
    what is left) and claim the next. Very large functions: get the structure right and release with notes.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
@@ -138,8 +141,8 @@ def _project_info(net: RomNetwork, slug: str) -> str:
 # name -> handler(net, agent, slug, **args); every handler returns text for the model
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
-    "claim_function": lambda net, agent, slug, function="", strategy="easiest":
-        net.claim(agent, slug, function or None, strategy),
+    "claim_function": lambda net, agent, slug, function="", strategy="":
+        net.claim(agent, slug, function or None, strategy or ("finish" if net.fork_slug(slug) else "easiest")),
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: net.compile_and_diff(agent, function, source, slug),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
@@ -160,10 +163,11 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "search_code": lambda net, agent, slug, pattern, glob="": net.forks.search(_fork(net, slug, "search_code"), pattern, glob),
     "edit_file": lambda net, agent, slug, path, old, new, message:
         net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
+    "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "read_data"}
-FORK_ONLY = {"read_file", "search_code", "edit_file"}
+FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status"}
 
 
 def tool_names(fork: bool) -> list[str]:
@@ -212,7 +216,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "project_info")
 
     @mcp.tool()
-    async def claim_function(ctx: Context, function: str = "", strategy: str = "easiest") -> str:
+    async def claim_function(ctx: Context, function: str = "", strategy: str = "") -> str:
         """Claim the next function to decompile (or a specific one by name or address).
 
         Returns its assembly, the best previous attempt and notes from earlier agents, plus (ROM projects)
@@ -221,7 +225,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
         Args:
             function: optional name or address (0x80001234) of a specific function
-            strategy: easiest (fewest instructions), closest (nearly matched already), hardest, random
+            strategy: finish (forks' default: the files closest to being linked first), easiest (fewest
+                instructions; ROM projects' default), closest (nearly matched already), hardest, random
         """
         return await run(ctx, "claim_function", function=function, strategy=strategy)
 
@@ -318,6 +323,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         append `new` when old is "". The project is rebuilt and measured; the edit is undone if any matched
         function stops matching. Use it for structs, prototypes, globals and helpers."""
         return await run(ctx, "edit_file", path=path, old=old, new=new, message=message)
+
+    @mcp.tool()
+    async def file_status(ctx: Context, path: str) -> str:
+        """Forks only: how far a source file (or a function's file) is from being linked into the game: which
+        functions still differ, its data next to the original's (with what to fix), why the last link failed.
+        A file is linked (the game built from its C) once every function and all its data match."""
+        return await run(ctx, "file_status", path=path)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:

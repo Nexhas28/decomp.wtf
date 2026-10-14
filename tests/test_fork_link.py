@@ -3,8 +3,8 @@ configure.py, the game is built from the C and the project's checksum check must
 may make the built game differ.
 
 The project here is a dtk-template in miniature: configure.py lists objects as Matching/NonMatching and writes
-build.ninja (which reruns it when it changes) and objdiff.json; the "game" is the .text of each object the link
-uses (the compiled one for a Matching file, the original's otherwise); build/ok checks it against game.sha1.
+build.ninja (which reruns it when it changes) and objdiff.json; the "game" is the code and data of each object the
+link uses (the compiled one for a Matching file, the original's otherwise); build/ok checks it against game.sha1.
 """
 
 import hashlib
@@ -70,7 +70,11 @@ LINK = '''\
 import sys
 from io import BytesIO
 from elftools.elf.elffile import ELFFile
-out = b"".join(ELFFile(BytesIO(open(p, "rb").read())).get_section_by_name(".text").data() for p in sys.argv[2:])
+out = b""
+for p in sys.argv[2:]:  # the code, then the data, of every object the link uses
+    elf = ELFFile(BytesIO(open(p, "rb").read()))
+    out += b"".join(elf.get_section_by_name(n).data() for n in (".text", ".rodata", ".data")
+                    if elf.get_section_by_name(n) is not None)
 open(sys.argv[1], "wb").write(out)
 '''
 
@@ -137,7 +141,7 @@ def test_the_last_match_of_a_file_links_it_into_the_game(fork):
     net, slug, agent, fp = fork
     assert fp.link_states()["src/math.c"][0] == "NonMatching"
     out = net.compile_and_diff(agent, "sub", SUB, slug)
-    assert out.startswith("✅ MATCH") and "links the file" in out, out
+    assert out.startswith("✅ MATCH") and "linking the file" in out, out
     _wait_linking(net, slug)
     assert fp.link_states()["src/math.c"][0] == "Matching"
     assert fp.unit("math").complete and fp.verify()[0]
@@ -164,3 +168,18 @@ def test_nothing_unfinished_is_linked(fork):
     net, slug, agent, fp = fork
     res = net.forks.link(slug, log=lambda *_: None)
     assert res["linked"] == [] and fp.link_states()["src/math.c"][0] == "NonMatching"
+
+
+def test_a_file_whose_data_differs_says_what_and_stays_unlinked(fork):
+    net, slug, agent, fp = fork
+    out = net.forks.edit_file(agent, slug, "src/math.c", "", "int gCount = 3;", "a global the original hasn't")
+    assert out.startswith("✅"), out
+    out = net.compile_and_diff(agent, "sub", SUB, slug)
+    assert out.startswith("✅ MATCH") and "its data must match too" in out and "gCount" in out, out
+    status = net.forks.file_status(slug, "src/math.c")
+    assert "not linked yet" in status and "2/2 functions match" in status and "gCount" in status, status
+    res = net.forks.link(slug, log=lambda *_: None)
+    assert res["linked"] == [] and "FAILED" in res["failed"]["src/math.c"], res
+    assert fp.link_states()["src/math.c"][0] == "NonMatching" and fp.verify()[0]
+    assert "The last try to link it failed" in net.forks.file_status(slug, "src/math.c")
+    assert net.forks.file_status(slug, "sub").startswith("## src/math.c")

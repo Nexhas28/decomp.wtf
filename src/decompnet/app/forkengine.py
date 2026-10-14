@@ -23,7 +23,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .. import similarity
-from ..forks import catalog, csource, drafts, ghidra, scratch_dsd, scratch_dtk
+from ..forks import catalog, csource, datadiff, drafts, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
 from ..network import Agent, Network, NetworkError
@@ -511,6 +511,7 @@ class ForkEngine:
                 ok, out = build_with(linked)
                 if not ok:
                     linked = []
+            self._remember_link_failures(proj, linked, failed)
             if not linked:
                 conf.write_text(original)
                 fp.verify()
@@ -532,13 +533,68 @@ class ForkEngine:
             return fp.verify()
 
     def _file_done(self, slug: str, proj, fp: ForkProject, unit, scores: dict, agent: Agent | None) -> str:
-        """When every function of a file matches: link it (in the background) and say so."""
+        """When every function of a file matches: link it (in the background), or say what its data still needs."""
         if (unit.complete or not unit.source or not fp.linkable() or not scores
                 or any(v is None or v < 100 for v in scores.values())):
             return ""
-        self.link_soon(slug, agent)
-        return (f"\n🔗 Every function in {unit.source} matches now: decomp.wtf links the file into the game as soon as "
-                "its data matches too and the game still builds byte for byte.")
+        data = self._data_status(unit)
+        self.link_soon(slug, agent)  # the checksum decides; the comparison below is what to fix if it fails
+        if not data:
+            return (f"\n🔗 Every function and all data in {unit.source} match: decomp.wtf is linking the file into the "
+                    "game now (it stays linked if the game still builds byte for byte).")
+        return (f"\n🔗 Every function in {unit.source} matches. To link the file into the game (the goal: the game "
+                f"built from this C), its data must match too. Fix it with edit_file, then file_status to check:\n{data}")
+
+    def _data_status(self, unit, max_rows: int = 40) -> str:
+        """The file's data sections that differ from the original's ("" when all match)."""
+        if unit.target is None or not unit.target.exists():
+            return ""
+        try:
+            return datadiff.render(datadiff.compare(unit.target, unit.base), max_rows)
+        except Exception as e:  # an object pyelftools can't read: say so rather than fail the tool
+            return f"(couldn't compare the data: {e})"
+
+    def file_status(self, slug: str, path: str) -> str:
+        """A source file on its way to being linked: its functions, its data next to the original's, and why the last
+        link attempt failed."""
+        proj, fp, cfg = self.get(slug)
+        rel = path.strip().lstrip("./")
+        units = fp.units_for(rel)
+        if not units:  # a function name: its file
+            try:
+                fn = self._fn(slug, path)
+                units, rel = [fp.unit(fn["unit"])], fp.unit(fn["unit"]).source or ""
+            except (NetworkError, ForkError):
+                raise NetworkError(f"{path} isn't a source file of a unit (or a function) in this project") from None
+        state = fp.link_states().get(rel, ("",))[0]
+        lines = [f"## {rel}"]
+        lines.append("🔗 LINKED: the game is built from this file's C and checked byte for byte." if state == "Matching"
+                     else f"not linked yet ({state or 'not in configure.py'})" if fp.linkable()
+                     else "this project has no link step decomp.wtf knows")
+        for u in units:
+            rows = self.net.store.all("SELECT name, status, n_insns FROM functions WHERE project_id=? AND unit=? "
+                                      "ORDER BY vram, name", proj["id"], u.name)
+            left = [r for r in rows if r["status"] != "matched"]
+            lines.append(f"unit {u.name}: " + ("no functions (data only)" if not rows else
+                         f"{len(rows) - len(left)}/{len(rows)} functions match")
+                         + (": still to do " + ", ".join(f"{r['name']} ({r['n_insns']} insns)" for r in left[:12])
+                            if left else ""))
+            if state != "Matching":
+                data = self._data_status(u)
+                lines.append(f"data: {'matches' if not data else 'differs'}" + (f"\n{data}" if data else ""))
+        why = (cfg.get("link_failed") or {}).get(rel)
+        if why and state != "Matching":
+            lines += ["", "The last try to link it failed (the game didn't build identically):", why]
+        return "\n".join(lines)
+
+    def _remember_link_failures(self, proj, linked: list[str], failed: dict[str, str]) -> None:
+        cfg = json.loads(self.net.store.one("SELECT config FROM projects WHERE id=?", proj["id"])["config"])
+        known = cfg.get("link_failed") or {}
+        for src in linked:
+            known.pop(src, None)
+        known.update(failed)
+        cfg["link_failed"] = known
+        self._save_cfg(proj, cfg)
 
     def link_soon(self, slug: str, agent: Agent | None = None) -> None:
         """Link in the background (one run per project at a time; another request while it runs runs it again)."""
@@ -856,6 +912,9 @@ class ForkEngine:
         if done:
             lines += ["", "Already matched in this file (read them for the codebase's style): "
                       + ", ".join(r["name"] for r in done)]
+        why = (cfg.get("link_failed") or {}).get(unit.source or "")
+        if why and not unit.complete:
+            lines += ["", f"### {unit.source} didn't link yet (file_status shows its data)", why]
         notes = self.net.store.all("SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
                                    "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
         if notes:
