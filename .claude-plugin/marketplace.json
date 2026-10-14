@@ -7,7 +7,7 @@
       "name": "decomp-wtf",
       "source": "./plugins/decomp-wtf",
       "description": "Decompile games you own into C that rebuilds them byte for byte: the original compilers, a byte-for-byte judge, free matches from machine drafts, helper agents and a live view.",
-      "version": "0.9.3"
+      "version": "0.9.4"
     }
   ]
 }
