@@ -268,6 +268,37 @@ def _gp_from_entry(image: bytes, entry: int, segments: list[Segment]) -> int:
     return 0
 
 
+def _add_code_segments(config: Path, rom: bytes, log=print) -> int:
+    """An N64 game's code outside the main segment (n64code.py), added to splat's config as code segments of their
+    own. Returns how many."""
+    import yaml
+
+    from .n64code import find_segments
+
+    taken = [(s.rom_start, s.rom_end, s.vram) for s in segments_from_config(config)]
+    found = find_segments(rom, taken) if taken else []
+    if not found:
+        return 0
+    cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
+
+    def start_of(seg):
+        return seg[0] if isinstance(seg, list) else seg.get("start")
+
+    starts = {st for st, _, _ in found}
+    segs = [s for s in cfg["segments"] if not (isinstance(s, dict) and s.get("type") == "bin" and start_of(s) in starts)]
+    for st, en, vram in found:
+        name = f"code_{vram:08X}"
+        segs.append({"name": name, "type": "code", "start": st, "vram": vram, "subsegments": [[st, "c", name]]})
+        if en < len(rom) and not any(start_of(s) == en for s in segs):
+            segs.append({"type": "bin", "start": en})
+    segs.sort(key=lambda s: start_of(s) if start_of(s) is not None else -1)
+    cfg["segments"] = segs
+    config.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=None), encoding="utf-8")
+    kib = sum(en - st for st, en, _ in found) // 1024
+    log(f"found {len(found)} more code segment{'s' if len(found) != 1 else ''} the game loads later ({kib} KiB)")
+    return len(found)
+
+
 def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResult:
     """Run splat on workdir/rom_name and return every function and data symbol it found."""
     import yaml
@@ -288,6 +319,8 @@ def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResul
     image = (yaml.safe_load(config.read_text(encoding="utf-8")).get("options") or {}).get("target_path") or rom_name
     compiler, platform, gp = _patch_config(config)
     big_endian = platform == "n64"
+    if platform == "n64":
+        _add_code_segments(config, (workdir / image).read_bytes(), log)
     log("disassembling every function")
     out += "\n" + _splat(["split", config.name], workdir)
 
