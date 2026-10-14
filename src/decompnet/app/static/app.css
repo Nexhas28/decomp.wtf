@@ -64,6 +64,7 @@ code, pre, .mono { font-family: var(--mono); }
 .grow { flex: 1; }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ok { color: var(--match); }
+.warn-text { color: var(--work); }
 .bad { color: var(--miss); }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--match); outline-offset: 2px; border-radius: 6px; }
@@ -236,6 +237,8 @@ button { cursor: pointer; border: 0; background: none; }
 .chip-s.mono { font-family: var(--mono); }
 .chip-s.warn { color: var(--work); border-color: color-mix(in srgb, var(--work) 40%, var(--line)); }
 .ph-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.ghost.together { display: inline-flex; align-items: center; gap: 7px; }
+.ghost.together svg { width: 15px; height: 15px; fill: currentColor; }
 .pill-btn { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 999px; background: var(--match-bg); color: var(--match-ink); font-size: 13px; font-weight: 500; white-space: nowrap; }
 .pill-btn.room { background: var(--move-bg); color: var(--move); }
 .pill-btn.room.off { background: var(--bg-alt); color: var(--muted); }

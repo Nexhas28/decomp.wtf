@@ -366,9 +366,9 @@ def join(args) -> int:
         if input(f"Is {game.name} your own legally obtained copy of the game? [y/N] ").strip().lower() not in ("y", "yes"):
             raise SystemExit("decomp.wtf only works with your own copy of a game")
     info = ensure_app(home_dir())
-    q = urllib.parse.urlencode({"link": args.link, "name": args.name, "confirmed": "1"})
+    q = urllib.parse.urlencode({"link": args.link, "name": args.name, "confirmed": "1", "path": str(game.resolve())})
     req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/collab/join?{q}", method="POST",
-                                 data=game.read_bytes(), headers={"Cookie": f"decomp_live={info['secret']}", "X-Decomp": "1",
+                                 data=b"", headers={"Cookie": f"decomp_live={info['secret']}", "X-Decomp": "1",
                                                                   "Host": f"127.0.0.1:{info['port']}",
                                                                   "Content-Type": "application/octet-stream"})
     try:

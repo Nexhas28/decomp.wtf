@@ -1020,6 +1020,33 @@ class RomNetwork(Network):
                        "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
             db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
 
+    def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
+        """A git project's room: who matched a function (the code itself arrives with the host's commits)."""
+        proj = self._project(slug)
+        aid = self._remote_agent(agent_name)
+        with self.store.tx() as db:
+            row = db.execute("SELECT id, status, matched_agent_id FROM functions WHERE project_id=? AND name=?",
+                             (proj["id"], name)).fetchone()
+            if row is None:
+                return
+            if row["status"] != "matched":
+                db.execute("UPDATE functions SET status='matched', matched_agent_id=?, matched_at=? WHERE id=?",
+                           (aid, time.time(), row["id"]))
+            elif row["matched_agent_id"] is None:
+                db.execute("UPDATE functions SET matched_agent_id=? WHERE id=?", (aid, row["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+
+    def apply_remote_note_named(self, slug: str, function: str | None, text: str, agent_name: str, created_at: float) -> None:
+        proj = self._project(slug)
+        row = self.store.one("SELECT id FROM functions WHERE project_id=? AND name=?", proj["id"], function) if function else None
+        fid = row["id"] if row else None
+        if self.store.one("SELECT 1 FROM notes WHERE project_id=? AND text=? AND function_id IS ?", proj["id"], text, fid):
+            return
+        aid = self._remote_agent(agent_name)
+        with self.store.tx() as db:
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (proj["id"], fid, aid, text, created_at))
+
     def apply_remote_best(self, slug: str, vram: int, score: int, source: str) -> None:
         proj = self._project(slug)
         with self.store.tx() as db:
@@ -1176,10 +1203,13 @@ class RomNetwork(Network):
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
-        remote = {c["vram"]: "@" + c["agent"] for c in (self.links[slug].claims if slug in self.links else [])}
+        link = self.links.get(slug)
+        # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
+        key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
+        remote = {key(c): "@" + c["agent"] for c in (link.claims if link is not None else [])}
         return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
-                 "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or r["vram"] in remote) else "open",
-                 "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(r["vram"]),
+                 "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
+                 "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"]} for r in rows]
 
     # ------------------------------------------------------------------ what agents spend, and steering them

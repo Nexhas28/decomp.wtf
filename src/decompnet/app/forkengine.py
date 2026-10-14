@@ -339,6 +339,14 @@ class ForkEngine:
                 tmp.write_bytes(game)
                 game, move = tmp, True
             self._match_version(proj, fp, cfg, Path(game), log)
+            if not cfg.get("program_sha1"):  # which game it is: members of a room on it need the same one
+                from .forkroom import game_identity
+
+                try:
+                    cfg["game_sha1"] = game_identity(Path(game))
+                    self._save_cfg(proj, cfg)
+                except (OSError, ForkError):
+                    pass
             dest = fp.place_game(Path(game), filename or Path(game).name, cfg.get("version"), move=move)
             log(f"your copy of the game is at {dest.relative_to(fp.root)}")
         if not fp.needs(cfg.get("version"))["auto"]:
@@ -362,6 +370,19 @@ class ForkEngine:
         elif all(re.fullmatch(r"[A-Z0-9]{6}", v) for v in versions):
             raise NetworkError(f"this disc is {gid}, but the project decompiles {', '.join(versions)}: "
                                "pick your copy of one of those versions")
+
+    def check_rom(self, slug: str, log=print) -> dict:
+        """A DS game started from scratch: rebuild its ROM and compare it with the user's copy (scratch_dsd.check_rom);
+        what it says is kept in the project's .decomp.wtf.json and shown on the project."""
+        proj, fp, cfg = self.get(slug)
+        manifest = fp.manifest or {}
+        if cfg.get("origin") != "scratch" or manifest.get("platform") != "nds":
+            raise NetworkError("only DS games started from scratch rebuild their ROM here")
+        with self._build_locks[proj["id"]]:  # not while an agent's compile builds in the same tree
+            result = scratch_dsd.check_rom(fp.root, manifest["version"], log=log)
+        manifest["rebuild"] = result | {"t": time.time()}
+        (fp.root / ".decomp.wtf.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return result
 
     def check(self, slug: str, log=print) -> dict:
         """After a manual setup (or to refresh): pick the project up once it has an objdiff.json."""
@@ -809,6 +830,11 @@ class ForkEngine:
         (with their C), and so do the parts of the data sections named in `data` (".rodata:0x88 .data:0x28": where the
         new file's part of each section starts). Kept only if the game still builds byte for byte and every function
         that matched still matches."""
+        if agent is not None and (link := self.net.links.get(slug)) is not None:  # the host splits it; this copy follows
+            text = link.call("/collab/split_file", agent, path=path, at=at, new_name=new_name, data=data)
+            if text.startswith("✅"):
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
         mods = self._modules(fp, cfg)
         src = fp.src_dir()
@@ -1298,6 +1324,8 @@ class ForkEngine:
         return text
 
     def claim(self, agent: Agent, slug: str, function: str | None = None, strategy: str = "easiest") -> str:
+        if (link := self.net.links.get(slug)) is not None:
+            return self._claim_in_room(link, agent, slug, function, strategy)
         fn = self.net.claim_row(agent, slug, function, strategy)
         if fn is None:
             left = (self.get(slug)[2].get("uncovered") or {}).get("functions")
@@ -1305,6 +1333,18 @@ class ForkEngine:
                     + (f"\n{left} more functions are in code no source file covers yet. The user can give them files "
                        "(the project's overview in decomp.wtf: Give them source files); then there's more to claim."
                        if left else ""))
+        return self.brief(fn, agent, "CLAIMED")
+
+    def _claim_in_room(self, link, agent: Agent, slug: str, function: str | None, strategy: str) -> str:
+        """A member of a room: the host hands out functions (nobody does one twice); the brief comes from this copy."""
+        name = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy)
+        if name is None:
+            return "Nothing left to claim in this room: every function with a source file matches or someone is on it. 🎉"
+        try:
+            fn = self.net.claim_row(agent, slug, name, strategy)
+        except NetworkError:  # the host has a newer tree (new files, a split): follow it, then claim here
+            link.sync()
+            fn = self.net.claim_row(agent, slug, name, strategy)
         return self.brief(fn, agent, "CLAIMED")
 
     def get_function(self, agent: Agent | None, slug: str, function: str) -> str:
@@ -1323,6 +1363,44 @@ class ForkEngine:
         return "\n".join(out) or "none"
 
     def attempt(self, agent: Agent, slug: str, function: str, source: str) -> dict:
+        res = self._attempt(agent, slug, function, source)
+        link = self.net.links.get(slug)
+        if link is None or res["score"] is None:
+            return res
+        name = self._fn(slug, function)["name"]
+        if res["matched"]:  # the host builds it in its own tree, against its own copy, and commits it for everyone
+            try:
+                verdict = link.attempt(agent, name, source)
+            except NetworkError as e:
+                res["text"] += f"\n⚠️ Not shared with the room yet: {e}"
+                return res
+            if verdict.get("matched"):
+                res["text"] += "\nShared with the room: the host confirmed the match."
+                threading.Thread(target=self._follow, args=(link,), daemon=True).start()
+            else:
+                res["text"] += ("\n⚠️ The room's host could not confirm this match in its tree (score "
+                                f"{verdict.get('score')}): it may have changed since; this copy follows the host's.")
+        else:
+            fn = self._fn(slug, function)
+            if fn["best_score"] is None or res["score"] <= fn["best_score"]:
+                threading.Thread(target=self._report_best, args=(link, agent, name, source, res["score"]), daemon=True).start()
+        return res
+
+    @staticmethod
+    def _follow(link) -> None:
+        try:
+            link.sync()
+        except NetworkError:
+            pass
+
+    @staticmethod
+    def _report_best(link, agent: Agent, name: str, source: str, score: int) -> None:
+        try:
+            link.call("/collab/best", agent, function=name, source=source, score=score)
+        except NetworkError:
+            pass
+
+    def _attempt(self, agent: Agent, slug: str, function: str, source: str) -> dict:
         proj, fp, cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -1473,6 +1551,8 @@ class ForkEngine:
 
     def release(self, agent: Agent, slug: str, function: str, notes: str) -> str:
         fn = self._fn(slug, function)
+        if (link := self.net.links.get(slug)) is not None:
+            link.call("/collab/release", agent, function=fn["name"], notes=notes)
         latest = self.net.store.one("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 1",
                                     fn["id"], agent.id)
         if (fn["best_source"] and fn["status"] != "matched" and latest and latest["score"] is not None
@@ -1542,6 +1622,11 @@ class ForkEngine:
         return "\n".join(hits) or "no matches"
 
     def edit_file(self, agent: Agent, slug: str, path: str, old: str, new: str, message: str) -> str:
+        if (link := self.net.links.get(slug)) is not None:  # the host makes and checks it; this copy follows
+            text = link.call("/collab/edit", agent, path=path, old=old, new=new, message=message)
+            if text.startswith(("✅", "⚠️")):
+                link.sync()
+            return text
         proj, fp, cfg = self.get(slug)
         p = fp.safe_path(path, write=True)
         if not message.strip():
@@ -1704,8 +1789,9 @@ class ForkEngine:
             "compilers": [],
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
-            "context_version": 0, "folder": proj["root"], "room": None,
+            "context_version": 0, "folder": proj["root"], "room": self.net._room_info(slug),
             "measures": m, "uncovered": self.uncovered(slug) if cfg.get("ready") and fp.linkable() else None,
+            "rebuild": (fp.manifest or {}).get("rebuild") if cfg.get("origin") == "scratch" else None,
         }
 
     def function_diff(self, slug: str, name: str) -> dict:

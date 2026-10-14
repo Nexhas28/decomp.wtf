@@ -350,3 +350,47 @@ def test_two_functions_of_the_same_name_in_one_unit_both_get_a_row(tmp_path, mon
     rows = {r["name"]: r for r in net.store.all("SELECT name, vram, status FROM functions")}
     assert set(rows) == {"_lang@main/lang", "_lang@main/lang#2", "init@main/lang", "init@main/other"}
     assert rows["_lang@main/lang"]["vram"] == 1 and rows["_lang@main/lang#2"]["vram"] == 2
+
+
+@needs_tools
+def test_a_public_decomp_together(tmp_path):
+    """A room on a fork of a public decomp: the member gets the public project from its own host (here a local
+    'upstream'), at the commit the room's host started from, plus the room's commits as a bundle; then builds it with
+    their own copy of the game and works with the room."""
+    from starlette.testclient import TestClient
+
+    from decompnet.app import collab
+
+    upstream = tmp_path / "upstream"
+    shutil.copytree(FORK_SRC, upstream)
+    _git(upstream, "init", "-q", "-b", "main")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "initial")
+    (tmp_path / "host").mkdir()
+    host = RomNetwork(tmp_path / "host.db", tmp_path / "host")
+    slug = host.forks.clone(str(upstream), name="Demo Quest decomp", platform="n64", log=lambda *_: None)
+    host.forks.setup(slug, ROM.read_bytes(), "demo.z64", log=lambda *_: None)
+    hagent, _ = host.local_agent("claude-host")
+    assert host.attempt(hagent, "count_alive_entities", _ref("count_alive_entities"), slug)["matched"]
+    _git(upstream, "commit", "-q", "--allow-empty", "-m", "upstream moved on")  # members still start where the host did
+
+    host.rooms[slug] = collab.Room(host, slug)
+    code = host.rooms[slug].open_invite()
+    client = TestClient(collab.host_app(host, host.rooms), base_url="https://abc.trycloudflare.com")
+    (tmp_path / "guest").mkdir()
+    guest = RomNetwork(tmp_path / "guest.db", tmp_path / "guest")
+    gslug = collab.join_room(guest, f"https://abc.trycloudflare.com/join/{code}#room={slug}", "alex", ROM,
+                             log=lambda *_: None, client=client, start=False)
+    hroot, groot = Path(host.project_row(slug)["root"]), Path(guest.project_row(gslug)["root"])
+    head = lambda root: subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout  # noqa: E731
+    assert head(groot) == head(hroot)
+    assert guest.overview(gslug)["functions"] == host.overview(slug)["functions"]
+    assert guest._function("count_alive_entities", gslug)["status"] == "matched"  # the host's match came along
+
+    gagent, _ = guest.local_agent("claude-1")
+    assert "CLAIMED" in guest.forks.claim(gagent, gslug, "lerp")
+    res = guest.attempt(gagent, "lerp", _ref("lerp"), gslug)
+    assert res["matched"] and "host confirmed" in res["text"], res["text"]
+    assert host._function("lerp", slug)["status"] == "matched"
+    guest.links[gslug].sync()
+    assert head(groot) == head(hroot)

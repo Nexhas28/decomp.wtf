@@ -592,6 +592,8 @@ function renderHeader(ov) {
   const room = ov.room;
   const pill = $("phRoom");
   pill.hidden = !room;
+  // a project nobody shares yet: one click opens a room (a git project once it's set up)
+  $("phTogether").hidden = !!room || (S.ov.kind === "fork" && !S.ov.ready);
   if (room) {
     const members = room.members || [];
     const online = members.filter((m) => m.online).length;
@@ -605,6 +607,35 @@ function renderHeader(ov) {
 }
 $("phWorking").onclick = () => { location.hash = `#/p/${S.slug}/agents`; };
 $("phRoom").onclick = () => { location.hash = `#/p/${S.slug}/team`; };
+$("phTogether").onclick = () => openTogether();
+
+/* Decompile together: open a room for this project in one step (a quick tunnel, an invite link); the Team tab has
+   every option (an address of your own, approving members, who's in). */
+function openTogether() {
+  const ov = S.ov, fork = ov.kind === "fork";
+  const body = dialog("Decompile together", `<p>Friends who own this game join from their own decomp.wtf, and their agents work with yours: nobody does the same function twice, and every match is checked here, against your copy, before it counts.</p>
+    <p class="muted small">${fork ? "They get this project's source tree from you and build it with their own copy of the game and their own compilers." : "Each of them brings their own copy, and decomp.wtf checks it's exactly this game."} Only the work travels between you, never the game. You decide who's in.</p>
+    <div class="field"><span>Who can join</span><div class="seg" id="tgVis"><button type="button" data-vis="private" class="on">Private: an invite link</button><button type="button" data-vis="public">Public: anyone with the address</button></div></div>
+    <label class="check"><input type="checkbox" id="tgApprove"><span>I let each new member in (they wait until I say yes)</span></label>
+    <div class="row"><button class="primary" id="tgGo" type="button">Open the room</button><a class="link small" href="#/p/${esc(S.slug)}/team">More options: your own address (LAN, Tailscale, a server)</a></div>
+    <pre class="joblog" id="tgLog" hidden></pre><div id="tgDone"></div>`);
+  body.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => body.querySelectorAll("[data-vis]").forEach((x) => x.classList.toggle("on", x === b)); });
+  body.querySelector("#tgGo").onclick = async (e) => {
+    e.target.disabled = true;
+    body.querySelector("#tgLog").hidden = false;
+    try {
+      const { job } = await api("/api/collab/start", { method: "POST", body: { slug: S.slug, mode: "tunnel",
+        visibility: body.querySelector("[data-vis].on").dataset.vis, approve: body.querySelector("#tgApprove").checked } });
+      const res = await followJob(job, body.querySelector("#tgLog"));
+      body.querySelector("#tgLog").hidden = true;
+      body.querySelector("#tgDone").innerHTML = `<p><b>The room is open.</b> Send this link to friends who own the game:</p>${cmdBox(res.link)}
+        <p class="muted small">They open decomp.wtf, choose <b>Join a team</b>, paste it and pick their own copy (or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>). The link works while this app is open; for a room that stays up, use your own address in the Team tab.</p>
+        <div class="row"><a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/team">See who's in</a></div>`;
+      wireCopies(body.querySelector("#tgDone"));
+      S.ov = await api(`/api/project?slug=${S.slug}`);
+    } catch (err) { toast(esc(err.message), "err"); e.target.disabled = false; }
+  };
+}
 $("phFolder").onclick = () => openFolder();
 
 /* Forks: how much of the game is built from linked C (decomp.dev's "linked"), next to what matches. */
@@ -749,11 +780,10 @@ async function renderTeam() {
   if (!S.ov) return;
   const room = S.ov.room;
   if (room && room.role === "guest") { renderGuest(box, room); teamTimer = setInterval(() => { if (S.tab === "team" && S.ov.room) renderGuest(box, S.ov.room); }, 4000); return; }
-  if (S.ov.kind === "fork") {
+  if (S.ov.kind === "fork" && !S.ov.ready) {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
-      <p class="muted">Team rooms work for games started from a ROM (N64, PlayStation, GBA). This project is a git source tree: share it the git way, with a repository your team owns (keep it private; the code of a commercial game belongs to its rights holder). Each teammate adds their own copy of the game and their own agents.</p>
-      <div class="row"><button class="ghost" id="tmFolder" type="button">Open the project folder</button><button class="ghost" id="tmJoin" type="button">Join a team's room</button></div>`;
-    $("tmFolder").onclick = () => openFolder();
+      <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.wtf.</p>
+      <div class="row"><button class="ghost" id="tmJoin" type="button">Join a team's room</button></div>`;
     $("tmJoin").onclick = openJoin;
     return;
   }
@@ -790,7 +820,7 @@ function renderGuest(box, room) {
 
 function renderHost(box, info) {
   const intro = `<h2 class="pane-title">Decompile together</h2>
-    <p class="muted">Your team works on this game from their own computers, each with <b>their own copy of exactly this game</b> (decomp.wtf checks it's identical) and their own agents. This computer is the room's host: it keeps the shared work and checks every match against your copy. Only the work travels, never ROM data. You host the room and decide who's in.</p>`;
+    <p class="muted">Your team works on this game from their own computers, each with <b>their own copy of exactly this game</b> (decomp.wtf checks it's identical) and their own agents. This computer is the room's host: it keeps the shared work and checks every match against your copy.${S.ov.kind === "fork" ? " Members get this project's source tree from you (only what git tracks: never your game or its extracted files) and follow every commit made here." : ""} Only the work travels, never ROM data. You host the room and decide who's in.</p>`;
   const opts = (inf) => `<div class="setup-group"><h3>Who can join</h3>
       <div class="seg" id="visSeg"><button type="button" data-vis="private" class="${inf.settings.visibility !== "public" ? "on" : ""}">Private: invite link</button><button type="button" data-vis="public" class="${inf.settings.visibility === "public" ? "on" : ""}">Public: anyone with the address</button></div>
       <label class="check"><input type="checkbox" id="apprChk" ${inf.settings.approve ? "checked" : ""}><span>I let each new member in (they wait until you approve)</span></label></div>`;
@@ -896,18 +926,22 @@ function openJoin() {
     <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
     <label class="field"><span>Your name in the room</span><input id="jName" maxlength="24" placeholder="e.g. alex"></label>
     <label class="field"><span>Your copy of the game</span><input id="jRom" type="file"></label>
+    <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="${S.st && S.st.host_os === "windows" ? "C:\\Games\\game.rvz" : "/home/you/games/game.iso"}"></label>
     <label class="check"><input type="checkbox" id="jOwn"><span>This is my own copy of this game, obtained legally. I'll keep what the room makes private.</span></label>
+    <p class="muted small">A GameCube, Wii or DS project comes with its whole source tree from the host, and is then built here with your copy and your compilers: the first time takes a few minutes.</p>
     <div class="row"><button class="primary" id="jGo" type="button">Join</button></div><pre class="joblog" id="jLog" hidden></pre>`);
   body.querySelector("#jGo").onclick = async () => {
-    const file = $("jRom").files[0];
-    if (!$("jLink").value.trim() || !/^[A-Za-z0-9_-]{1,24}$/.test($("jName").value) || !file || !$("jOwn").checked) {
+    const file = $("jRom").files[0], path = $("jPath").value.trim();
+    if (!$("jLink").value.trim() || !/^[A-Za-z0-9_-]{1,24}$/.test($("jName").value) || !(file || path) || !$("jOwn").checked) {
       return toast("Fill in the link, a name (letters, digits, - or _), your copy of the game, and confirm it's your own.", "err");
     }
     $("jLog").hidden = false;
     $("jGo").disabled = true;
     try {
-      const q = `link=${encodeURIComponent($("jLink").value.trim())}&name=${encodeURIComponent($("jName").value)}&confirmed=1`;
-      const { job } = await api(`/api/collab/join?${q}`, { method: "POST", raw: await file.arrayBuffer() });
+      let q = `link=${encodeURIComponent($("jLink").value.trim())}&name=${encodeURIComponent($("jName").value)}&confirmed=1`;
+      q += path ? `&path=${encodeURIComponent(path)}` : `&filename=${encodeURIComponent(file.name)}`;
+      // the file streams from disk as it's sent: a disc image is never read into the page whole
+      const { job } = await api(`/api/collab/join?${q}`, { method: "POST", raw: path ? new Blob([]) : file });
       const res = await followJob(job, $("jLog"));
       $("dialog").hidden = true;
       loadNav();
@@ -2050,10 +2084,24 @@ function renderSource(ov) {
   $("srcExport").hidden = fork || !ov.exportable;
   $("srcWhen").textContent = !fork && ex ? `exported ${since(ex.t)}` : "";
   if (fork) {
+    const rb = ov.rebuild;
     $("srcText").innerHTML = ov.origin === "scratch"
       ? `This project <b>is</b> the source tree: a ${LAYOUT[ov.platform] || "decomp"} project that rebuilds your game on every build. Every match is committed to git in the project folder.`
+        + (rb ? `<p class="small ${rb.identical ? "ok" : "warn-text"}">${rb.identical ? "✓ The rebuilt ROM is your copy, byte for byte" + (/padding/.test(rb.detail) ? " (up to the padding at its end: your copy is trimmed)." : ".")
+          : `The rebuilt ROM isn't your copy byte for byte yet: ${esc(rb.detail)}. Decompiling works anyway: every function is compared with your copy's own code.`}</p>` : "")
       : `This project <b>is</b> the source tree${ov.repo_url ? ` (a fork of <a class="link" href="${esc(ov.repo_url)}" target="_blank" rel="noopener">${esc(ov.repo_url.replace(/^https?:\/\//, ""))}</a>)` : ""}. Every match is committed to the <code>decomp-wtf</code> branch, ready to send upstream.`;
-    $("srcState").innerHTML = `<div class="row"><button class="ghost small-btn" id="forkMeasure" type="button">Re-measure with objdiff</button></div>`;
+    $("srcState").innerHTML = `<div class="row"><button class="ghost small-btn" id="forkMeasure" type="button">Re-measure with objdiff</button>${rb ? `<button class="ghost small-btn" id="romCheck" type="button">Rebuild the ROM and compare</button>` : ""}</div>`;
+    if (rb) $("romCheck").onclick = async () => {
+      $("romCheck").disabled = true;
+      toast("Rebuilding the ROM and comparing it with your copy…");
+      try {
+        const { job } = await api("/api/fork/rom-check", { method: "POST", body: { slug: S.slug } });
+        const r = await followJob(job);
+        toast(r.identical ? "The rebuilt ROM is your copy, byte for byte." : `Not identical yet: ${esc(r.detail)}`, r.identical ? "match" : "");
+        S.ov = await api(`/api/project?slug=${S.slug}`);
+        renderSource(S.ov);
+      } catch (e) { toast(esc(e.message), "err"); if ($("romCheck")) $("romCheck").disabled = false; }
+    };
     $("forkMeasure").onclick = async () => {
       toast("Measuring the whole project with objdiff…");
       try { const { job } = await api("/api/fork/check", { method: "POST", body: { slug: S.slug } }); await followJob(job); toast("Progress updated.", "match"); refreshMap(); }

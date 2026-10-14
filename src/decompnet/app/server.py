@@ -544,6 +544,18 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return fail(e)
         return JSONResponse({"job": jobs.start("fork-check", lambda log: net.forks.check(slug, log=log))})
 
+    @mcp.custom_route("/api/fork/rom-check", methods=["POST"])
+    async def api_fork_rom_check(request: Request) -> Response:
+        """A DS game from scratch: rebuild the ROM and compare it with the user's copy."""
+        if (bad := guard(request, write=True)):
+            return bad
+        slug = str((await body(request)).get("slug", ""))
+        try:
+            fork_of(slug)
+        except NetworkError as e:
+            return fail(e)
+        return JSONResponse({"job": jobs.start("rom-check", lambda log: net.forks.check_rom(slug, log=log))})
+
     @mcp.custom_route("/api/fork/start-files", methods=["POST"])
     async def api_fork_start_files(request: Request) -> Response:
         """Give the code no source file covers source files (dtk-template projects), verified by the game's checksum."""
@@ -857,9 +869,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         slug = str(data.get("slug", ""))
         if slug in net.links:
             return fail(ValueError("this project belongs to a friend's room; only its host can invite people"))
-        if net.fork_slug(slug):
-            return fail(ValueError("rooms are for games started from a ROM. To work on a git project together, share "
-                                   "its repository (GitHub, GitLab, your own server)"))
+        if net.fork_slug(slug) and not json.loads(net.project_row(slug)["config"]).get("ready"):
+            return fail(ValueError("set the project up first (its Overview): then friends can join it"))
         mode = "address" if data.get("mode") == "address" else "tunnel"
 
         def work(log):
@@ -937,11 +948,36 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         q = request.query_params
         if q.get("confirmed") != "1":
             return fail(ValueError("confirm that this is your own legally obtained copy of the game"))
-        data = await request.body()
         link, name = q.get("link", ""), q.get("name", "")
+        game: Path | None = None
+        if q.get("path"):  # a file on this computer (a disc is gigabytes: not through the browser)
+            game = hostenv.local_path(q["path"])
+            if not game.is_file():
+                return fail(ValueError(f"no file at {game}"))
+        else:  # the browser's upload, streamed to disk
+            upload = home / "uploads" / uuid.uuid4().hex[:8]
+            upload.mkdir(parents=True, exist_ok=True)
+            game = upload / (Path(q.get("filename") or "game.bin").name or "game.bin")
+            size = 0
+            with open(game, "wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_DISC:
+                        f.close()
+                        shutil.rmtree(upload, ignore_errors=True)
+                        return fail(ValueError("that file is larger than any game disc"))
+                    f.write(chunk)
+            if size == 0:
+                shutil.rmtree(upload, ignore_errors=True)
+                game = None
+        uploaded = game is not None and game.parent.parent == home / "uploads"
 
         def work(log):
-            slug = collab.join_room(net, link, name, data, log=log)
+            try:
+                slug = collab.join_room(net, link, name, game or b"", log=log)
+            finally:
+                if uploaded:
+                    shutil.rmtree(game.parent, ignore_errors=True)
             settings.data["last_project"] = slug
             settings.save()
             return {"slug": slug}

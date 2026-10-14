@@ -8,6 +8,8 @@ twice), C attempts, matches, names, struct/prototype edits, notes. The host re-c
 against its own ROM, so a match always means the same thing.
 
 Host side: `host_app()`. Guest side: `Link`, which RomNetwork consults for every collaborative action.
+Projects that are git source trees (GameCube, Wii, DS, forks of public decomps) work the same way, with the host's
+tree as the room's truth: see forkroom.py.
 """
 
 from __future__ import annotations
@@ -21,16 +23,18 @@ import subprocess
 import threading
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from .. import toolchains
 from ..network import Agent, NetworkError, _hash_token
 from ..rom.symbols import AUTO_NAME
+from . import forkroom
 
 NAME = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 MAX_BODY = 256 * 1024
@@ -49,6 +53,7 @@ class Room:
     def __init__(self, net, slug: str):
         self.net, self.slug = net, slug
         self.proj = net.project_row(slug)
+        self.fork = bool(net.fork_slug(slug))  # a git source tree (forkroom.py)
         self._hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=900))
         self._members: tuple[float, list] = (0.0, [])  # cached: every member polls, the list changes slowly
 
@@ -165,9 +170,13 @@ class Room:
         """New member: (token, the name they got; a taken name gets a number)."""
         if not NAME.match(name or ""):
             raise NetworkError("pick a name of up to 24 letters, digits, - or _")
-        if sha1 != self.cfg["rom"]["sha1"]:
-            raise NetworkError("that isn't the same ROM: everyone in a room needs their own copy of exactly this "
-                               f"game ({self.cfg['rom']['title']}, {self.cfg['rom']['game_code']}, same version)")
+        cfg = self.cfg
+        want = forkroom.project_identity(cfg)
+        if want and sha1 != want:
+            what = (f"{cfg['rom']['title']}, {cfg['rom']['game_code']}" if not self.fork
+                    else f"{self.proj['name']}, {cfg.get('version') or 'the same version'}")
+            raise NetworkError("that isn't the same game: everyone in a room needs their own copy of exactly this "
+                               f"game ({what}, same version)")
         base, n = name, 2
         while self.net.store.one("SELECT 1 FROM agents WHERE lower(name)=lower(?)", name):
             name, n = f"{base}{n}", n + 1
@@ -212,6 +221,8 @@ class Room:
 
     def state(self, e: int, a: int, ctx_version: int, member: Agent) -> dict:
         """What changed since the guest's cursors: work product only, never ROM-derived data."""
+        if self.fork:
+            return self._fork_state(e, member)
         pid = self.proj["id"]
         net = self.net
         with net.store.tx() as db:
@@ -248,6 +259,32 @@ class Room:
         out["claims"] = [dict(r) for r in net.store.all(
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
             "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
+        out["members"] = self.members()
+        return out
+
+    def _fork_state(self, e: int, member: Agent) -> dict:
+        """A git project's room: events, matches (by name), claims and notes; the tree itself travels as bundles
+        (GET /collab/bundle) when `head` moves."""
+        pid, net = self.proj["id"], self.net
+        with net.store.tx() as db:
+            net._expire_claims(db)
+        events = net.store.all("SELECT e.id, e.kind, e.detail, e.created_at, a.name AS agent FROM events e LEFT JOIN agents a "
+                               "ON a.id=e.agent_id WHERE e.project_id=? AND e.id>? ORDER BY e.id LIMIT 500", pid, e)
+        out: dict = {"e": events[-1]["id"] if events else e, "events": [dict(ev) for ev in events]}
+        names = {ev["detail"] for ev in events if ev["kind"] == "match"}
+        if e == 0 or names:
+            rows = net.store.all("SELECT f.name, a.name AS agent FROM functions f LEFT JOIN agents a ON a.id=f.matched_agent_id "
+                                 "WHERE f.project_id=? AND f.status='matched'", pid)
+            out["matched"] = [dict(r) for r in rows if e == 0 or r["name"] in names]
+        if e == 0 or any(ev["kind"] == "note" for ev in events):
+            out["notes"] = [dict(r) for r in net.store.all(
+                "SELECT n.id, n.text, n.created_at, f.name AS function, a.name AS agent FROM notes n LEFT JOIN functions f "
+                "ON f.id=n.function_id LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? ORDER BY n.id", pid)]
+        out["claims"] = [dict(r) for r in net.store.all(
+            "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
+            "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
+        out["head"] = forkroom.head(Path(self.proj["root"]))
+        out["branch"] = forkroom.branch(Path(self.proj["root"]))
         out["members"] = self.members()
         return out
 
@@ -294,7 +331,10 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
             raise NetworkError("this invite link is no longer valid")
         cfg = room.cfg
         ov = net.overview(room.slug)
-        return {"room": room.slug, "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
+        if room.fork:
+            return {"room": room.slug, **forkroom.hello(net, room.slug), "functions": ov["functions"],
+                    "matched": ov["matched"], "members": len(room.members()), **room.settings}
+        return {"room": room.slug, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
                 "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"],
                 "functions": ov["functions"], "matched": ov["matched"], "members": len(room.members()),
                 **room.settings}
@@ -351,6 +391,36 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         agent = room.agent_for(member, d.get("agent"))
         return {"text": net.add_note(agent, room.slug, str(d.get("text", "")), d.get("function") or None)}
 
+    def edit(room, member, d):
+        """A member's edit of a git project's file (a header, a new or shared source file): made and checked here."""
+        if not room.fork:
+            raise NetworkError("this room's project has no files to edit")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.edit_file(agent, room.slug, str(d.get("path", "")), str(d.get("old", "")),
+                                            str(d.get("new", "")), str(d.get("message", "")))}
+
+    def split_file(room, member, d):
+        if not room.fork:
+            raise NetworkError("this room's project has no files to split")
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.forks.split_file(agent, room.slug, str(d.get("path", "")), str(d.get("at", "")),
+                                             str(d.get("new_name", "")), str(d.get("data", "")))}
+
+    async def get_bundle(request: Request):
+        """The host's commits a member doesn't have yet (a git bundle: tracked files only, never the game)."""
+        import anyio
+
+        try:
+            room = room_for(request)
+            await anyio.to_thread.run_sync(room.member, request)
+            if not room.fork:
+                raise NetworkError("this room's project isn't a git tree")
+            data = await anyio.to_thread.run_sync(lambda: forkroom.bundle(Path(room.proj["root"]),
+                                                                           request.query_params.get("have", "")))
+        except NetworkError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return Response(data, media_type="application/octet-stream", status_code=200 if data else 204)
+
     def leave(room, member, d):
         with net.store.tx() as db:
             db.execute("DELETE FROM claims WHERE agent_id IN (SELECT id FROM agents WHERE owner=? AND origin=?)",
@@ -380,6 +450,9 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         Route("/collab/split", endpoint(split), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
+        Route("/collab/edit", endpoint(edit), methods=["POST"]),
+        Route("/collab/split_file", endpoint(split_file), methods=["POST"]),
+        Route("/collab/bundle", get_bundle),
     ]
     return Starlette(routes=routes)
 
@@ -444,6 +517,8 @@ class Link:
         self.last_ok = 0.0
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        self.fork = bool(net.fork_slug(slug))  # a git source tree: follows the host's commits (forkroom.py)
+        self.head = (json.loads(net.project_row(slug)["config"]).get("link") or {}).get("head", "")
 
     # -- transport
 
@@ -463,6 +538,22 @@ class Link:
         self.error, self.last_ok = "", time.time()
         return out
 
+    def _raw(self, path: str, params: dict) -> bytes:
+        headers = {"authorization": f"Bearer {self.token}", "x-room": self.room}
+        try:
+            r = self.client.get(f"{self.url}{path}", params={**params, "room": self.room}, headers=headers,
+                                timeout=httpx.Timeout(600, connect=15))
+        except httpx.HTTPError as e:
+            self.error = f"can't reach the host ({type(e).__name__})"
+            raise NetworkError(f"the room's host isn't reachable right now: {self.error}") from None
+        if r.status_code == 204:
+            return b""
+        if r.status_code != 200:
+            raise NetworkError((r.json() if r.headers.get("content-type", "").startswith("application/json")
+                                else {}).get("error") or f"host answered {r.status_code}")
+        self.error, self.last_ok = "", time.time()
+        return r.content
+
     # -- actions, called by RomNetwork for a linked project
 
     def claim(self, agent: Agent, function: str | None, strategy: str) -> str | None:
@@ -471,8 +562,8 @@ class Link:
     def attempt(self, agent: Agent, function: str, source: str) -> dict:
         return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source})
 
-    def call(self, path: str, agent: Agent, **data) -> str:
-        return self._req("POST", path, {"agent": agent.name, **data}).get("text", "")
+    def call(self, route: str, agent: Agent, /, **data) -> str:
+        return self._req("POST", route, {"agent": agent.name, **data}).get("text", "")
 
     # -- mirroring the host's work into the local project
 
@@ -482,6 +573,8 @@ class Link:
             self.apply(st)
 
     def apply(self, st: dict) -> None:
+        if self.fork:
+            return self._apply_fork(st)
         net, slug = self.net, self.slug
         proj = net.project_row(slug)
         pid = proj["id"]
@@ -503,6 +596,43 @@ class Link:
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
+
+    def _apply_fork(self, st: dict) -> None:
+        """A git project's room: follow the host's commits, then mirror matches, notes, events, claims."""
+        net, slug = self.net, self.slug
+        pid = net.project_row(slug)["id"]
+        mine = f"{self.member}."
+        if st.get("head") and st["head"] != self.head:
+            self.pull(st.get("branch") or "")
+        for m in st.get("matched") or []:
+            net.apply_remote_match_named(slug, m["name"], m["agent"] or "host")
+        for n in st.get("notes") or []:
+            net.apply_remote_note_named(slug, n["function"], n["text"], n["agent"] or "host", n["created_at"])
+        for ev in st.get("events") or []:
+            if ev["kind"] in ("match", "claim", "release", "context", "split", "collab", "link") \
+                    and not (ev["agent"] or "").startswith(mine):
+                net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
+        self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
+        self.members = st.get("members") or []
+        self.cursor["e"] = st.get("e", self.cursor["e"])
+
+    def pull(self, ref: str) -> bool:
+        """Bring the host's new commits into this tree (while no agent here is building in it), rebuild what
+        changed and measure again. Returns whether anything came."""
+        forks = self.net.forks
+        proj, fp, _ = forks.get(self.slug)
+        data = self._raw("/collab/bundle", {"have": self.head})
+        if data:
+            with forks._tree(proj).exclusive():
+                tip = forkroom.pull(fp.root, data, ref or forkroom.branch(fp.root))
+                forks._build_all(proj, fp)
+        else:
+            tip = self._req("GET", "/collab/state", {"e": self.cursor["e"]}).get("head") or self.head
+        self.head = tip
+        forkroom.save_head(self.net, self.slug, tip)
+        if data:
+            forks.sync(self.slug, log=lambda *_: None)
+        return bool(data)
 
     def run(self, every: float = 2.0) -> None:
         def loop():
@@ -534,10 +664,10 @@ def _hello(http: httpx.Client, link: str) -> tuple[str, str, dict]:
     return url, code, hello
 
 
-def _linked_project(net, sha1: str, room: str):
+def _linked_project(net, sha1: str | None, room: str):
     for p in net.store.all("SELECT slug, config FROM projects"):
         cfg = json.loads(p["config"])
-        if cfg.get("rom", {}).get("sha1") == sha1 and (cfg.get("link") or {}).get("room") == room:
+        if forkroom.project_identity(cfg) == sha1 and (cfg.get("link") or {}).get("room") == room:
             return p["slug"], cfg["link"]
     return None, None
 
@@ -549,7 +679,7 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
     url, code, hello = _hello(http, link)
     proj = net.project_row(slug)
     cfg = json.loads(proj["config"])
-    if cfg.get("rom", {}).get("sha1") != hello["sha1"]:
+    if forkroom.project_identity(cfg) != hello.get("sha1"):
         raise NetworkError(f"that link is for {hello['title']}, a different game than this project")
     info = dict(cfg.get("link") or {})
     if info.get("token"):
@@ -572,15 +702,16 @@ def reconnect(net, slug: str, link: str, log=print, client: httpx.Client | None 
     if old is not None:
         old.stop()
     net.link_project(slug, {"url": url, "room": hello["room"], "token": joined["token"], "member": joined["name"],
-                            "host_title": hello["title"]}, client=client, start=start)
+                            "host_title": hello["title"], "head": info.get("head", "")}, client=client, start=start)
     log(f"joined {hello['title']} again as {joined['name']}")
     return slug
 
 
-def join_room(net, link: str, name: str, rom: bytes, log=print, client: httpx.Client | None = None,
+def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: httpx.Client | None = None,
               start: bool = True) -> str:
     """Guest: check the invite, check the ROM is the same game, join, import it locally, link. Returns the slug.
-    If this game is already linked to that room here, reconnect instead (no ROM needed)."""
+    If this game is already linked to that room here, reconnect instead (no ROM needed). `rom`: the game's bytes or
+    the file (a GameCube or Wii disc is gigabytes: never read whole)."""
     from ..rom import detect
 
     http = client or httpx.Client(timeout=httpx.Timeout(60, connect=15))
@@ -590,6 +721,10 @@ def join_room(net, link: str, name: str, rom: bytes, log=print, client: httpx.Cl
         return reconnect(net, slug, link, log=log, client=client, start=start)
     if not rom:
         raise NetworkError("pick your own copy of the game to join")
+    if hello.get("kind") == "fork":
+        return _join_fork(net, http, url, code, hello, name, rom, log, client, start)
+    if isinstance(rom, Path):
+        rom = rom.read_bytes()
     picked = detect.identify(rom)
     if picked.info["sha1"] != hello["sha1"]:
         raise NetworkError(f"this ROM isn't the same as the host's: the room is for {hello['title']} "
@@ -605,6 +740,65 @@ def join_room(net, link: str, name: str, rom: bytes, log=print, client: httpx.Cl
                             "host_title": hello["title"]}, client=client, start=start)
     log(f"linked as {joined['name']}: your agents now work with the room")
     return slug
+
+
+def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: str, game: bytes | Path, log,
+               client: httpx.Client | None, start: bool) -> str:
+    """Join a git project's room: the host's tree (forkroom.clone), the member's own copy of the game placed where
+    the project wants it and built with the member's own tools, then linked."""
+    import tempfile
+
+    from ..forks.catalog import PLATFORMS
+
+    tmp = None
+    if not isinstance(game, Path):
+        tmp = tempfile.NamedTemporaryFile(prefix="decomp-join-", suffix=".game", delete=False)
+        tmp.write(game)
+        tmp.close()
+        game = Path(tmp.name)
+    try:
+        if hello.get("sha1") and forkroom.game_identity(game) != hello["sha1"]:
+            raise NetworkError(f"this isn't the same game as the host's: the room is for {hello['title']} "
+                               f"({PLATFORMS.get(hello.get('platform'), hello.get('platform') or '')}, "
+                               f"{hello.get('version') or 'the same version'}), and every member needs their own copy of "
+                               "exactly that version")
+        log(f"joining {hello['title']} ({hello['functions']} functions, {hello['matched']} matched)")
+        r = http.post(f"{url}/collab/join?room={hello['room']}", json={"invite": code, "name": name, "sha1": hello.get("sha1") or ""})
+        joined = r.json()
+        if r.status_code != 200:
+            raise NetworkError(joined.get("error", "couldn't join"))
+        headers = {"authorization": f"Bearer {joined['token']}", "x-room": hello["room"]}
+
+        def get_bundle(have: str) -> bytes:
+            res = http.get(f"{url}/collab/bundle", params={"have": have, "room": hello["room"]}, headers=headers,
+                           timeout=httpx.Timeout(600, connect=15))
+            if res.status_code == 204:
+                return b""
+            if res.status_code != 200:
+                raise NetworkError((res.json() if res.headers.get("content-type", "").startswith("application/json")
+                                    else {}).get("error") or "the host couldn't send the project")
+            return res.content
+
+        slug = net.forks._free_slug(re.sub(r"[^a-z0-9]+", "-", hello["title"].lower()).strip("-")[:40] or "room")
+        dest = net.workspace / slug
+        try:
+            forkroom.clone(dest, hello, get_bundle, log=log)
+            forkroom.register_member(net, slug, dest, hello, hello["title"])
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
+        info = {"url": url, "room": hello["room"], "token": joined["token"], "member": joined["name"],
+                "host_title": hello["title"], "head": forkroom.head(dest)}
+        net.link_project(slug, info, client=client, start=False)  # its agents wait for the room from the start
+        log("building the project with your copy of the game and your tools")
+        net.forks.setup(slug, game, game.name if tmp is None else "", log=log, move=tmp is not None)
+        if start:
+            net.links[slug].run()
+        log(f"linked as {joined['name']}: your agents now work with the room")
+        return slug
+    finally:
+        if tmp is not None:
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 def cloudflared_available() -> bool:

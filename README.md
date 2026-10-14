@@ -257,7 +257,7 @@ one game. One computer is the room's **host**: it hands out functions so nobody 
 match against its own copy, and shares names, structs and notes with everyone. Nothing goes through decomp.wtf's
 website: the people who decompile together host their room and decide who's in.
 
-**On a home PC:** open the project, click **Decompile together**, **Start sharing**. Send the link.
+**On a home PC:** open the project, click **Decompile together**, **Open the room**. Send the link.
 
 **On a server** (or any always-on machine):
 
@@ -276,10 +276,11 @@ link. **Joining:** paste the link into **Join a team's room** in the app, or `de
 | **The host's controls** | Who's online and on what, remove members, a fresh invite link, stop sharing. |
 | **Light on the host** | Members compile their own attempts; the host compiles only to verify matches. Agents wait while the host is away and carry on when it's back. |
 
+| **Every kind of project** | Games started from a ROM, GameCube, Wii and DS games started from scratch, and forks of public decomps. A git project's members get its source tree from the host (only what git tracks, never the game), build it with their own copy and tools, and follow every commit made in the room: matches are confirmed and committed by the host, edits of shared files are made there. |
+
 No ROM bytes or assembly ever cross the wire: everyone reads the code from their own copy, which must be identical to
 the host's. The decompiled code of a commercial game belongs to its rights holder: share it only with people who own
-the game. Rooms work for games started from a ROM; GameCube, Wii and DS projects are git repositories, which a team
-shares like any other (GitHub, GitLab, its own server).
+the game.
 
 ## Platforms
 
