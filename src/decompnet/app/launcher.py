@@ -51,16 +51,14 @@ def install_launcher() -> str:
         os.chmod(script, 0o755)
         return f"added decomp.wtf to {app.parent}"
     if sys.platform == "win32":
-        programs = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
-        made = []
-        for folder in (programs, desktop):
-            if not folder.is_dir():
-                continue
-            lnk = folder / "decomp.wtf.lnk"
-            ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');"
-                  f"$s.TargetPath='{exe}';$s.WindowStyle=7;$s.Description='decomp.wtf';$s.Save()")
-            if subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True).returncode == 0:
-                made.append(str(lnk))
+        # Windows says where the Start menu and the desktop are (a desktop is often in OneDrive); a path with an
+        # apostrophe in it (a user name) is quoted for PowerShell
+        target = str(exe).replace("'", "''")
+        ps = ("$ws=New-Object -ComObject WScript.Shell;"
+              "foreach($d in @([Environment]::GetFolderPath('Programs'),[Environment]::GetFolderPath('Desktop'))){"
+              "if($d -and (Test-Path $d)){$l=Join-Path $d 'decomp.wtf.lnk';$s=$ws.CreateShortcut($l);"
+              f"$s.TargetPath='{target}';$s.WindowStyle=7;$s.Description='decomp.wtf';$s.Save();Write-Output $l}}}}")
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+        made = [line.strip() for line in res.stdout.splitlines() if line.strip().endswith(".lnk")]
         return "added shortcuts: " + ", ".join(made) if made else "could not create shortcuts"
     return "no launcher for this system; run `decomp`"
