@@ -212,6 +212,41 @@ def _build(fp: ForkProject, log) -> tuple[bool, str]:
     return fp.run(["ninja"], log=log, timeout=3600)
 
 
+_SECTION_LINE = re.compile(r"^\t(\S+)(\s+type:\w+.*)$")
+
+
+def _unique_sections(root: Path, game_id: str) -> list[str]:
+    """dtk names the program's sections from their kind and order. A game whose linker script added a section of its
+    own (Mario Kart: Double Dash!! keeps archives in a .BINARY section before .rodata) gets two of one name, which dtk
+    writes into splits.txt and then refuses to read back ("Multiple sections with name .rodata"). Keep the usual name
+    on the last of them, where the standard layout has it, give the others names of their own, and let dtk analyse
+    the program again with those names (its symbols name sections too, so they start over). Returns the new names."""
+    path = root / "config" / game_id / "splits.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    m = re.search(r"^Sections:\n((?:\t.*\n?)+)", text, re.M)
+    if not m:
+        return []
+    lines = m.group(1).rstrip("\n").split("\n")
+    names = [(_SECTION_LINE.match(line) or [None, None])[1] for line in lines]
+    renamed = []
+    for i, name in enumerate(names):
+        if name and names.count(name) > 1 and name in names[i + 1:]:
+            new, k = f"{name}{i}", i  # letters and digits only: dtk reads no other section names in symbols.txt
+            while new in names:
+                k += 1
+                new = f"{name}{k}"
+            names[i] = new
+            lines[i] = f"\t{new:<11} {_SECTION_LINE.match(lines[i]).group(2).strip()}"  # dtk's own layout
+            renamed.append(new)
+    if renamed:
+        path.write_text("Sections:\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        (root / "config" / game_id / "symbols.txt").unlink(missing_ok=True)
+    return renamed
+
+
 def _name_entry(root: Path, game_id: str, dol: bytes) -> bool:
     """CodeWarrior links from __start: make sure the program's entry point carries that name."""
     path = root / "config" / game_id / "symbols.txt"
@@ -286,6 +321,9 @@ write_asm: true
     fp = ForkProject(root)
     log(f"analysing {info['title']} ({gid}) with decomp-toolkit")
     ok, tail = _build(fp, log)
+    if not ok and (renamed := _unique_sections(root, gid)):
+        log(f"the program has sections of its own (named {', '.join(renamed)} here): analysing it again")
+        ok, tail = _build(fp, log)
     if _name_entry(root, gid, info["dol"]):
         ok, tail = _build(fp, log)
     if not ok:

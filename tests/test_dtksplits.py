@@ -75,3 +75,25 @@ def test_a_module_without_a_library_gets_one_like_its_sibling():
     assert 'Rel(\n        "m657DLL",\n        objects={\n            Object(NonMatching, "REL/m657DLL/text_00000000.cpp", ' \
            'extra_cflags=["-pooldata off"]),\n        },\n    ),' in text
     compile(text, "configure.py", "exec")
+
+
+def test_a_program_with_two_sections_of_one_name_gets_unique_names(tmp_path):
+    """Mario Kart: Double Dash!! has a section of its own (.BINARY, archives) before .rodata. dtk names both .rodata,
+    writes that into splits.txt and then can't read it back ("Multiple sections with name .rodata"). The extra one
+    gets a name of its own (letters and digits: dtk reads no other section names in symbols.txt), the usual name
+    stays on the section where the standard layout has it, and dtk analyses the program again (its symbols start over)."""
+    from decompnet.forks.scratch_dtk import _unique_sections
+
+    config = tmp_path / "config" / "GM4P01"
+    config.mkdir(parents=True)
+    (config / "splits.txt").write_text(
+        "Sections:\n\t.init       type:code align:4\n\t.ctors      type:rodata align:32\n\t.rodata     type:rodata align:32\n"
+        "\t.rodata     type:rodata align:8\n\t.data       type:data align:16\n\nauto_00_80003100_init.s:\n"
+        "\t.init       start:0x80003100 end:0x80003154\n", encoding="utf-8")
+    (config / "symbols.txt").write_text("lbl_802D8AA0 = .rodata:0x802D8AA0; // type:object size:0x5413A\n", encoding="utf-8")
+    assert _unique_sections(tmp_path, "GM4P01") == [".rodata2"]
+    assert (config / "splits.txt").read_text(encoding="utf-8") == (
+        "Sections:\n\t.init       type:code align:4\n\t.ctors      type:rodata align:32\n\t.rodata2    type:rodata align:32\n"
+        "\t.rodata     type:rodata align:8\n\t.data       type:data align:16\n")
+    assert not (config / "symbols.txt").exists()
+    assert _unique_sections(tmp_path, "GM4P01") == []  # nothing left to rename
