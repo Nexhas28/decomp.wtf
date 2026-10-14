@@ -406,13 +406,16 @@ def test_a_catalog_that_cant_be_had_says_why(tmp_path, monkeypatch):
         raise urllib.error.HTTPError(catalog.URL, 403, "Forbidden", {}, None)
 
     asked = []
-    monkeypatch.setattr(catalog, "_fetch", lambda: asked.append(1) or refused())
+    monkeypatch.setattr(catalog, "_fetch", lambda agent: asked.append(agent) or refused())
     cache = tmp_path / "catalog.json"
     with pytest.raises(catalog.CatalogError, match="rate limit"):
         catalog.catalog(cache)
     with pytest.raises(catalog.CatalogError, match="rate limit"):  # not asked again the same day
         catalog.catalog(cache)
     assert len(asked) == 1
+    # every install its own client: a random id, the same on every request
+    assert asked[0].startswith("decompwtf-") and asked[0] == catalog.user_agent(tmp_path) and "decomp.wtf" not in asked[0]
+    assert catalog.catalog(tmp_path / "other.json", fetch=False) == []  # the home page's count asks nothing
     cache.write_text(json.dumps({"projects": [{"owner": "o", "repo": "r", "platform": "gc"}]}))
     os.utime(cache, (0, 0))  # an old copy is better than nothing
     assert [p["id"] for p in catalog.catalog(cache)] == ["o/r"]

@@ -245,8 +245,8 @@ class ForkEngine:
     def _meta(fn) -> dict:
         return json.loads(fn["meta"]) if fn["meta"] else {}
 
-    def catalog(self) -> list[dict]:
-        return catalog.catalog(self.net.workspace / ".decomp" / "catalog.json")
+    def catalog(self, fetch: bool = True) -> list[dict]:
+        return catalog.catalog(self.net.workspace / ".decomp" / "catalog.json", fetch=fetch)
 
     # ------------------------------------------------------------------ creating a fork
 

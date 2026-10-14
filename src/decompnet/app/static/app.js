@@ -176,7 +176,7 @@ async function showHome() {
   show("home");
   resetDrop();
   const st = await loadState();
-  loadCatalog().then((c) => { if (c.length) $("forkCount").textContent = c.length.toLocaleString(); }).catch(() => {});
+  api("/api/catalog?cached=1").then((c) => { if (c.projects.length) $("forkCount").textContent = c.projects.length.toLocaleString(); }).catch(() => {});  // never a request to decomp.dev
   const box = $("projects");
   box.innerHTML = "";
   $("recent").hidden = !st.projects.length;
@@ -1093,7 +1093,7 @@ function renderCatalog() {
   const forked = new Map((S.st?.projects || []).filter((p) => p.kind === "fork").map((p) => [p.repo_url, p.slug]));
   const rows = all.filter((p) => (!cat.plat || p.platform === cat.plat) && (cat.done || p.matched < 99.99)
     && (!q || `${p.name} ${p.id}`.toLowerCase().includes(q)));
-  $("catNote").textContent = `${rows.length} of ${all.length} projects${cat.done ? "" : " (finished ones hidden)"}. Progress from decomp.dev; decomp.wtf isn't affiliated with these projects.`;
+  $("catNote").textContent = `${rows.length} of ${all.length} projects${cat.done ? "" : " (finished ones hidden)"}. The list and progress are decomp.dev's (updated here once a day); decomp.wtf isn't affiliated with these projects.`;
   $("catGrid").innerHTML = rows.slice(0, 240).map((p) => `<button class="cat-card" type="button" data-id="${esc(p.id)}">
       <div class="cc-top"><span class="plat">${esc(PLAT_SHORT[p.platform] || p.platform_name)}</span>${forked.has(p.repo_url) ? `<span class="badge matched">forked</span>` : p.matched >= 99.99 ? `<span class="badge">done</span>` : ""}</div>
       <h4>${esc(p.name)}</h4>
@@ -1122,6 +1122,7 @@ function openForkDialog(p) {
   const body = dialog(`Fork ${p.name}`, `<p>decomp.wtf clones <a class="link" href="${esc(p.repo_url)}" target="_blank" rel="noopener">${esc(p.id)}</a> to this computer and sets it up for your agents.</p>
     <dl class="facts">${[["Platform", p.platform_name || "?"], ["Version", p.version || "the project's default"], ["Progress", p.functions ? `${p.matched.toFixed(1)}% of code` : "?"]]
       .map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+    ${p.functions ? `<p class="muted small">Progress from <a class="link" href="https://decomp.dev/${esc(p.id)}" target="_blank" rel="noopener">its page on decomp.dev</a>, where the project's history, every file and its contributors are.</p>` : ""}
     <p class="muted small">Next you add <b>your own copy of the game</b>. Its code stays on your computer; your agent's provider sees the functions it works on. Setting up runs the project's own build scripts, as building it yourself would, so fork projects you trust. Matches are committed to a local <code>decomp-wtf</code> branch: what you push upstream is up to you and the project's rules.</p>
     <div class="row"><button class="primary" id="forkGo" type="button">Fork it</button><button class="ghost" data-close type="button">Cancel</button></div>
     <pre class="joblog" id="forkLog" hidden></pre>`);

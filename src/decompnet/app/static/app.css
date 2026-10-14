@@ -654,3 +654,5 @@ a.ghost, a.primary { text-decoration: none; }
 }
 
 .nav-proj.broken .np-meta, .err-text { color: var(--miss); }
+.credit { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raise); color: var(--ink-2); max-width: 760px; }
+.credit a { color: inherit; }

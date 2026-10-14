@@ -567,7 +567,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if (bad := guard(request)):
             return bad
         try:
-            return JSONResponse({"projects": await call(net.forks.catalog)})
+            fetch = request.query_params.get("cached") != "1"  # the home page's count: the cached list only
+            return JSONResponse({"projects": await call(lambda: net.forks.catalog(fetch=fetch))})
         except CatalogError as e:
             return fail(e, 502)
 

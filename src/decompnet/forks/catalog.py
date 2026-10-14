@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -16,22 +18,44 @@ PLATFORMS = {
 }
 
 
-# How often the list is asked for: once a day at most per install, also after decomp.dev refuses (its automatic rate
-# limit counts every decomp.wtf as one client, so many installs asking every few hours tripped it). Every request
-# says what it is: decomp.dev decides whether it serves decomp.wtf.
+# How decomp.wtf uses decomp.dev's list: each install is a client of its own (its own
+# user agent, so the automatic rate limit doesn't count every decomp.wtf as one user), asks at most once a day and
+# only when someone opens Public decomps, and waits a day after a refusal, an hour after an error. One request at a
+# time per app. The page credits decomp.dev and links every project to its page there.
 MAX_AGE = 24 * 3600
 AFTER_REFUSAL = 24 * 3600
 AFTER_ERROR = 3600
+_LOCK = threading.Lock()
 
 
-def _user_agent() -> str:
+def install_id(folder: Path) -> str:
+    """This install's random id (made once, kept next to the cached list): nothing about the user or the computer."""
+    path = folder / "install-id"
+    try:
+        found = path.read_text(encoding="utf-8").strip()
+        if len(found) == 12 and all(c in "0123456789abcdef" for c in found):
+            return found
+    except OSError:
+        pass
+    made = secrets.token_hex(6)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_text(made, encoding="utf-8")
+    except OSError:
+        pass
+    return made
+
+
+def user_agent(folder: Path) -> str:
+    """decompwtf-<install id>/<version>. ("decomp.wtf" written as such, in any part of the agent, falls under the
+    rate limit that tripped on every install sharing one agent; this names the app all the same.)"""
     from .. import __version__
 
-    return f"decomp.wtf/{__version__} (+https://decomp.wtf)"
+    return f"decompwtf-{install_id(folder)}/{__version__}"
 
 
-def _fetch() -> dict:
-    req = urllib.request.Request(URL, headers={"User-Agent": _user_agent(), "Accept": "application/json"})
+def _fetch(agent: str = "decompwtf") -> dict:
+    req = urllib.request.Request(URL, headers={"User-Agent": agent, "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -63,10 +87,18 @@ def _cached(cache: Path) -> list[dict] | None:
         return None
 
 
-def catalog(cache: Path, max_age: float = MAX_AGE) -> list[dict]:
+def catalog(cache: Path, max_age: float = MAX_AGE, fetch: bool = True) -> list[dict]:
     """Projects from decomp.dev, cached on disk for a day. When it can't be had, the last copy (however old) is used;
     with none, CatalogError says why instead of an empty list that looks like "no projects". A refusal is remembered
-    (next to the cache) and not asked again for a day; another failure for an hour."""
+    (next to the cache) and not asked again for a day; another failure for an hour. `fetch`
+    False: only what's cached (the home page's count never makes a request)."""
+    if not fetch:
+        return _cached(cache) or []
+    with _LOCK:  # the page and the home page at once: one request
+        return _catalog(cache, max_age)
+
+
+def _catalog(cache: Path, max_age: float) -> list[dict]:
     if cache.exists() and time.time() - cache.stat().st_mtime < max_age and (fresh := _cached(cache)) is not None:
         return fresh
     failed = cache.with_suffix(".failed.json")
@@ -79,7 +111,7 @@ def catalog(cache: Path, max_age: float = MAX_AGE) -> list[dict]:
         why = last.get("why") or "decomp.dev's project list isn't available"
     else:
         try:
-            raw = _fetch()
+            raw = _fetch(user_agent(cache.parent))
             normalized = normalize(raw)
         except urllib.error.HTTPError as e:
             code = e.code
