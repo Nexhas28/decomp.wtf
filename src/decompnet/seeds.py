@@ -104,21 +104,23 @@ def run_m2c(asm_text: str, name: str, target: str, context_header: str = "", dat
     m2c = toolchains.venv_bin(toolchains.path("m2c") / "venv", "m2c")
     with tempfile.TemporaryDirectory(prefix="decompnet-m2c-") as tmp:
         asm = Path(tmp) / f"{name}.s"
-        asm.write_text(asm_text)
+        asm.write_text(asm_text, encoding="utf-8")
         argv = [str(m2c), *(["--valid-syntax"] if valid else []), "-t", target, "-f", name, str(asm)]
         if data_asm:
-            (Path(tmp) / "data.s").write_text(data_asm)
+            (Path(tmp) / "data.s").write_text(data_asm, encoding="utf-8")
             argv.append(str(Path(tmp) / "data.s"))
         if context_header.strip():
             ctx = Path(tmp) / "context.c"
-            ctx.write_text(_context_for_m2c(context_header))
+            ctx.write_text(_context_for_m2c(context_header), encoding="utf-8")
             argv[1:1] = ["--context", str(ctx)]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                                 encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return None
         if res.returncode != 0 and "--context" in argv:  # an unparsable context must not cost us the seed
             i = argv.index("--context")
-            res = subprocess.run(argv[:i] + argv[i + 2:], capture_output=True, text=True, timeout=timeout)
+            res = subprocess.run(argv[:i] + argv[i + 2:], capture_output=True, text=True, timeout=timeout,
+                                 encoding="utf-8", errors="replace")
         out = res.stdout.strip()
         return out if res.returncode == 0 and out else None

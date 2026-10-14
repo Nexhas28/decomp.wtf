@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-B = json.loads((ROOT / "build.json").read_text())
+B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 PREAMBLE = {
     "n64": '.include "macro.inc"\n.set noat\n.set noreorder\n.set gp=64\n.section .text, "ax"\n',
     "psx": '.include "macro.inc"\n.set noat\n.set noreorder\n.section .text, "ax"\n',
@@ -43,7 +43,7 @@ def fail(msg: str) -> None:
 
 
 def run(argv: list[str]) -> None:
-    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if res.returncode != 0:
         fail(f"{' '.join(argv[:3])} ...\n{(res.stdout + res.stderr)[-3000:]}")
 
@@ -72,7 +72,7 @@ def setup() -> None:
         if seg.get("incbin"):
             stub = ROOT / seg["stub"]
             stub.parent.mkdir(parents=True, exist_ok=True)
-            stub.write_text(f'.section .data\n.incbin "{seg["incbin"]}"\n')
+            stub.write_text(f'.section .data\n.incbin "{seg["incbin"]}"\n', encoding="utf-8")
 
 
 def c_source(fn: dict) -> str | None:
@@ -93,7 +93,7 @@ def objects() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
         else:
             wrap = ROOT / "build" / "wrap" / f"{fn['name']}.s"
             wrap.parent.mkdir(parents=True, exist_ok=True)
-            wrap.write_text(PREAMBLE[B["platform"]] + f'.include "{fn["asm"]}"\n')
+            wrap.write_text(PREAMBLE[B["platform"]] + f'.include "{fn["asm"]}"\n', encoding="utf-8")
             obj = f"build/{Path(fn['asm']).with_suffix('.o').as_posix()}"
             out.append(("asm", wrap.relative_to(ROOT).as_posix(), obj))
         provides[fn["name"]] = obj
@@ -175,7 +175,7 @@ def fill_gaps(provides: dict[str, str]) -> list[tuple[int, str]]:
                     src = ROOT / "build" / "gaps" / f"{pos:08X}.s"
                     src.parent.mkdir(parents=True, exist_ok=True)
                     src.write_text(".section .data\n" + "".join(f".byte {', '.join(str(b) for b in raw[i:i + 16])}\n"
-                                                              for i in range(0, len(raw), 16)))
+                                                              for i in range(0, len(raw), 16)), encoding="utf-8")
                     obj = f"build/gaps/{pos:08X}.o"
                     run([binutils("as"), *B["as_flags"], "-o", obj, src.relative_to(ROOT).as_posix()])
                     extra.append((pos, obj))
@@ -222,7 +222,7 @@ def linker_script(provides: dict[str, str], gaps: list[tuple[int, str]]) -> str:
     # labels are local to another object, so give them their addresses (which their names spell out)
     labels = set()
     for path in (ROOT / "asm" / "data").glob("**/*.s"):
-        labels.update(re.findall(r"\.word\s+\.L([0-9A-Fa-f]{8})\b", path.read_text(errors="replace")))
+        labels.update(re.findall(r"\.word\s+\.L([0-9A-Fa-f]{8})\b", path.read_text(errors="replace", encoding="utf-8")))
     lines += [f'".L{label}" = 0x{label};' for label in sorted(labels)]
     # the segment symbols splat projects use (start-up code clears .bss with them)
     image_size = (ROOT / B["image"]).stat().st_size
@@ -245,7 +245,7 @@ def build() -> bool:
     todo, provides = objects()
     build_objects(todo)
     gaps = fill_gaps(provides)
-    (ROOT / "build" / "game.ld").write_text(linker_script(provides, gaps))
+    (ROOT / "build" / "game.ld").write_text(linker_script(provides, gaps), encoding="utf-8")
     objs = sorted({obj for _, _, obj in todo} | {obj for _, obj in gaps})
     run([binutils("ld"), *B["ld_flags"], "-T", "build/game.ld", "-o", "build/game.elf", *objs])
     run([binutils("objcopy"), "-O", "binary", "build/game.elf", B["output"]])
@@ -278,7 +278,7 @@ def check(name: str) -> bool:
     found = [Symbol(s, a, 0, "data") for s, a in B["symbols"].items()]
     found += [Symbol(f["name"], f["vram"], 0, "func") for f in B["functions"]]
     for path in (ROOT / "asm" / "data").glob("**/*.s"):
-        text = path.read_text(errors="replace")
+        text = path.read_text(errors="replace", encoding="utf-8")
         for m in re.finditer(r"dlabel (\w+)\s*\n\s*/\*\s*(?:[0-9A-F]+\s+)?([0-9A-F]{8})", text):
             found.append(Symbol(m.group(1), int(m.group(2), 16), 0, "data"))
     table = SymbolTable(found)
@@ -297,9 +297,9 @@ def check(name: str) -> bool:
         return None
 
     cfg = compiler_config(ROOT, {"compiler": B["compiler"]})
-    text = (ROOT / src).read_text()
+    text = (ROOT / src).read_text(encoding="utf-8")
     m = re.match(r'\s*#include "([^"]+)"\s*\n', text)
-    header = (ROOT / "include" / m.group(1)).read_text() if m else ""
+    header = (ROOT / "include" / m.group(1)).read_text(encoding="utf-8") if m else ""
     res = compile_source(cfg, header, text[m.end():] if m else text, trusted=True)
     if not res.ok:
         print(res.log)
@@ -312,7 +312,7 @@ def check(name: str) -> bool:
         return False
     fn["c"] = src
     fn["own"] = {sec: min(a - o for o, a in offs.items()) for sec, offs in linked.placements.items()}
-    (ROOT / "build.json").write_text(json.dumps(B, indent=1))
+    (ROOT / "build.json").write_text(json.dumps(B, indent=1), encoding="utf-8")
     print(f"{name}: identical to the original; recorded in build.json")
     return True
 

@@ -47,7 +47,7 @@ class ExportError(RuntimeError):
 
 def _first_address(path: Path) -> tuple[int | None, int | None]:
     """(ROM offset, VRAM) of the first instruction or data word in a splat assembly file."""
-    text = path.read_text(errors="replace")
+    text = path.read_text(errors="replace", encoding="utf-8")
     m = _ADDR_COMMENT.search(text)
     if m:
         return int(m.group(1), 16), int(m.group(2), 16)
@@ -117,8 +117,9 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     for extra in ("reloc_addrs.txt",):
         if (work / extra).exists():
             shutil.copyfile(work / extra, out / extra)
-    (out / "symbol_addrs.txt").write_text("\n".join(_symbol_lines(net, proj)) + "\n")
-    res = subprocess.run([sys.executable, "-m", "splat", "split", "splat.yaml"], cwd=out, capture_output=True, text=True)
+    (out / "symbol_addrs.txt").write_text("\n".join(_symbol_lines(net, proj)) + "\n", encoding="utf-8")
+    res = subprocess.run([sys.executable, "-m", "splat", "split", "splat.yaml"], cwd=out, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ExportError("splat failed:\n" + (res.stdout + res.stderr)[-1500:])
     for generated in (out / "src").glob("*.c"):
@@ -131,9 +132,9 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     units = net._unit_contexts(proj["id"])
     header = net._context(proj["id"])["header"]
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(header)
+    (out / "include" / "common.h").write_text(header, encoding="utf-8")
     for u in units:
-        (out / "include" / f"common_{u}.h").write_text(net._context(proj["id"], u)["header"])
+        (out / "include" / f"common_{u}.h").write_text(net._context(proj["id"], u)["header"], encoding="utf-8")
     functions = []
     for path in sorted((out / "asm" / "nonmatchings").glob("**/*.s")):
         rom_off, vram = _first_address(path)
@@ -176,14 +177,14 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         src = out / "src" / f["seg"] / f"{f['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
         include = "common.h" if not unit else f"common_{unit}.h"
-        src.write_text(f'#include "{include}"\n\n{row["matched_source"].strip()}\n')
+        src.write_text(f'#include "{include}"\n\n{row["matched_source"].strip()}\n', encoding="utf-8")
         f["kind"] = "c"
         f["src"] = src.relative_to(out).as_posix()
         f["obj"] = f"build/src/{f['seg']}/{f['name']}.o"
         private += [(f["obj"], section, base) for section, base in bases.items()]
 
     # 3. everything else splat wrote: entry code, data, bss, binary blobs
-    config = yaml.safe_load((out / "splat.yaml").read_text())
+    config = yaml.safe_load((out / "splat.yaml").read_text(encoding="utf-8"))
     segments = _segments(config)
     pieces = []  # (segment name, vram or None, rom offset or None, object, sections)
     for path in sorted((out / "asm").glob("*.s")) + sorted((out / "asm" / "data").glob("**/*.s")):
@@ -207,7 +208,8 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     # 4. what the linker needs: segments, pieces, functions, symbols (build.py writes game.ld from it)
     defined = set()
     for path in (out / "asm").glob("**/*.s"):
-        defined.update(next(x for x in m.groups() if x) for m in _DEFINES.finditer(path.read_text(errors="replace")))
+        defined.update(next(x for x in m.groups() if x) for m in _DEFINES.finditer(path.read_text(errors="replace",
+                                                                                                  encoding="utf-8")))
     defined.update(f["name"] for f in functions)
     layout = []
     for seg in segments:
@@ -237,7 +239,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     for auto in ("undefined_syms_auto.txt", "undefined_funcs_auto.txt"):
         p = out / auto
         if p.exists():
-            for m in re.finditer(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", p.read_text(), re.M):
+            for m in re.finditer(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", p.read_text(encoding="utf-8"), re.M):
                 if m.group(1) not in defined:
                     absolute.setdefault(m.group(1), int(m.group(2), 16))
     fn_json = []
@@ -253,7 +255,8 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     base = f"baserom{ext}"
     (out / image_name).rename(out / base)
     yml = out / "splat.yaml"
-    yml.write_text(re.sub(r"(^\s*target_path:\s*).*$", rf"\g<1>{base}", yml.read_text(), count=1, flags=re.M))
+    yml.write_text(re.sub(r"(^\s*target_path:\s*).*$", rf"\g<1>{base}", yml.read_text(encoding="utf-8"), count=1, flags=re.M),
+                   encoding="utf-8")
     build = {
         "title": proj["name"], "platform": platform, "image": base, "output": f"build/game{ext}",
         "sha1": hashlib.sha1(image).hexdigest(), "compiler": cfg["compiler"], "gp": cfg.get("gp") or 0,
@@ -263,7 +266,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         "assembly": objects, "segments": layout, "functions": fn_json,
         "symbols": {k: v for k, v in sorted(absolute.items(), key=lambda kv: kv[1])},
     }
-    (out / "build.json").write_text(json.dumps(build, indent=1))
+    (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_build.py"), out / "build.py")
     units_json = []
     for f in functions:
@@ -272,15 +275,18 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         if f["kind"] == "c":
             unit["base_path"] = f["obj"]
         units_json.append(unit)
-    (out / "objdiff.json").write_text(json.dumps({"build_base": False, "build_target": False, "units": units_json}, indent=2))
+    (out / "objdiff.json").write_text(json.dumps({"build_base": False, "build_target": False, "units": units_json}, indent=2),
+                                      encoding="utf-8")
     matched = sum(1 for f in functions if f["kind"] == "c")
     _write_docs(out, proj["name"], platform, base, matched, len(functions), as_fallback)
     # everything made from the game itself stays local: build.py regenerates it from your copy
-    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\nassets/\n*.ld\n*_auto.txt\n.splat/\n*.d\n")
+    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\nassets/\n*.ld\n*_auto.txt\n.splat/\n*.d\n",
+                                    encoding="utf-8")
 
     # 6. prove it
     log("building the exported project to check it rebuilds the game byte for byte")
-    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600)
+    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
+                          encoding="utf-8", errors="replace")
     identical = proc.returncode == 0 and "identical" in proc.stdout
     if not identical:
         log((proc.stdout + proc.stderr)[-3000:])
@@ -320,7 +326,7 @@ everything is C, the game can be rebuilt, changed and moved to other platforms.
 
 The game's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
-""")
+""", encoding="utf-8")
     (out / "AGENTS.md").write_text("""# Working on this decompilation
 
 - Goal: C that the original compiler turns into exactly the original bytes. `python build.py` must end with
@@ -330,4 +336,4 @@ share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
   function's line in `game.ld` at the new object.
 - Shared types and prototypes go in `include/common.h`. Never edit `baserom*`, `asm/` or the addresses in
   `game.ld` to force a match.
-""")
+""", encoding="utf-8")

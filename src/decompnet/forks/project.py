@@ -67,7 +67,8 @@ class Unit:
 @functools.lru_cache(maxsize=64)
 def _git_env(root: Path) -> dict | None:
     """Commits need an identity: when git has none set up on this computer, commits are by decomp.wtf."""
-    res = subprocess.run(["git", "config", "user.email"], cwd=root, capture_output=True, text=True)
+    res = subprocess.run(["git", "config", "user.email"], cwd=root, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
     if res.returncode == 0 and res.stdout.strip():
         return None
     who = {"GIT_AUTHOR_NAME": "decomp.wtf", "GIT_AUTHOR_EMAIL": "noreply@decomp.wtf"}
@@ -77,7 +78,7 @@ def _git_env(root: Path) -> dict | None:
 # dtk-template's configure.py: Object(NonMatching, "path.c"), also over several lines, MatchingFor("GALE01")...
 _OBJECT = re.compile(r'\bObject\(\s*(NonMatching|Matching|Equivalent|MatchingFor\([^()]*\))\s*,\s*"([^"]+)"', re.S)
 _SRC_DIR = re.compile(r'^\s*config\.src_dir\s*=\s*Path\(\s*"([^"]+)"\s*\)', re.M)
-_CHECK = re.compile(r"^build (\S+/ok): check\b")
+_CHECK = re.compile(r"^build (\S+[/\\]ok): check\b")  # dtk-template writes build\<version>\ok on Windows
 # A target the build couldn't make: ninja's "FAILED: out.o", make's "make: *** [Makefile:12: out.o] Error 1"
 _FAILED = re.compile(r"^FAILED: (.+)$|^make(?:\[\d+\])?: \*\*\* \[(?:[^\]]*?:\d+: )?([^\]]+)\] Error")
 # CodeWarrior's linker warns about every FORCEACTIVE symbol and unknown section: harmless, and thousands of lines
@@ -104,7 +105,7 @@ class ForkProject:
     @property
     def manifest(self) -> dict | None:
         p = self.root / ".decomp.wtf.json"
-        return json.loads(p.read_text()) if p.exists() else None
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
     def kind(self) -> str:
         if self.manifest:
@@ -124,7 +125,7 @@ class ForkProject:
         for name in ("README.md", "README.MD", "readme.md", "README.rst", "README.txt", "README"):
             p = self.root / name
             if p.exists():
-                lines = p.read_text(errors="replace").splitlines()
+                lines = p.read_text(errors="replace", encoding="utf-8").splitlines()
                 break
         else:
             return ""
@@ -145,7 +146,7 @@ class ForkProject:
     def _splat_yaml(self) -> Path | None:
         for p in sorted(self.root.glob("*.yaml")) + sorted(self.root.glob("config/*.yaml")) + sorted(self.root.glob("config/**/*.yaml")):
             try:
-                text = p.read_text(errors="replace")
+                text = p.read_text(errors="replace", encoding="utf-8")
             except OSError:
                 continue
             if "segments:" in text and "options:" in text:
@@ -185,7 +186,7 @@ class ForkProject:
                         "sha1": None, "auto": True, "help": "The build checks the game against the project's hashes."}
             return manual
         if kind == "splat":
-            y = self._splat_yaml().read_text(errors="replace")
+            y = self._splat_yaml().read_text(errors="replace", encoding="utf-8")
             target = re.search(r"^\s*target_path:\s*['\"]?([^'\"\n#]+)", y, re.M)
             base = re.search(r"^\s*base_path:\s*['\"]?([^'\"\n#]+)", y, re.M)
             sha1 = re.search(r"^sha1:\s*['\"]?([0-9a-fA-F]{40})", y, re.M)
@@ -268,7 +269,7 @@ class ForkProject:
         if kind == "configure":
             return [[sys.executable, "configure.py"], [_tool("ninja") or "ninja"]]
         if kind == "splat":
-            make = (self.root / "Makefile").read_text(errors="replace")
+            make = (self.root / "Makefile").read_text(errors="replace", encoding="utf-8")
             steps = [["make", t] for t in ("setup", "extract") if re.search(rf"^{t}\s*:", make, re.M)][:1]
             return steps + [["make", f"-j{os.cpu_count() or 4}"]]
         if kind == "objdiff":
@@ -284,7 +285,7 @@ class ForkProject:
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
             proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True, errors="replace")
+                                    stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8")
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"
         out, seen, quiet = [], collections.Counter(), 0
@@ -319,7 +320,7 @@ class ForkProject:
         cfg, orig = self.root / "config" / version / "config.yml", self.root / "orig" / version
         if not cfg.is_file() or not orig.is_dir():
             return 0
-        text = cfg.read_text(errors="replace")
+        text = cfg.read_text(errors="replace", encoding="utf-8")
         if re.search(r"^\s*object_base\s*:", text, re.M):
             return 0  # this dtk reads the disc image itself
         wanted = sorted({m.group(1) for m in re.finditer(rf"orig/{re.escape(version)}/([^\s'\"#,\]]+)", text)})
@@ -368,7 +369,7 @@ class ForkProject:
         with _CONFIG_LOCK:
             hit = _CONFIG_CACHE.get(str(p))
             if hit is None or hit[0] != key:
-                cfg = json.loads(p.read_text())
+                cfg = json.loads(p.read_text(encoding="utf-8"))
                 by_name: dict[str, Unit] = {}
                 for u in self._units_of(cfg):
                     by_name.setdefault(u.name, u)
@@ -427,7 +428,7 @@ class ForkProject:
         """dtk-template's `all_source`: every unit's source object, including units the game's link doesn't use yet
         (the default build only compiles what the link needs, so objdiff would have nothing to measure them by)."""
         try:
-            with open(self.root / "build.ninja", errors="replace") as f:
+            with open(self.root / "build.ninja", errors="replace", encoding="utf-8") as f:
                 return any(line.startswith("build all_source:") for line in f)
         except OSError:
             return False
@@ -457,7 +458,7 @@ class ForkProject:
     def check_target(self) -> str | None:
         """dtk-template's checksum target (build/<version>/ok: the built DOL and RELs against the game's SHA-1s)."""
         try:
-            with open(self.root / "build.ninja", errors="replace") as f:
+            with open(self.root / "build.ninja", errors="replace", encoding="utf-8") as f:
                 for line in f:
                     m = _CHECK.match(line)
                     if m:
@@ -470,14 +471,14 @@ class ForkProject:
         """Source file (relative to the project root) -> (its link state in configure.py: Matching, NonMatching,
         Equivalent or MatchingFor(...), where that word starts and ends in configure.py)."""
         try:
-            return self._states_in((self.root / "configure.py").read_text(errors="replace"))
+            return self._states_in((self.root / "configure.py").read_text(errors="replace", encoding="utf-8"))
         except OSError:
             return {}
 
     def src_dir(self) -> str:
         """Where configure.py's source paths start (dtk-template: config.src_dir, "src")."""
         try:
-            m = _SRC_DIR.search((self.root / "configure.py").read_text(errors="replace"))
+            m = _SRC_DIR.search((self.root / "configure.py").read_text(errors="replace", encoding="utf-8"))
         except OSError:
             m = None
         return (m.group(1) if m else "src").strip("/")
@@ -529,5 +530,6 @@ class ForkProject:
     def git(self, *args: str) -> tuple[bool, str]:
         if not (self.root / ".git").exists() or not shutil.which("git"):
             return False, "not a git checkout"
-        res = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root))
+        res = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=_git_env(self.root),
+                             encoding="utf-8", errors="replace")
         return res.returncode == 0, (res.stdout + res.stderr).strip()

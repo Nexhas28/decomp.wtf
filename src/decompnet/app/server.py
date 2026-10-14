@@ -67,12 +67,12 @@ class Settings:
     def __init__(self, path: Path):
         self.path = path
         try:
-            self.data = json.loads(path.read_text())
+            self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.data = {}
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2))
+        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -574,11 +574,24 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if kind is None or not kind.install:
             return fail(ValueError("nothing to install"))
         cmd = kind.install["windows" if sys.platform == "win32" else "unix"]
+        env = None
+        if sys.platform == "win32":
+            env = dict(os.environ, PATH=agents.search_path())  # Node.js installed since the app started counts
+            if cmd.startswith("npm ") and not shutil.which("npm", path=env["PATH"]):
+                return fail(ValueError(f"{kind.name} is installed with npm: install Node.js from https://nodejs.org "
+                                       "first (the LTS version), then try again"))
 
         def work(log):
             log(f"$ {cmd}")
-            argv = ["powershell", "-NoProfile", "-Command", cmd] if sys.platform == "win32" else ["bash", "-lc", cmd]
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            if sys.platform == "win32":
+                # Node.js's npm is a PowerShell script (npm.ps1) that Windows' default execution policy won't run;
+                # output as UTF-8 so it reads right here; never wait at a prompt nobody sees
+                argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+                        f"[Console]::OutputEncoding = [Text.Encoding]::UTF8; {cmd}"]
+            else:
+                argv = ["bash", "-lc", cmd]
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                    errors="replace", env=env)
             for line in proc.stdout:
                 log(line.rstrip())
             if proc.wait() != 0:

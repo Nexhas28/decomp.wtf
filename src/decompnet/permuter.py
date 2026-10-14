@@ -158,7 +158,7 @@ class LocalScorer:
             if inc.resolve() not in dest.parents:
                 raise ValueError(f"refusing include path {rel!r}")
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(text)
+            dest.write_text(text, encoding="utf-8")
         base = job.get("cmd") or [*tc.cc, *(job.get("flags") or tc.flags), "-I{include}", "{src}", "-o", "{obj}"]
         self.cc = CompilerConfig(cmd=[a.replace("{tc}", str(dirs[0])) for a in base], ro_paths=tuple(map(str, dirs)),
                                  include_dirs=(str(inc),),

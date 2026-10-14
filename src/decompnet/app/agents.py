@@ -80,16 +80,16 @@ def _config_model(kind: str) -> str | None:
     home = Path.home()
     try:
         if kind == "claude":
-            return json.loads((home / ".claude" / "settings.json").read_text()).get("model") or None
+            return json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")).get("model") or None
         if kind == "codex":
             import tomllib
-            return tomllib.loads((home / ".codex" / "config.toml").read_text()).get("model") or None
+            return tomllib.loads((home / ".codex" / "config.toml").read_text(encoding="utf-8")).get("model") or None
         if kind == "gemini":
-            m = json.loads((home / ".gemini" / "settings.json").read_text()).get("model")
+            m = json.loads((home / ".gemini" / "settings.json").read_text(encoding="utf-8")).get("model")
             return (m.get("name") if isinstance(m, dict) else m) or None
         if kind == "opencode":
             base = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-            return json.loads((base / "opencode" / "opencode.json").read_text()).get("model") or None
+            return json.loads((base / "opencode" / "opencode.json").read_text(encoding="utf-8")).get("model") or None
     except (OSError, ValueError, AttributeError):
         return None
     return None
@@ -105,7 +105,9 @@ def models(kind: str, path: str | None) -> list[dict]:
         if cached and time.time() - cached[0] < 600:
             return cached[1]
         try:
-            res = subprocess.run([path, "models"], capture_output=True, text=True, timeout=30)
+            res = subprocess.run(argv([path, "models"]), capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
+                                 timeout=30)
             rows = [line.strip() for line in res.stdout.splitlines() if re.fullmatch(r"[\w.-]+/[\w.:/-]+", line.strip())]
         except (OSError, subprocess.TimeoutExpired):
             rows = []
@@ -115,16 +117,64 @@ def models(kind: str, path: str | None) -> list[dict]:
     return []
 
 
+def search_path() -> str | None:
+    """Where to look for agents and npm (None: this process's PATH). On Windows also the PATH set for the user right
+    now, read from the registry: an agent or Node.js installed while the app runs is found without restarting it."""
+    if not WIN:
+        return None
+    import winreg
+
+    dirs = os.environ.get("PATH", "").split(os.pathsep)
+    for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, key) as k:
+                dirs += [os.path.expandvars(d) for d in str(winreg.QueryValueEx(k, "Path")[0]).split(";")]
+        except OSError:
+            pass
+    return os.pathsep.join(dict.fromkeys(d for d in dirs if d))
+
+
 def _which(cmd: str) -> str | None:
-    found = shutil.which(cmd)
+    found = shutil.which(cmd, path=search_path())
     if found:
         return found
     home = Path.home()
-    for d in (home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"):
-        for name in (cmd, f"{cmd}.cmd", f"{cmd}.exe"):
+    dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
+    if WIN and os.environ.get("APPDATA"):
+        dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
+    # on Windows the file without an extension next to npm's foo.cmd is a shell script Windows can't run
+    names = (f"{cmd}.exe", f"{cmd}.cmd") if WIN else (cmd, f"{cmd}.cmd", f"{cmd}.exe")
+    for d in dirs:
+        for name in names:
             if (d / name).exists():
                 return str(d / name)
     return None
+
+
+# npm's Windows launcher (cmd-shim) ends with: "%_prog%" [node options] "%dp0%\node_modules\...\cli.js" %*
+_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.I)
+
+
+def argv(cmd: list[str]) -> list[str]:
+    """The command to start, as Windows needs it. npm installs agents there as .cmd scripts, which run through cmd.exe:
+    it cuts an argument at its first line break (a prompt loses everything after its first line, and the flags after
+    it with it) and treats & | < > in it as commands. Start node with the agent's script instead, as the .cmd would."""
+    if not WIN or Path(cmd[0]).suffix.lower() not in (".cmd", ".bat"):
+        return cmd
+    shim = Path(cmd[0])
+    try:
+        m = _NPM_SHIM.search(shim.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        m = None
+    if not m:
+        return cmd
+    script = shim.parent / m["script"]
+    node = shim.parent / "node.exe"
+    node = str(node) if node.exists() else shutil.which("node", path=search_path())
+    if not node or not script.exists():
+        return cmd
+    return [node, *m["opts"].split(), str(script), *cmd[1:]]
 
 
 def detect() -> list[dict]:
@@ -139,7 +189,8 @@ def detect() -> list[dict]:
             cached = _versions.get(k.id)
             if path and (cached is None or time.time() - cached[0] > 300):
                 try:
-                    res = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=15)
+                    res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
+                                         errors="replace", timeout=15)
                     version = (res.stdout or res.stderr).strip().splitlines()[0][:60] if (res.stdout or res.stderr).strip() else None
                 except (OSError, subprocess.TimeoutExpired):
                     version = None
@@ -147,8 +198,10 @@ def detect() -> list[dict]:
             row.update(installed=path is not None, path=path, version=_versions.get(k.id, (0, None))[1] if path else None)
             if path:
                 row.update(models=models(k.id, path), default_model=_config_model(k.id))
-        if k.id in ("codex", "gemini") and not row["installed"] and not shutil.which("npm"):
+        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
             row["needs"] = "Node.js (https://nodejs.org) for npm"
+        elif k.id == "claude" and WIN and not shutil.which("git", path=search_path()):
+            row["needs"] = "Git for Windows (https://git-scm.com/downloads/win): Claude Code needs its Git Bash"
         out.append(row)
     return out
 
@@ -503,12 +556,15 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
+        if WIN:
+            env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
         prompt = self.prompt(s)
         model = s.options.get("model") or ""
         if s.kind == "claude":
             cfg = workdir / "mcp.json"
             cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,
-                                                                  "headers": {"Authorization": f"Bearer {token}"}}}}))
+                                                                  "headers": {"Authorization": f"Bearer {token}"}}}}),
+                           encoding="utf-8")
             cmd = [exe, "-p", prompt, "--output-format", "stream-json", "--verbose", "--mcp-config", str(cfg),
                    "--strict-mcp-config", "--allowedTools", "mcp__decomp", "--disallowedTools",
                    "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
@@ -531,7 +587,7 @@ class Manager:
                 "mcpServers": {"decomp": {"httpUrl": self.mcp_url, "headers": {"Authorization": f"Bearer {token}"},
                                           "trust": True}},
                 "tools": {"exclude": ["run_shell_command", "write_file", "replace", "web_fetch", "google_web_search"]},
-            }))
+            }), encoding="utf-8")
             cmd = [exe, "-p", prompt, "-o", "stream-json", "--skip-trust", "--allowed-mcp-server-names", "decomp"]
             if model:
                 cmd += ["-m", model]
@@ -541,13 +597,16 @@ class Manager:
                 "mcp": {"decomp": {"type": "remote", "url": self.mcp_url, "enabled": True,
                                    "headers": {"Authorization": f"Bearer {token}"}}},
                 "permission": {"edit": "deny", "bash": "deny", "webfetch": "deny"},
-            }))
+            }), encoding="utf-8")
             cmd = [exe, "run", "--format", "json", "--dir", str(workdir)]
             if model:
                 cmd += ["-m", model]
             cmd.append(prompt)
         else:
             raise RuntimeError(s.kind)
+        cmd = argv(cmd)
+        if WIN and len(subprocess.list2cmdline(cmd)) > 32000:  # Windows' limit for a whole command line
+            raise RuntimeError("the prompt is too long for Windows' command line: shorten this project's instructions")
         return cmd, env
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
@@ -700,8 +759,12 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
 def _terminate(proc: subprocess.Popen) -> None:
     try:
         if WIN:
-            proc.terminate()
+            # the agent with everything it started (node starts opencode.exe, ...): terminate() would only end the
+            # first process and leave the rest working, and spending, in the background
+            res = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
+            if res.returncode != 0 and proc.poll() is None:
+                proc.terminate()
         else:
             os.killpg(proc.pid, 15)
-    except (OSError, ProcessLookupError):
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
         pass

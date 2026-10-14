@@ -49,11 +49,12 @@ def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None) -> tuple[str, list[in
     args = [str(exe), "disasm", str(rom), "--min-calls", "1", "--min-length", "2", "-o", str(out), "-co", str(cfg)]
     if cfg_in is not None:
         args[3:3] = ["-c", str(cfg_in)]
-    res = subprocess.run(capped(args), capture_output=True, text=True, timeout=1800)
+    res = subprocess.run(capped(args), capture_output=True, text=True, timeout=1800, encoding="utf-8", errors="replace")
     if res.returncode != 0 or not out.exists():
         raise RomError("luvdis couldn't disassemble the ROM: " + (res.stderr or res.stdout)[-400:])
-    found = sorted({int(m.group(1), 16) for m in re.finditer(r"^(?:[a-z_]+[ \t]+)?(0x[0-9A-Fa-f]+)", cfg.read_text(), re.M)})
-    return out.read_text(), found
+    found = sorted({int(m.group(1), 16) for m in re.finditer(r"^(?:[a-z_]+[ \t]+)?(0x[0-9A-Fa-f]+)",
+                                                             cfg.read_text(encoding="utf-8"), re.M)})
+    return out.read_text(encoding="utf-8"), found
 
 
 def find_functions(rom_path: Path, workdir: Path, rounds: int = 4) -> tuple[str, list[int]]:
@@ -65,7 +66,7 @@ def find_functions(rom_path: Path, workdir: Path, rounds: int = 4) -> tuple[str,
         if not extra:
             break
         cfg = workdir / "candidates.cfg"
-        cfg.write_text("".join(f"thumb_func 0x{a:X}\n" for a in sorted(set(found) | set(extra))))
+        cfg.write_text("".join(f"thumb_func 0x{a:X}\n" for a in sorted(set(found) | set(extra))), encoding="utf-8")
         asm, found2 = _luvdis(rom_path, workdir, cfg)
         if set(found2) == set(found):
             break

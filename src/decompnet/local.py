@@ -38,7 +38,7 @@ def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path |
     cc = CompilerConfig(cmd=[a.replace("{tc}", str(dirs[0])) for a in [*tc.cc, *(flags or tc.flags), "-I{include}", "{src}", "-o", "{obj}"]],
                         ro_paths=tuple(map(str, dirs)), include_dirs=tuple(str(d.resolve()) for d in include_dirs),
                         runtime32=str(toolchains.require("runtime-i386")) if "runtime-i386" in tc.requires else None)
-    res = compile_source(cc, context.read_text() if context else "", source.read_text())
+    res = compile_source(cc, context.read_text(encoding="utf-8") if context else "", source.read_text(encoding="utf-8"))
     if not res.ok:
         return f"COMPILE ERROR\n{res.log}"
     cand = extract_function(res.obj, function)

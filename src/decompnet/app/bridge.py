@@ -28,7 +28,7 @@ def _log(msg: str) -> None:
 
 def _running(state: Path) -> dict | None:
     try:
-        info = json.loads(state.read_text())
+        info = json.loads(state.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return info if info.get("port") and _alive(info["port"]) else None

@@ -41,12 +41,12 @@ def catalog(cache: Path, max_age: float = 6 * 3600) -> list[dict]:
     """Projects from decomp.dev, cached on disk; falls back to the cache when offline."""
     try:
         if cache.exists() and time.time() - cache.stat().st_mtime < max_age:
-            return normalize(json.loads(cache.read_text()))
+            return normalize(json.loads(cache.read_text(encoding="utf-8")))
         raw = _fetch()
         cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(raw))
+        cache.write_text(json.dumps(raw), encoding="utf-8")
         return normalize(raw)
     except (OSError, ValueError):
         if cache.exists():
-            return normalize(json.loads(cache.read_text()))
+            return normalize(json.loads(cache.read_text(encoding="utf-8")))
         return []

@@ -42,7 +42,7 @@ def next_job(net: Network, agent: Agent) -> dict | None:
                 total += f.stat().st_size
                 if total > MAX_INCLUDE_BYTES:
                     break
-                includes[str(f.relative_to(base))] = f.read_text(errors="replace")
+                includes[str(f.relative_to(base))] = f.read_text(errors="replace", encoding="utf-8")
     return {
         "project": fn["slug"], "function": fn["name"], "unit": fn["unit"] or None,
         "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"),

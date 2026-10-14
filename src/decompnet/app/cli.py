@@ -41,7 +41,7 @@ def replace_older(state_file: Path, log=print) -> dict | None:
     """The running app's {port, secret} when it's this version. An older one (still running after an upgrade) is
     stopped, so the new version starts in its place: returns None then, and when nothing runs."""
     try:
-        prev = json.loads(state_file.read_text())
+        prev = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     running = _running_version(prev.get("port") or 0)
@@ -98,6 +98,8 @@ def run(args) -> int:
     home = home_dir()
     internal = home / ".decomp"
     internal.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:  # started without a console (pythonw: Windows' startup apps): what it says goes to app.log
+        sys.stdout = sys.stderr = open(internal / "app.log", "a", encoding="utf-8", buffering=1)
     state_file = internal / "server.json"
     prev = replace_older(state_file)
     if prev:
@@ -110,7 +112,7 @@ def run(args) -> int:
     sock = _listen(args.port)
     port = sock.getsockname()[1]
     secret = secrets.token_urlsafe(24)
-    state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}))
+    state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}), encoding="utf-8")
     try:
         os.chmod(state_file, 0o600)
     except OSError:
@@ -155,7 +157,7 @@ def setup(args) -> int:
 def stop(args) -> int:
     state_file = home_dir() / ".decomp" / "server.json"
     try:
-        prev = json.loads(state_file.read_text())
+        prev = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         print("decomp.wtf is not running")
         return 0
@@ -204,7 +206,7 @@ def _api(path: str, body: dict | None = None) -> dict:
     """Call the running app's API (for commands that act on it, like `decomp share`)."""
     state = home_dir() / ".decomp" / "server.json"
     try:
-        info = json.loads(state.read_text())
+        info = json.loads(state.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise SystemExit("decomp.wtf isn't running: start it with `decomp --no-browser`") from None
     if not _alive(info.get("port", 0)):
@@ -358,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--name", default=os.environ.get("DECOMP_AGENT_NAME") or "chat",
                    help="how this agent shows up in the app (e.g. claude-code; or set DECOMP_AGENT_NAME)")
     args = ap.parse_args(argv)
+    __import__("decompnet").utf8_output()
     if args.cmd == "mcp":
         from .bridge import main as bridge
         return bridge(args.name)

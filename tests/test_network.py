@@ -1,3 +1,5 @@
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,10 +11,15 @@ from decompnet.project import import_project
 from .solutions import SOLUTIONS, WRONG_CLAMP
 
 DEMO = Path(__file__).resolve().parent.parent / "projects" / "demo"
+# projects/demo is a toy x86-64 game built with the computer's own gcc into ELF objects: Linux only
+HOST_GCC = sys.platform != "win32" and shutil.which("gcc") is not None
+needs_host_gcc = pytest.mark.skipif(not HOST_GCC, reason="projects/demo needs a Linux gcc (x86-64 ELF)")
 
 
 @pytest.fixture
 def net(tmp_path):
+    if not HOST_GCC:
+        pytest.skip(needs_host_gcc.kwargs["reason"])
     n = Network(tmp_path / "test.db")
     import_project(n.store, DEMO, log=lambda *_: None)
     return n
@@ -92,6 +99,7 @@ def test_release_hands_off_best_attempt_and_notes(net, agents):
     assert lb[0]["name"] == "bob-claude" and lb[0]["matches"] == 1
 
 
+@needs_host_gcc
 def test_expired_claims_are_reclaimable(tmp_path):
     net = Network(tmp_path / "t.db", claim_ttl=-1)  # every claim is born expired
     import_project(net.store, DEMO, log=lambda *_: None)

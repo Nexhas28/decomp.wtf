@@ -105,7 +105,8 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
 def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300) -> subprocess.CompletedProcess:
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
     Paths in `argv` must be relative to `work`."""
-    return subprocess.run(_wrap(cfg, Path(work), argv), cwd=work, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(_wrap(cfg, Path(work), argv), cwd=work, capture_output=True, text=True, timeout=timeout,
+                          encoding="utf-8", errors="replace")
 
 
 def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
@@ -121,8 +122,8 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         inc.mkdir()
         for d in cfg.include_dirs:
             shutil.copytree(d, inc, dirs_exist_ok=True)
-        (inc / "context.h").write_text(context_header)
-        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n")
+        (inc / "context.h").write_text(context_header, encoding="utf-8")
+        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8")
 
         sandboxed = _sandbox_mode(cfg) != "none"
         root = "/work" if sandboxed else str(work)
@@ -131,7 +132,8 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         argv = [a.replace("{include}", subst["{include}"]) for a in argv]
         try:
             with _SLOTS:
-                proc = subprocess.run(_wrap(cfg, work, argv), capture_output=True, text=True, timeout=cfg.timeout)
+                proc = subprocess.run(_wrap(cfg, work, argv), capture_output=True, text=True, timeout=cfg.timeout,
+                                      encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")

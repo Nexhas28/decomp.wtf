@@ -15,13 +15,15 @@ from decompnet.registration import Registrar
 from decompnet.upstream import export as upstream_export
 
 from .solutions import SOLUTIONS, WRONG_CLAMP
-from .test_network import DEMO
+from .test_network import DEMO, HOST_GCC, needs_host_gcc
 
 PROJECTS = DEMO.parent
 
 
 @pytest.fixture
 def net(tmp_path):
+    if not HOST_GCC:
+        pytest.skip(needs_host_gcc.kwargs["reason"])
     n = Network(tmp_path / "t.db")
     import_project(n.store, DEMO, log=lambda *_: None)
     return n
@@ -70,6 +72,7 @@ def test_reputation_gates_header_edits_and_budget(net, monkeypatch):
         net.compile_and_diff(agent, "clamp_s32", WRONG_CLAMP)
 
 
+@needs_host_gcc
 def test_hash_only_project_stores_no_code(tmp_path):
     proj = tmp_path / "hashdemo"
     shutil.copytree(DEMO, proj)

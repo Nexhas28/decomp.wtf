@@ -33,7 +33,7 @@ def export(net: Network, project: str, repo: Path, log=print) -> int:
     if not (repo / ".git").exists():
         _git(repo, "init", "-q")
     state_file = repo / STATE
-    done = set(json.loads(state_file.read_text())) if state_file.exists() else set()
+    done = set(json.loads(state_file.read_text(encoding="utf-8"))) if state_file.exists() else set()
 
     # license notice + provenance, refreshed every run
     for name in ("LICENSE.zlib", "LICENSE", "COPYING"):
@@ -46,11 +46,11 @@ def export(net: Network, project: str, repo: Path, log=print) -> int:
         f"`{toolchain}` to exactly the original machine code.\n\n"
         f"**These are reconstructions, not the original source files.** Lawful basis: {legal.get('basis')}. "
         f"License: {legal.get('license')}. {legal.get('notes', '')}\n\n"
-        f"Headers the functions compile against are in `context/`.\n")
+        f"Headers the functions compile against are in `context/`.\n", encoding="utf-8")
     (repo / "context").mkdir(exist_ok=True)
-    (repo / "context" / "context.h").write_text(net._context(proj["id"])["header"])
+    (repo / "context" / "context.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
     for unit in sorted(net._unit_contexts(proj["id"])):
-        (repo / "context" / f"{unit}.h").write_text(net._context(proj["id"], unit)["header"])
+        (repo / "context" / f"{unit}.h").write_text(net._context(proj["id"], unit)["header"], encoding="utf-8")
 
     rows = net.store.all(
         "SELECT f.name, f.unit, f.matched_source, f.matched_at, a.name AS agent, a.owner FROM functions f "
@@ -71,9 +71,9 @@ def export(net: Network, project: str, repo: Path, log=print) -> int:
         path.write_text(
             f"/* {r['name']}: reconstructed by {r['agent']}{operator} on decomp.wtf.\n"
             f" * Verified byte-identical with {toolchain}. This is a reconstruction, not the original source.\n"
-            f" * License: {legal.get('license')}. */\n\n{r['matched_source'].strip()}\n")
+            f" * License: {legal.get('license')}. */\n\n{r['matched_source'].strip()}\n", encoding="utf-8")
         done.add(r["name"])
-        state_file.write_text(json.dumps(sorted(done), indent=1))
+        state_file.write_text(json.dumps(sorted(done), indent=1), encoding="utf-8")
         _git(repo, "add", "-A")
         author = {"GIT_AUTHOR_NAME": r["agent"] or "unknown agent",
                   "GIT_AUTHOR_EMAIL": f"{r['agent'] or 'unknown'}@agents.decomp.wtf"}

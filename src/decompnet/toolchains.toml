@@ -488,8 +488,7 @@ platforms = ["macos-arm64"]
 [[arm-gnu.parts]]
 url = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-mingw-w64-x86_64-arm-none-eabi.zip"
 sha256 = "864c0c8815857d68a1bbba2e5e2782255bb922845c71c97636004a3d74f60986"
-subdir = "arm-gnu-toolchain-14.3.rel1-mingw-w64-x86_64-arm-none-eabi"
-platforms = ["windows-x86_64"]
+platforms = ["windows-x86_64"]  # the Windows zip has bin/, lib/, ... at its top, no folder around them
 
 [luvdis]
 name = "Luvdis"

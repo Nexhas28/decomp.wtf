@@ -99,7 +99,7 @@ def segments_from_config(path: Path) -> list[Segment]:
     """Code segments (ROM range + load address) from a splat config."""
     import yaml
 
-    cfg = yaml.safe_load(path.read_text())
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     raw = cfg.get("segments", [])
 
     def start_of(seg):
@@ -122,13 +122,14 @@ def named_symbols(workdir: Path) -> dict[str, int]:
     out = {}
     path = workdir / "symbol_addrs.txt"
     if path.exists():
-        for m in re.finditer(r"^\s*([A-Za-z_]\w*)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", path.read_text(), re.M):
+        for m in re.finditer(r"^\s*([A-Za-z_]\w*)\s*=\s*(0x[0-9A-Fa-f]+)\s*;", path.read_text(encoding="utf-8"), re.M):
             out[m.group(1)] = int(m.group(2), 16)
     return out
 
 
 def _splat(args: list[str], cwd: Path) -> str:
-    res = subprocess.run([sys.executable, "-m", "splat", *args], cwd=cwd, capture_output=True, text=True)
+    res = subprocess.run([sys.executable, "-m", "splat", *args], cwd=cwd, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
     out = (res.stdout + res.stderr).strip()
     if res.returncode != 0:
         tail = "\n".join(out.splitlines()[-12:])
@@ -140,7 +141,7 @@ def _patch_config(path: Path) -> tuple[str, str, int]:
     """Disassemble code segments as one C file per segment, so every function gets its own .s file,
     and keep empty functions as asm too (we want every function to be a target).
     Returns (compiler guess, platform, gp value)."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     compiler = (re.search(r"^\s*compiler:\s*(\w+)", text, re.M) or [None, "KMC"])[1]
     platform = (re.search(r"^\s*platform:\s*(\w+)", text, re.M) or [None, "n64"])[1]
     gp = re.search(r"^\s*gp_value:\s*(0x[0-9A-Fa-f]+)", text, re.M)
@@ -156,7 +157,7 @@ def _patch_config(path: Path) -> tuple[str, str, int]:
     text = "\n".join(out) + "\n"
     extra = "  disassemble_all: True\n  auto_decompile_empty_functions: False\n"
     text = text.replace("options:\n", "options:\n" + extra, 1)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return compiler, platform, int(gp.group(1), 16) if gp else 0
 
 
@@ -164,7 +165,7 @@ def parse_function(path: Path, segment: str, big_endian: bool = True) -> RomFunc
     """One function from a spimdisasm .s file. The 8-digit field is the instruction's bytes in file order."""
     order = "big" if big_endian else "little"
     name, lines, labels = None, [], set()
-    for raw in path.read_text().splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         if name is None:
             m = _GLABEL.match(raw)
             if m:
@@ -215,7 +216,7 @@ def parse_data(path: Path) -> list[DataSymbol]:
             syms.append(current)
 
     bss = path.name.endswith(".bss.s")
-    for raw in path.read_text().splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         m = _DLABEL.match(raw)
         if m:
             close()
@@ -284,7 +285,7 @@ def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResul
     if not configs:
         raise RomError("splat did not produce a config for this ROM")
     config = configs[0]
-    image = (yaml.safe_load(config.read_text()).get("options") or {}).get("target_path") or rom_name
+    image = (yaml.safe_load(config.read_text(encoding="utf-8")).get("options") or {}).get("target_path") or rom_name
     compiler, platform, gp = _patch_config(config)
     big_endian = platform == "n64"
     log("disassembling every function")

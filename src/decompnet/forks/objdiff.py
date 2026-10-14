@@ -40,7 +40,8 @@ def judge_options(project_options: dict | None = None, unit_options: dict | None
 
 
 def _run(args: list[str], cwd: Path, timeout: float = 600) -> str:
-    res = subprocess.run([_exe(), "--no-color", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    res = subprocess.run([_exe(), "--no-color", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                         encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ObjdiffError((res.stderr or res.stdout).strip()[-1500:] or f"objdiff-cli exited with {res.returncode}")
     return res.stdout
@@ -52,11 +53,11 @@ def report(project: Path, out: Path) -> dict:
     objdiff-cli stops at the first unit whose compiled object is missing (work-in-progress source that doesn't
     compile yet, or that the project's default build never compiles). Those units are measured from the game's
     object alone, as not matched yet, the way the projects' own report scripts do it."""
-    cfg = json.loads((project / "objdiff.json").read_text())
+    cfg = json.loads((project / "objdiff.json").read_text(encoding="utf-8"))
     missing = [u for u in cfg.get("units", []) if u.get("base_path") and not (project / u["base_path"]).is_file()]
     if not missing:
         _run(["report", "generate", "-p", str(project), "-o", str(out)], cwd=project, timeout=1800)
-        return json.loads(out.read_text())
+        return json.loads(out.read_text(encoding="utf-8"))
     for unit in cfg.get("units", []):
         for key in ("target_path", "base_path"):
             if unit.get(key):
@@ -64,9 +65,9 @@ def report(project: Path, out: Path) -> dict:
     for unit in missing:
         del unit["base_path"]
     with tempfile.TemporaryDirectory(prefix="decompwtf-report-") as tmp:
-        (Path(tmp) / "objdiff.json").write_text(json.dumps(cfg))
+        (Path(tmp) / "objdiff.json").write_text(json.dumps(cfg), encoding="utf-8")
         _run(["report", "generate", "-p", tmp, "-o", str(out.resolve())], cwd=project, timeout=1800)
-    return json.loads(out.read_text())
+    return json.loads(out.read_text(encoding="utf-8"))
 
 
 @dataclass

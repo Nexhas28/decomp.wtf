@@ -111,7 +111,7 @@ def _guide(topic: str = "") -> str:
     if topic not in GUIDES:
         listing = "\n".join(f"- {k}: {v}" for k, v in GUIDES.items())
         return f"Guides (call guide with one of these topics):\n{listing}"
-    return resources.files("decompnet.app").joinpath("guide", f"{topic}.md").read_text()
+    return resources.files("decompnet.app").joinpath("guide", f"{topic}.md").read_text(encoding="utf-8")
 
 
 def _fork(net: RomNetwork, slug: str, what: str) -> str:

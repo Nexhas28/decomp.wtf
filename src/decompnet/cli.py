@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("out", type=Path)
 
     args = ap.parse_args(argv)
+    __import__("decompnet").utf8_output()
     if args.cmd == "toolchain":
         return toolchain_cmd(args)
     if args.cmd == "worker":

@@ -37,7 +37,7 @@ def export_gba(net, slug: str, out: Path, log=print) -> dict:
     syms = net.symbols(proj["id"])
     units = net._unit_contexts(proj["id"])
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(net._context(proj["id"])["header"])
+    (out / "include" / "common.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
 
     log("checking the matched functions and writing them as C")
     functions, fallback = [], []
@@ -53,28 +53,29 @@ def export_gba(net, slug: str, out: Path, log=print) -> dict:
             continue
         src = out / "src" / f"{row['name']}.c"
         src.parent.mkdir(exist_ok=True)
-        src.write_text(f'#include "common.h"\n\n{row["matched_source"].strip()}\n')
+        src.write_text(f'#include "common.h"\n\n{row["matched_source"].strip()}\n', encoding="utf-8")
         f["c"] = src.relative_to(out).as_posix()
 
     names = {f["name"] for f in functions}
     symbols = {s.name: s.address for s in syms.by_name.values() if s.name not in names and not AUTO_NAME.match(s.name)}
     # luvdis writes the project's names: every function by name, ARM or Thumb
     (out / "functions.cfg").write_text("# [arm_func|thumb_func] <address> <name>: read by luvdis in build.py\n" + "".join(
-        f"{'thumb_func' if f['thumb'] else 'arm_func'} 0x{f['addr']:X} {f['name']}\n" for f in functions))
+        f"{'thumb_func' if f['thumb'] else 'arm_func'} 0x{f['addr']:X} {f['name']}\n" for f in functions), encoding="utf-8")
     build = {
         "title": proj["name"], "platform": "gba", "image": "baserom.gba", "output": "build/game.gba",
         "sha1": hashlib.sha1(image).hexdigest(), "base": BASE, "compiler": cfg["compiler"],
         "functions": functions, "symbols": dict(sorted(symbols.items(), key=lambda kv: kv[1])),
     }
-    (out / "build.json").write_text(json.dumps(build, indent=1))
+    (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_gba_build.py"), out / "build.py")
     shutil.copyfile(work / cfg["rom"]["file"], out / "baserom.gba")
     matched = sum(1 for f in functions if f.get("c"))
     _docs(out, proj["name"], matched, len(functions), fallback)
-    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\n")
+    (out / ".gitignore").write_text("build/\nbaserom*\nasm/\n", encoding="utf-8")
 
     log("building the exported project to check it rebuilds the game byte for byte")
-    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600)
+    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
+                          encoding="utf-8", errors="replace")
     identical = proc.returncode == 0 and "identical" in proc.stdout
     if not identical:
         log((proc.stdout + proc.stderr)[-3000:])
@@ -136,11 +137,11 @@ everything is C, the game can be rebuilt, changed and moved to other platforms.
 
 The game's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
-""")
+""", encoding="utf-8")
     (out / "AGENTS.md").write_text("""# Working on this decompilation
 
 - Goal: C that agbcc turns into exactly the original bytes. `python build.py` must end with "identical".
 - Pick a function from `asm/`, write it as `src/<name>.c` (one function, `#include "common.h"` first), then
   `python build.py check <name>`: it compiles it, compares it with the original and records it in `build.json`.
 - Shared types and prototypes go in `include/common.h`. Never edit `baserom.gba` or `asm/` to force a match.
-""")
+""", encoding="utf-8")

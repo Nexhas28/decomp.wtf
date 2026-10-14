@@ -17,11 +17,13 @@ from decompnet.registration import Registrar
 from decompnet.server import build_server
 
 from .solutions import SOLUTIONS
-from .test_network import DEMO
+from .test_network import DEMO, HOST_GCC, needs_host_gcc
 
 
 @pytest.fixture
 def server(tmp_path):
+    if not HOST_GCC:
+        pytest.skip(needs_host_gcc.kwargs["reason"])
     net = Network(tmp_path / "http.db")
     import_project(net.store, DEMO, log=lambda *_: None)
     with socket.socket() as s:

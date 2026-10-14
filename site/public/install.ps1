@@ -43,6 +43,29 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 Step ("uv " + ((uv --version) -split " ")[1])
 
+# Windows can't replace files a running program has open: stop a decomp.wtf that's still running (the app, and the
+# `decomp mcp` your agents started; they start it again when they need it) before installing over it
+$state = Join-Path $(if ($env:DECOMP_HOME) { $env:DECOMP_HOME } else { Join-Path $env:USERPROFILE "Decomp" }) ".decomp\server.json"
+if (Test-Path $state) {  # what `decomp stop` does, without needing the decomp being replaced
+    try {
+        $app = Get-Content -Raw $state | ConvertFrom-Json
+        $web = New-Object Microsoft.PowerShell.Commands.WebRequestSession  # Windows PowerShell drops a Cookie header
+        $web.Cookies.Add((New-Object System.Net.Cookie("decomp_live", $app.secret, "/", "127.0.0.1")))
+        Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($app.port)/api/quit" -Body "{}" -ContentType "application/json" `
+            -WebSession $web -Headers @{ "X-Decomp" = "1" } -TimeoutSec 10 | Out-Null
+        Step "stopped the decomp.wtf that was running"
+        Wait-Process -Id $app.pid -Timeout 20 -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500  # the launchers in front of it exit right after it
+    } catch { }  # not running
+}
+$toolEnv = Join-Path (uv tool dir | Out-String).Trim() "decompnet"
+$running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith("$toolEnv\", [StringComparison]::OrdinalIgnoreCase) })
+if ($running.Count) {
+    $running | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+    $running | Where-Object { -not $_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Step "stopped decomp.wtf's tools your agents were running (they start them again when needed)"
+}
+
 Step "installing decomp.wtf $Version"
 Run { uv tool install --force --quiet --python 3.12 "decompnet @ $Wheel" } "installing decomp.wtf failed"
 Run { uv tool update-shell } -Quiet  # decomp on PATH for new windows (it says so when it already is: fine)
@@ -53,7 +76,6 @@ if (-not (Test-Path $decomp)) { throw "decomp.wtf was installed, but $decomp isn
 
 Step "downloading the compilers and tools (a few minutes the first time)"
 Run { & $decomp setup }
-Run { & $decomp stop } -Quiet  # an older decomp.wtf still running from before this upgrade
 
 Run { & $decomp shortcut } -Quiet
 Step "added decomp.wtf to the Start menu and your desktop"

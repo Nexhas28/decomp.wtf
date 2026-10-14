@@ -9,4 +9,4 @@ if args[0] != "--touch":
     built, original = (hashlib.sha1(open(p, "rb").read()).hexdigest() for p in args[:2])
     if built != original:
         sys.exit(f"{args[0]} differs from your copy {args[1]} (sha1 {built} vs {original})")
-open(args[-1], "w").write("ok\n")
+open(args[-1], "w", encoding="utf-8").write("ok\n")

@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-B = json.loads((ROOT / "build.json").read_text())
+B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 AS_FLAGS = ["-mcpu=arm7tdmi", "-I", "asm"]
 _START = re.compile(r"^\s*(?:thumb|arm|non_word_aligned_thumb)_func_start\s+(\S+)")
 _LABEL = re.compile(r"\b(_[0-9A-F]{8})\b")
@@ -38,7 +38,7 @@ def fail(msg: str) -> None:
 
 
 def run(argv: list[str]) -> None:
-    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    res = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if res.returncode != 0:
         fail(f"{' '.join(Path(a).name if i == 0 else a for i, a in enumerate(argv[:3]))} ...\n{(res.stdout + res.stderr)[-3000:]}")
 
@@ -69,7 +69,8 @@ def disassemble() -> None:
     end = text.index("\n", end) + 1
     asm = ROOT / "asm"
     asm.mkdir(exist_ok=True)
-    (asm / "macros.inc").write_text(text[:end].replace(".syntax unified\n", "").replace(".text\n", ""))
+    (asm / "macros.inc").write_text(text[:end].replace(".syntax unified\n", "").replace(".text\n", ""),
+                                    encoding="utf-8")
     addr = {f["name"]: f["addr"] for f in B["functions"]}
     pieces, cur, lines = [], B["base"], []
 
@@ -78,7 +79,8 @@ def disassemble() -> None:
             first = next((m.group(1) for l in lines if (m := _START.match(l))), None)
             name = first if first and addr.get(first) == cur else "rom_header" if cur == B["base"] else f"_{cur:08X}"
             path = asm / f"{name}.s"
-            path.write_text('.syntax unified\n.include "macros.inc"\n.text\n' + "\n".join(lines) + "\n")
+            path.write_text('.syntax unified\n.include "macros.inc"\n.text\n' + "\n".join(lines) + "\n",
+                            encoding="utf-8")
             pieces.append({"addr": cur, "src": path.relative_to(ROOT).as_posix(), "name": name})
 
     for line in text[end:].splitlines():
@@ -88,7 +90,7 @@ def disassemble() -> None:
             cur, lines = addr[m.group(1)], []
         lines.append(line)
     flush()
-    (asm / "pieces.json").write_text(json.dumps(pieces, indent=1))
+    (asm / "pieces.json").write_text(json.dumps(pieces, indent=1), encoding="utf-8")
 
 
 def c_source(fn: dict) -> str | None:
@@ -125,7 +127,7 @@ def trim(path: Path) -> None:
 
 def build_objects() -> tuple[list[dict], dict[str, str]]:
     """Assemble every piece and compile every C function: (pieces, function name -> its C object)."""
-    pieces = json.loads((ROOT / "asm" / "pieces.json").read_text())
+    pieces = json.loads((ROOT / "asm" / "pieces.json").read_text(encoding="utf-8"))
     for p in pieces:
         p["obj"] = f"build/{Path(p['src']).with_suffix('.o').as_posix()}"
         target = ROOT / p["obj"]
@@ -184,7 +186,7 @@ def layout(pieces: list[dict], c_objs: dict[str, str]) -> list[tuple[int, str, s
             src = ROOT / "build" / "gaps" / f"{pos:08X}.s"
             src.parent.mkdir(parents=True, exist_ok=True)
             src.write_text(".data\n" + "".join(f".byte {', '.join(str(b) for b in raw[i:i + 16])}\n"
-                                               for i in range(0, len(raw), 16)))
+                                               for i in range(0, len(raw), 16)), encoding="utf-8")
             gobj = f"build/gaps/{pos:08X}.o"
             run([arm("as"), *AS_FLAGS, "-o", gobj, src.relative_to(ROOT).as_posix()])
             gaps.append((pos, gobj, ".data"))
@@ -211,8 +213,8 @@ def linker_script(items: list[tuple[int, str, str]], c_objs: dict[str, str]) -> 
     defined = set().union(*(_globals(obj) for obj in linked))
     wanted = {fn["name"]: fn["addr"] for fn in B["functions"]} | B["symbols"]
     # luvdis's labels (_08001234) jumped to from another piece: their names are their addresses
-    for p in json.loads((ROOT / "asm" / "pieces.json").read_text()):
-        text = (ROOT / p["src"]).read_text()
+    for p in json.loads((ROOT / "asm" / "pieces.json").read_text(encoding="utf-8")):
+        text = (ROOT / p["src"]).read_text(encoding="utf-8")
         own = set(re.findall(r"^(_[0-9A-F]{8}):", text, re.M))
         wanted.update({lab: int(lab[1:], 16) for lab in set(_LABEL.findall(text)) - own})
         wanted.update({name: int(name[4:], 16) for name in re.findall(r"\b(sub_[0-9A-F]{8})\b", text)})
@@ -224,7 +226,7 @@ def build() -> bool:
     setup()
     pieces, c_objs = build_objects()
     items = layout(pieces, c_objs)
-    (ROOT / "build" / "game.ld").write_text(linker_script(items, c_objs))
+    (ROOT / "build" / "game.ld").write_text(linker_script(items, c_objs), encoding="utf-8")
     objs = sorted({obj for _, obj, _ in items} | set(c_objs.values()))
     run([arm("ld"), "-e", f"0x{B['base']:X}", "-T", "build/game.ld", "-o", "build/game.elf", *objs])
     run([arm("objcopy"), "-O", "binary", "build/game.elf", B["output"]])
@@ -263,9 +265,9 @@ def check(name: str) -> bool:
         return image[addr - base:addr - base + n] if base <= addr and addr + n <= base + len(image) else None
 
     cfg = compiler_config(ROOT, {"compiler": B["compiler"]})
-    text = (ROOT / src).read_text()
+    text = (ROOT / src).read_text(encoding="utf-8")
     m = re.match(r'\s*#include "([^"]+)"\s*\n', text)
-    header = (ROOT / "include" / m.group(1)).read_text() if m else ""
+    header = (ROOT / "include" / m.group(1)).read_text(encoding="utf-8") if m else ""
     res = compile_source(cfg, header, text[m.end():] if m else text, trusted=True)
     if not res.ok:
         print(res.log)
@@ -278,7 +280,7 @@ def check(name: str) -> bool:
         return False
     fn["c"] = src
     fn["own"] = {sec: min(a - o for o, a in offs.items()) for sec, offs in linked.placements.items()}
-    (ROOT / "build.json").write_text(json.dumps(B, indent=1))
+    (ROOT / "build.json").write_text(json.dumps(B, indent=1), encoding="utf-8")
     print(f"{name}: identical to the original; recorded in build.json")
     return True
 

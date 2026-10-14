@@ -107,7 +107,7 @@ def build_target(root: Path, cfg: dict, log=print) -> None:
         src_path = root / src
         cc.include_dirs = (*cc.include_dirs, str(src_path.parent))
         log(f"building {out.relative_to(root)} from {src} with {cfg['compiler'].get('toolchain', 'cmd')}")
-        res = compile_source(cc, "", src_path.read_text(errors="replace"), trusted=True)
+        res = compile_source(cc, "", src_path.read_text(errors="replace", encoding="utf-8"), trusted=True)
         if not res.ok:
             raise ProjectRejected(f"target build failed for {src}:\n{res.log}")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -148,16 +148,17 @@ def import_project(store: Store, root: Path, log=print) -> int:
             arch, big_endian = fn.arch, fn.big_endian
             insns = scoring.disassemble(fn)
             seed_file = root / "seeds" / f"{name}.c"
-            funcs.append([name, fn, len(insns), scoring.asm_text(fn), seed_file.read_text() if seed_file.exists() else None, unit])
+            funcs.append([name, fn, len(insns), scoring.asm_text(fn),
+                          seed_file.read_text(encoding="utf-8") if seed_file.exists() else None, unit])
 
-    header = (root / cfg["context"]["file"]).read_text()
+    header = (root / cfg["context"]["file"]).read_text(encoding="utf-8")
     # Optional per-unit headers: [context] units = "units/{unit}.h" (one per source file / object)
     unit_headers = {}
     if cfg["context"].get("units"):
         for obj in objects:
             path = root / cfg["context"]["units"].format(unit=obj.stem)
             if path.exists():
-                unit_headers[obj.stem] = path.read_text()
+                unit_headers[obj.stem] = path.read_text(encoding="utf-8")
     header_of = lambda f: unit_headers.get(f[5], header)
     # Functions without a hand-written seed get a machine-generated starting point (m2c), when available.
     tc_id = cfg["compiler"].get("toolchain")

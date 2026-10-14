@@ -266,7 +266,7 @@ class ForkEngine:
         dest = self.net.workspace / slug
         log(f"cloning {url}")
         res = subprocess.run(["git", "clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules", url, str(dest)],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace")
         if res.returncode != 0:
             shutil.rmtree(dest, ignore_errors=True)
             raise NetworkError(f"git clone failed: {res.stderr.strip()[-400:]}")
@@ -455,7 +455,8 @@ class ForkEngine:
                     if status == "matched" and old["status"] != "matched":
                         if uname not in texts:
                             try:
-                                texts[uname] = (fp.root / u.source).read_text(errors="replace") if u and u.source else None
+                                texts[uname] = (fp.root / u.source).read_text(errors="replace",
+                                                                              encoding="utf-8") if u and u.source else None
                             except OSError:
                                 texts[uname] = None
                         self._matched(db, proj, old, agent, texts[uname])
@@ -515,14 +516,14 @@ class ForkEngine:
             if not todo:
                 return {"linked": [], "failed": {}}
             conf = fp.root / "configure.py"
-            original = conf.read_text(errors="replace")
+            original = conf.read_text(errors="replace", encoding="utf-8")
             ok, out = fp.verify()
             if not ok:
                 return {"linked": [], "failed": {}, "error": "the project's checksum check fails before linking "
                         f"anything, so nothing was linked:\n{_tail(out)}"}
 
             def build_with(sources: list[str]) -> tuple[bool, str]:
-                conf.write_text(fp.marked_matching(original, sources, cfg.get("version")))
+                conf.write_text(fp.marked_matching(original, sources, cfg.get("version")), encoding="utf-8")
                 return fp.verify()
 
             log(f"linking {len(todo)} finished file(s)")
@@ -543,7 +544,7 @@ class ForkEngine:
                     linked = []
             self._remember_link_failures(proj, linked, failed)
             if not linked:
-                conf.write_text(original)
+                conf.write_text(original, encoding="utf-8")
                 fp.verify()
                 return {"linked": [], "failed": failed}
             names = ", ".join(Path(s).name for s in linked[:6]) + (f" and {len(linked) - 6} more" if len(linked) > 6 else "")
@@ -617,7 +618,7 @@ class ForkEngine:
             src = fp.src_dir()
             name = rel[len(src) + 1:] if rel.startswith(src + "/") else rel
             for module, mod in mods.items():
-                for f in dtksplits.Splits.parse(mod.splits.read_text()).files:
+                for f in dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8")).files:
                     if f.name == name:
                         lines.append(f"{module} sections: " + ", ".join(f"{k} 0x{a:X}-0x{b:X}" for k, (a, b) in f.sections.items())
                                      + " (split_file divides it)")
@@ -706,7 +707,7 @@ class ForkEngine:
         src = fp.src_dir()
         if rep is None:
             try:
-                rep = json.loads((fp.root / STATE / "report.json").read_text())
+                rep = json.loads((fp.root / STATE / "report.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 rep = {}
         rep_fns = {u["name"]: len(u.get("functions", [])) for u in rep.get("units", [])}
@@ -719,7 +720,7 @@ class ForkEngine:
             if u.source or module not in mods:
                 continue
             if not u.auto:
-                for f in dtksplits.Splits.parse(mods[module].splits.read_text()).files:
+                for f in dtksplits.Splits.parse(mods[module].splits.read_text(encoding="utf-8")).files:
                     if str(Path(f.name).with_suffix("")) == rest and f"{src}/{f.name}" in listed:
                         create.append(f"{src}/{f.name}")
                 continue
@@ -749,14 +750,14 @@ class ForkEngine:
             plan = self.code_without_files(slug, fp.report())
             if not plan["create"] and not plan["split"]:
                 return {"created": [], "split": [], "functions": 0}
-            saved = {conf: conf.read_text()}
+            saved = {conf: conf.read_text(encoding="utf-8")}
             made: list[Path] = []
             try:
                 for path in plan["create"]:
                     p = fp.root / path
                     if not p.exists():
                         p.parent.mkdir(parents=True, exist_ok=True)
-                        p.write_text("")
+                        p.write_text("", encoding="utf-8")
                         made.append(p)
                 by_module: dict[str, list] = defaultdict(list)
                 for item in plan["split"]:
@@ -764,25 +765,26 @@ class ForkEngine:
                 text = saved[conf]
                 for module, items in by_module.items():
                     sp_path = mods[module].splits
-                    saved.setdefault(sp_path, sp_path.read_text())
+                    saved.setdefault(sp_path, sp_path.read_text(encoding="utf-8"))
                     sp = dtksplits.Splits.parse(saved[sp_path])
                     for _, name, start, end, _n in items:
                         sp.files.append(dtksplits.FileSplit(name, {".text": (start, end)}))
                         p = fp.root / src / name
                         p.parent.mkdir(parents=True, exist_ok=True)
                         p.write_text(f"// Code of {module} that had no source file yet: decomp.wtf gave it this one.\n"
-                                     "// split_file divides it into the game's real files (file_status shows its range).\n")
+                                     "// split_file divides it into the game's real files (file_status shows its range).\n",
+                                     encoding="utf-8")
                         made.append(p)
-                    sp_path.write_text(sp.render())
+                    sp_path.write_text(sp.render(), encoding="utf-8")
                     text = dtksplits.add_objects(text, module, [name for _, name, _, _, _ in items])
-                conf.write_text(text)
+                conf.write_text(text, encoding="utf-8")
                 log(f"giving {len(plan['split'])} stretch(es) of code a source file; the build splits the game again")
                 ok, out = fp.verify()
                 if not ok:
                     raise ForkError(f"the game didn't build identically with the new files:\n{_tail(out)}")
             except (ForkError, OSError, ValueError) as e:
                 for path, old in saved.items():
-                    path.write_text(old)
+                    path.write_text(old, encoding="utf-8")
                 for p in made:
                     p.unlink(missing_ok=True)
                 fp.verify()
@@ -819,7 +821,7 @@ class ForkEngine:
         name = rel[len(src) + 1:] if rel.startswith(src + "/") else rel
         owners = []
         for module, mod in mods.items():
-            sp = dtksplits.Splits.parse(mod.splits.read_text())
+            sp = dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8"))
             if any(f.name == name for f in sp.files):
                 owners.append((module, mod, sp))
         if len(owners) != 1:
@@ -873,7 +875,7 @@ class ForkEngine:
         unit = fp.units_for(rel)[0]
         rows = self.net.store.all("SELECT id, name, meta FROM functions WHERE project_id=? AND unit=?", proj["id"], unit.name)
         with self._tree(proj).exclusive():  # no other build runs meanwhile
-            text = old_path.read_text(errors="replace") if old_path.exists() else ""
+            text = old_path.read_text(errors="replace", encoding="utf-8") if old_path.exists() else ""
             spans = []
             for r in rows:
                 sym = self._meta(r).get("symbol")
@@ -889,12 +891,12 @@ class ForkEngine:
             for _, (a, b) in sorted(spans, key=lambda x: -x[1][0]):
                 rest = rest[:a].rstrip("\n") + "\n\n" + rest[b:].lstrip("\n")
             scores_before = self._baseline(proj, fp, unit, text)[0] or {}
-            saved = {conf: conf.read_text(), mod.splits: mod.splits.read_text(), old_path: text}
+            saved = {conf: conf.read_text(encoding="utf-8"), mod.splits: mod.splits.read_text(encoding="utf-8"), old_path: text}
             protected = {n for n, pct in scores_before.items() if pct is not None and pct >= 100}
             try:
                 f.sections = kept
                 sp.files.append(dtksplits.FileSplit(new, moved_sections))
-                mod.splits.write_text(sp.render())
+                mod.splits.write_text(sp.render(), encoding="utf-8")
                 ctext = saved[conf]
                 states = dtksplits.libs(ctext)
                 entry = next(((s0, e0) for lib in states for p_, s0, e0 in lib.objects if p_ == name), None)
@@ -904,10 +906,11 @@ class ForkEngine:
                 new_entry = re.sub(r'^(Object\(\s*)\w+(\s*,\s*)"[^"]+"', lambda mm: f'{mm.group(1)}NonMatching{mm.group(2)}"{new}"',
                                    old_entry, count=1)
                 indent = dtksplits._indent_of(ctext, entry[0])
-                conf.write_text(ctext[:entry[1]] + f",\n{indent}{new_entry}" + ctext[entry[1]:])
+                conf.write_text(ctext[:entry[1]] + f",\n{indent}{new_entry}" + ctext[entry[1]:], encoding="utf-8")
                 new_path.parent.mkdir(parents=True, exist_ok=True)
-                new_path.write_text(preamble + ("\n" if preamble else "") + "\n\n".join(moved_code) + ("\n" if moved_code else ""))
-                old_path.write_text(rest)
+                new_path.write_text(preamble + ("\n" if preamble else "") + "\n\n".join(moved_code) + ("\n" if moved_code else ""),
+                                    encoding="utf-8")
+                old_path.write_text(rest, encoding="utf-8")
                 ok, out = fp.verify()
                 if not ok:
                     raise ForkError(f"the game didn't build identically with the files divided there:\n{_tail(out)}")
@@ -924,7 +927,7 @@ class ForkEngine:
                     raise ForkError(f"these functions would stop matching: {', '.join(lost[:8])}")
             except (ForkError, ObjdiffError, OSError, ValueError) as e:
                 for p_, old in saved.items():
-                    p_.write_text(old)
+                    p_.write_text(old, encoding="utf-8")
                 new_path.unlink(missing_ok=True)
                 fp.verify()
                 for u in fp.units_for(rel):
@@ -963,7 +966,7 @@ class ForkEngine:
         if "uncovered" in cfg:
             return cfg["uncovered"]
         try:
-            counted = self._count_uncovered(json.loads((fp.root / STATE / "report.json").read_text()))
+            counted = self._count_uncovered(json.loads((fp.root / STATE / "report.json").read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return None
         self.net._update_cfg(slug, lambda c: c.setdefault("uncovered", counted))
@@ -975,7 +978,7 @@ class ForkEngine:
         if proj["id"] not in self._index:
             p = fp.root / STATE / "index.json"
             try:
-                self._index[proj["id"]] = json.loads(p.read_text()) if p.exists() else {}
+                self._index[proj["id"]] = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
             except ValueError:
                 self._index[proj["id"]] = {}
         return self._index[proj["id"]]
@@ -984,7 +987,7 @@ class ForkEngine:
         with self._ilock:
             snapshot = dict(self._index.get(proj["id"], {}))
         try:
-            (fp.root / STATE / "index.json").write_text(json.dumps(snapshot))
+            (fp.root / STATE / "index.json").write_text(json.dumps(snapshot), encoding="utf-8")
         except OSError:
             pass
 
@@ -1085,7 +1088,7 @@ class ForkEngine:
         unit = fp.unit(fn["unit"])
         if not unit.source or not (fp.root / unit.source).exists():
             return None
-        text = (fp.root / unit.source).read_text(errors="replace")
+        text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
         _, span = self._find(text, self._names(self._meta(fn), fn))
         return text[span[0]:span[1]] if span else None
 
@@ -1144,7 +1147,7 @@ class ForkEngine:
         if text is None:
             try:
                 u = ForkProject(Path(proj["root"])).unit(unit)
-                text = (Path(proj["root"]) / u.source).read_text(errors="replace") if u.source else ""
+                text = (Path(proj["root"]) / u.source).read_text(errors="replace", encoding="utf-8") if u.source else ""
             except (ForkError, OSError):
                 return set()
         out = set()
@@ -1215,7 +1218,7 @@ class ForkEngine:
         if unit.source:
             lines.append(f"source file: {unit.source}")
             p = fp.root / unit.source
-            src_text = p.read_text(errors="replace") if p.exists() else None
+            src_text = p.read_text(errors="replace", encoding="utf-8") if p.exists() else None
         else:
             lines.append("this unit has no source file yet, so it can't be decompiled from here")
         try:
@@ -1338,7 +1341,8 @@ class ForkEngine:
         extra = source[:span[0]] + source[span[1]:]
         if csource._blank(extra).strip():  # includes and prototypes the file already has are fine to resend
             try:
-                have = {ln.strip() for ln in (fp.root / unit.source).read_text(errors="replace").splitlines()}
+                have = {ln.strip() for ln in (fp.root / unit.source).read_text(errors="replace",
+                                                                               encoding="utf-8").splitlines()}
             except OSError:
                 have = set()
             new = [ln.strip() for ln in _strip_comments(extra).splitlines() if ln.strip() and ln.strip() not in have]
@@ -1361,7 +1365,7 @@ class ForkEngine:
         symbol = meta.get("symbol") or fn["name"]
         linked = unit.complete and fp.linkable()  # the game is built from this file: changes must keep it identical
         with self._tree(proj).exclusive() if linked else self._tree(proj).shared(), self._unit_lock(proj, unit.name):
-            before = path.read_text(errors="replace") if path.exists() else ""
+            before = path.read_text(errors="replace", encoding="utf-8") if path.exists() else ""
             # What matches in the file as it is now is what this change must keep (not the database's idea of it,
             # which a change outside decomp.wtf or a different measurement can leave behind)
             scores, builds = self._baseline(proj, fp, unit, before)
@@ -1380,10 +1384,10 @@ class ForkEngine:
                 after = before[:old_span[0]] + code.rstrip("\n") + "\n" + before[old_span[1]:]
             else:
                 after = self._insert_in_order(proj, fp, unit, fn, before, code)
-            path.write_text(after)
+            path.write_text(after, encoding="utf-8")
 
             def undo() -> None:
-                path.write_text(before)
+                path.write_text(before, encoding="utf-8")
                 if self._build_unit(proj, fp, unit)[0] and scores is not None:
                     self._keep_scores(proj, unit, before, scores)
 
@@ -1488,7 +1492,7 @@ class ForkEngine:
             head = f.read(8192)
         if b"\0" in head or p.stat().st_size > 4 * 1024 * 1024:
             raise NetworkError(f"{path} isn't a source or text file")  # never the user's game data
-        lines = p.read_text(errors="replace").splitlines()
+        lines = p.read_text(errors="replace", encoding="utf-8").splitlines()
         start = max(1, int(start))
         chunk = lines[start - 1:start - 1 + max(1, min(int(count), 600))]
         out = [f"{path} (lines {start}-{start + len(chunk) - 1} of {len(lines)})"]
@@ -1530,7 +1534,7 @@ class ForkEngine:
             rel = rp.relative_to(root)
             if {".git", "build", STATE} & set(rel.parts):
                 continue
-            for i, line in enumerate(rp.read_text(errors="replace").splitlines(), 1):
+            for i, line in enumerate(rp.read_text(errors="replace", encoding="utf-8").splitlines(), 1):
                 if rx.search(line):
                     hits.append(f"{rel.as_posix()}:{i}: {line.strip()[:160]}")
                     if len(hits) >= 80:
@@ -1553,7 +1557,7 @@ class ForkEngine:
     @staticmethod
     def _edited(p: Path, path: str, old: str, new: str) -> tuple[bool, str, str]:
         existed = p.exists()
-        text = p.read_text(errors="replace") if existed else ""
+        text = p.read_text(errors="replace", encoding="utf-8") if existed else ""
         if old:
             return existed, text, replace_once(text, old, new, path)
         return existed, text, text.rstrip("\n") + ("\n" if text else "") + new.strip("\n") + "\n"
@@ -1567,11 +1571,11 @@ class ForkEngine:
             existed, text, updated = self._edited(p, rel, old, new)
             bases = {u.name: self._baseline(proj, fp, u, text) for u in units}
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(updated)
+            p.write_text(updated, encoding="utf-8")
 
             def undo() -> None:
                 if existed:
-                    p.write_text(text)
+                    p.write_text(text, encoding="utf-8")
                 else:
                     p.unlink(missing_ok=True)
                 for u in units:
@@ -1628,11 +1632,11 @@ class ForkEngine:
             protected = {(r["unit"], self._meta(r).get("symbol")) for r in self.net.store.all(
                 "SELECT unit, meta FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(updated)
+            p.write_text(updated, encoding="utf-8")
 
             def undo() -> None:
                 if existed:
-                    p.write_text(text)
+                    p.write_text(text, encoding="utf-8")
                 else:
                     p.unlink(missing_ok=True)
                 self._build_all(proj, fp)
@@ -1666,7 +1670,7 @@ class ForkEngine:
                 if truly:
                     return f"❌ REJECTED and undone: the edit breaks {len(truly)} matched function(s): {', '.join(truly[:10])}"
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(updated)
+                p.write_text(updated, encoding="utf-8")
                 self._build_all(proj, fp)
             self._scores = {k: v for k, v in self._scores.items() if k[0] != proj["id"]}
             self._commit(proj, fp, rel, f"{message.strip()}\n\nEdited by {agent.name} with decomp.wtf.")
@@ -1732,7 +1736,7 @@ class ForkEngine:
         except (ObjdiffError, ForkError) as e:
             asm = f"(objdiff: {e})"
         if unit.source and (fp.root / unit.source).exists():
-            text = (fp.root / unit.source).read_text(errors="replace")
+            text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
             _, span = self._find(text, self._names(meta, fn))
             current = text[span[0]:span[1]] if span else None
         attempts = self.net.store.all("SELECT t.score, t.created_at, a.name AS agent FROM attempts t LEFT JOIN agents a "

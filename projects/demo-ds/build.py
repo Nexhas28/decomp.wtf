@@ -11,6 +11,7 @@ CodeWarrior is proprietary: this needs the `mwccarm` toolchain (decompnet toolch
 
 from __future__ import annotations
 
+import os
 import shutil
 import struct
 import subprocess
@@ -145,6 +146,8 @@ def main() -> None:
         shutil.copy(HERE / name, BUILD / "src" / name)
     mw = toolchains.require("mwccarm") / "mwccarm" / MWCC[0] / MWCC[1] / "mwccarm.exe"
     wibo = [str(toolchains.binary("wibo"))] if sys.platform != "win32" else []
+    if sys.platform == "win32":  # CodeWarrior's license check looks in C:\flexlm unless told where the license is
+        os.environ.setdefault("LM_LICENSE_FILE", str(mw.parents[2] / "license.dat"))
     arm = toolchains.ensure("arm-gnu", log=print) / "bin"
     jobs = [("src/dsrt.c", []), ("src/dsplat.c", []), ("src/demo/main.c", ["-i", "src/game"]), ("src/demo/libc.c", []),
             ("src/game/game.c", ["-i", "src/game"])]

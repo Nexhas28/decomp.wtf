@@ -43,6 +43,12 @@ EXTRACT = Path("extract") / VERSION
 CC = str(Path(args.compilers) / MWCC_VERSION / "mwccarm.exe")
 LD = str(Path(args.compilers) / MWCC_VERSION / "mwldarm.exe")
 WRAP = f'"{args.wibo}" ' if args.wibo and sys.platform != "win32" else ""
+# Windows: ninja starts commands without a shell, so a rule with && runs through cmd; and CodeWarrior's license check
+# only looks in C:\flexlm unless LM_LICENSE_FILE points at the license.dat next to the compilers
+SH = "cmd /c " if sys.platform == "win32" else ""
+LICENSE = Path(args.compilers).resolve() / "license.dat"
+if sys.platform == "win32" and LICENSE.exists():
+    WRAP = f'cmd /c set "LM_LICENSE_FILE={LICENSE}" && '
 DSD = f'"{args.dsd}"'
 PY = f'"{sys.executable}"'
 
@@ -57,11 +63,11 @@ def sources() -> list[Path]:
 
 def main() -> None:
     delinks = json.loads(subprocess.run([args.dsd, "json", "delinks", "--config-path", str(CONFIG)], check=True,
-                                        capture_output=True, text=True).stdout)
+                                        capture_output=True, text=True, encoding="utf-8", errors="replace").stdout)
     files = delinks["files"]
     dsd_configs = [str(p) for p in Path("config", VERSION).rglob("*.txt")]
     rom = BUILD / f"{GAME}.nds"
-    with open("build.ninja", "w") as f:
+    with open("build.ninja", "w", encoding="utf-8") as f:
         n = ninja_syntax.Writer(f)
         n.rule("extract", f"{DSD} rom extract --rom $in --output-path {EXTRACT}")
         n.rule("delink", f"{DSD} delink --config-path {CONFIG}")
@@ -74,7 +80,7 @@ def main() -> None:
         n.rule("rom_build", f"{DSD} rom build --config $in --rom $out")
         n.rule("same", f"{PY} tools/same.py $in {BASEROM} $out")
         n.rule("objdiff", f"{DSD} objdiff --config-path {CONFIG} --custom-make ninja")
-        n.rule("check", f"{DSD} check modules --config-path {CONFIG} --fail && {PY} tools/same.py --touch $out")
+        n.rule("check", f"{SH}{DSD} check modules --config-path {CONFIG} --fail && {PY} tools/same.py --touch $out")
         n.rule("configure", f"{PY} tools/configure.py {q(sys.argv[1:])}", generator=True)
 
         n.build(str(EXTRACT / "config.yaml"), "extract", str(BASEROM))

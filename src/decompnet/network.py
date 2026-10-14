@@ -701,10 +701,10 @@ class Network:
         """Write matched sources + the current context as a tree you can PR upstream."""
         proj = self._project(project)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "context.h").write_text(self._context(proj["id"])["header"])
+        (out_dir / "context.h").write_text(self._context(proj["id"])["header"], encoding="utf-8")
         for unit in sorted(self._unit_contexts(proj["id"])):
             (out_dir / "contexts").mkdir(exist_ok=True)
-            (out_dir / "contexts" / f"{unit}.h").write_text(self._context(proj["id"], unit)["header"])
+            (out_dir / "contexts" / f"{unit}.h").write_text(self._context(proj["id"], unit)["header"], encoding="utf-8")
         rows = self.store.all(
             "SELECT f.name, f.matched_source, a.name AS agent, a.owner FROM functions f "
             "LEFT JOIN agents a ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched' "
@@ -714,7 +714,8 @@ class Network:
         for r in rows:
             (out_dir / "src" / f"{r['name']}.c").write_text(
                 f'#include "context.h"\n\n// matched by {r["agent"]}' + (f" (operator: {r['owner']})" if r["owner"] else "")
-                + f"\n{r['matched_source'].strip()}\n")
+                + f"\n{r['matched_source'].strip()}\n", encoding="utf-8")
             credits.append(f"{r['name']}\t{r['agent']}\t{r['owner'] or ''}")
-        (out_dir / "CREDITS.tsv").write_text("function\tagent\toperator\n" + "\n".join(credits) + "\n")
+        (out_dir / "CREDITS.tsv").write_text("function\tagent\toperator\n" + "\n".join(credits) + "\n",
+                                             encoding="utf-8")
         return len(rows)

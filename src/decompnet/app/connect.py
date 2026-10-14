@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agents import KINDS, _which
+from .agents import KINDS, _which, argv
 
 NAME = "decomp"
 LABEL = {"claude": "claude-code", "codex": "codex", "gemini": "gemini", "opencode": "opencode"}
@@ -23,6 +23,12 @@ def bridge_command() -> list[str]:
     """How an agent starts the bridge: the `decomp` command when it's on PATH, else this Python with the module."""
     exe = shutil.which("decomp")
     return [exe, "mcp"] if exe else [sys.executable, "-m", "decompnet.app.cli", "mcp"]
+
+
+def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """Run an agent's own CLI (on Windows an npm .cmd through node, see agents.argv), reading its output as UTF-8."""
+    return subprocess.run(argv(cmd), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _opencode_config() -> Path:
@@ -49,7 +55,7 @@ def shown(kind: str) -> str:
     cmd = commands(kind)
     if cmd is None:
         return f"add {{\"mcp\": {{\"decomp\": {{\"type\": \"local\", \"command\": {json.dumps(bridge_command())}}}}}}} to {_opencode_config()}"
-    return subprocess.list2cmdline([Path(cmd[0]).name, *cmd[1:]])
+    return subprocess.list2cmdline([Path(cmd[0]).stem if sys.platform == "win32" else Path(cmd[0]).name, *cmd[1:]])
 
 
 def status(kind: str) -> bool:
@@ -59,14 +65,14 @@ def status(kind: str) -> bool:
         return False
     try:
         if kind == "claude":
-            return subprocess.run([exe, "mcp", "get", NAME], capture_output=True, text=True, timeout=30).returncode == 0
+            return _run([exe, "mcp", "get", NAME], 30).returncode == 0
         if kind == "codex":
-            return subprocess.run([exe, "mcp", "get", NAME], capture_output=True, text=True, timeout=30).returncode == 0
+            return _run([exe, "mcp", "get", NAME], 30).returncode == 0
         if kind == "gemini":
-            out = subprocess.run([exe, "mcp", "list"], capture_output=True, text=True, timeout=30)
+            out = _run([exe, "mcp", "list"], 30)
             return any(re.match(rf"^\W*{NAME}:", line.strip()) for line in (out.stdout + out.stderr).splitlines())
         if kind == "opencode":
-            cfg = json.loads(_opencode_config().read_text())
+            cfg = json.loads(_opencode_config().read_text(encoding="utf-8"))
             return NAME in (cfg.get("mcp") or {})
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return False
@@ -82,19 +88,19 @@ def connect(kind: str) -> str:
     if kind == "opencode":
         path = _opencode_config()
         try:
-            cfg = json.loads(path.read_text()) if path.exists() else {"$schema": "https://opencode.ai/config.json"}
+            cfg = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
+                   else {"$schema": "https://opencode.ai/config.json"})
         except ValueError:
             raise ValueError(f"{path} isn't plain JSON (comments?); add this yourself: {shown(kind)}") from None
         cfg.setdefault("mcp", {})[NAME] = {"type": "local", "command": bridge_command(), "enabled": True,
                                           "environment": {"DECOMP_AGENT_NAME": LABEL[kind]}}
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg, indent=2) + "\n")
+        path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
         return f"added decomp.wtf to {path}"
     cmd = commands(kind)
     if status(kind):  # replace an older registration (another install path, older options)
-        subprocess.run([cmd[0], "mcp", "remove", *(["-s", "user"] if kind in ("claude", "gemini") else []), NAME],
-                       capture_output=True, text=True, timeout=30)
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        _run([cmd[0], "mcp", "remove", *(["-s", "user"] if kind in ("claude", "gemini") else []), NAME], 30)
+    res = _run(cmd, 60)
     if res.returncode != 0:
         raise ValueError(f"{KINDS[kind].name} said: {(res.stderr or res.stdout).strip()[-300:]}")
     return (res.stdout or res.stderr).strip()[-300:] or "connected"

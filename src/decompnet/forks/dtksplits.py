@@ -88,7 +88,7 @@ class Module:
 
 def modules(root: Path, version: str) -> dict[str, Module]:
     """The program and its RELs, from config/<version>/config.yml."""
-    cfg = yaml.safe_load((root / "config" / version / "config.yml").read_text())
+    cfg = yaml.safe_load((root / "config" / version / "config.yml").read_text(encoding="utf-8"))
     out = {}
     if cfg.get("splits"):
         out["main"] = Module("main", root / cfg["splits"], root / cfg.get("symbols", ""))
@@ -105,7 +105,7 @@ def symbols(path: Path) -> dict[str, tuple[str, int, int]]:
     """symbols.txt: name -> (section, address, size)."""
     out = {}
     try:
-        lines = path.read_text(errors="replace").splitlines()
+        lines = path.read_text(errors="replace", encoding="utf-8").splitlines()
     except OSError:
         return out
     for line in lines:

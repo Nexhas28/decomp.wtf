@@ -395,7 +395,8 @@ class Tunnel:
             toolchains.install("cloudflared", log=log)
         exe = toolchains.path("cloudflared") / ("cloudflared.exe" if (toolchains.path("cloudflared") / "cloudflared.exe").exists() else "cloudflared")
         self.proc = subprocess.Popen([str(exe), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{self.port}"],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                     errors="replace")
         found = threading.Event()
 
         def read():
@@ -637,7 +638,8 @@ def _local_addresses() -> list[dict]:
     ts = shutil.which("tailscale")
     if ts:
         try:
-            res = subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5)
+            res = subprocess.run([ts, "status", "--json"], capture_output=True, text=True, timeout=5,
+                                 encoding="utf-8", errors="replace")
             me = json.loads(res.stdout).get("Self") or {}
             name = (me.get("DNSName") or "").rstrip(".")
             ips = [a for a in me.get("TailscaleIPs") or [] if "." in a]

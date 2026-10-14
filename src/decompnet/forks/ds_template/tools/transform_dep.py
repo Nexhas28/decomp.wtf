@@ -28,7 +28,7 @@ def in_wsl() -> bool:
 def import_d_file(in_file: str) -> str:
     out_text = ""
 
-    with open(in_file) as file:
+    with open(in_file, encoding="utf-8") as file:
         for idx, line in enumerate(file):
             if idx == 0:
                 if line.endswith(" \\\n"):

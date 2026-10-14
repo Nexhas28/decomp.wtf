@@ -114,7 +114,8 @@ typedef int BOOL;
 def _run(cmd: list[str], cwd: Path, what: str) -> None:
     from ..limits import capped
 
-    res = subprocess.run(capped(cmd), cwd=cwd, capture_output=True, text=True, timeout=3600)
+    res = subprocess.run(capped(cmd), cwd=cwd, capture_output=True, text=True, timeout=3600,
+                         encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ForkError(f"{what} failed:\n{(res.stdout + res.stderr).strip()[-1500:]}")
 
@@ -134,12 +135,13 @@ def _units(module: Path) -> list[tuple[int, int, int]]:
     """(start, end, functions) of the source files for a module's .text: runs of functions of about UNIT_BYTES that
     together cover the whole section (bytes between functions go with the file before them; a stray piece on its own
     could be dead-stripped by the linker)."""
-    delinks = (module / "delinks.txt").read_text()
+    delinks = (module / "delinks.txt").read_text(encoding="utf-8")
     text = next(((int(s, 16), int(e, 16)) for name, s, e in _SECTION.findall(delinks.split("\n\n")[0]) if name == ".text"),
                 None)
     if text is None:
         return []
-    funcs = sorted({int(a, 16): int(size, 16) for _, _, size, a in _FUNC.findall((module / "symbols.txt").read_text())
+    symbols = (module / "symbols.txt").read_text(encoding="utf-8")
+    funcs = sorted({int(a, 16): int(size, 16) for _, _, size, a in _FUNC.findall(symbols)
                     if text[0] <= int(a, 16) < text[1]}.items())
     units, cur = [], None
     for addr, size in funcs:
@@ -175,10 +177,10 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     except OSError:
         shutil.copyfile(game, root / "extract" / "baserom.nds")
     (root / "include").mkdir()
-    (root / "include" / "common.h").write_text(TYPES_H)
+    (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     cfg = root / "tools" / "configure.py"
-    cfg.write_text(cfg.read_text().replace('GAME = "game"', f'GAME = "{version}"')
-                   .replace(f'MWCC_VERSION = "{DS_DEFAULT}"', f'MWCC_VERSION = "{compiler}"'))
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace('GAME = "game"', f'GAME = "{version}"')
+                   .replace(f'MWCC_VERSION = "{DS_DEFAULT}"', f'MWCC_VERSION = "{compiler}"'), encoding="utf-8")
 
     dsd = args[args.index("--dsd") + 1]
     log(f"extracting {info['title']} ({info['id']}) with ds-decomp")
@@ -193,16 +195,16 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
         units = _units(module)
         if not units:
             continue
-        lines = (module / "delinks.txt").read_text().rstrip("\n") + "\n"
+        lines = (module / "delinks.txt").read_text(encoding="utf-8").rstrip("\n") + "\n"
         for start, end, count in units:
             name = f"src/auto/{prefix}_{start:08X}.c"
             lines += f"\n{name}:\n    .text start:0x{start:08x} end:0x{end:08x}\n"
             src = root / name
             src.parent.mkdir(parents=True, exist_ok=True)
             src.write_text(f"/* {count} function{'s' if count != 1 else ''} from 0x{start:08X} to 0x{end:08X} "
-                           f"({prefix}), found by ds-decomp. */\n#include \"common.h\"\n")
+                           f"({prefix}), found by ds-decomp. */\n#include \"common.h\"\n", encoding="utf-8")
             sources.append(name)
-        (module / "delinks.txt").write_text(lines)
+        (module / "delinks.txt").write_text(lines, encoding="utf-8")
     log(f"{len(sources)} source files for agents to write into")
 
     fp = ForkProject(root)
@@ -218,9 +220,9 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
         "created": "from scratch", "platform": "nds", "version": version, "compiler": f"DS/{compiler}",
         "game": {"what": "your copy of the game (.nds)", "path": "extract/baserom.nds", "sha1": info["sha1"]},
         "setup": [["python", "tools/configure.py", version, *args], ["ninja"]],
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
     (root / ".gitignore").write_text("# made from your copy of the game, or by the build\nextract/\nbuild/\nbuild.ninja\n"
-                                     ".ninja_*\nobjdiff.json\n__pycache__/\n.decomp-wtf/\n")
+                                     ".ninja_*\nobjdiff.json\n__pycache__/\n.decomp-wtf/\n", encoding="utf-8")
     (root / "README.md").write_text(f"""# {info['title']} ({info['id']}) decompilation
 
 Started from scratch with [decomp.wtf](https://decomp.wtf) on [ds-decomp](https://github.com/AetiasHax/ds-decomp),
@@ -232,7 +234,7 @@ the toolkit DS decomps use. Every build rebuilds the ROM and checks it against y
 
 Compiler: CodeWarrior for DS {compiler} (change `MWCC_VERSION` in tools/configure.py if the game used another).
 `config/{version}/` holds what ds-decomp found: sections, symbols, relocations and the source files (`delinks.txt`).
-""")
+""", encoding="utf-8")
     if shutil.which("git"):
         for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
                     ["git", "-c", "user.name=decomp.wtf", "-c", "user.email=noreply@decomp.wtf", "commit", "-q", "-m",

@@ -57,11 +57,11 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
     if not target or toolchains.installed("m2c") is None:
         return None
     src = root / source_path if source_path else None
-    source_text = src.read_text(errors="replace") if src and src.exists() else None
+    source_text = src.read_text(errors="replace", encoding="utf-8") if src and src.exists() else None
     asm = find_asm(root, unit_name, symbol, source_text)
     if asm is None:
         return None
-    text = asm.read_text(errors="replace")
+    text = asm.read_text(errors="replace", encoding="utf-8")
     if len(text) > MAX_ASM or ".fn " in text:
         text = _block(text, symbol)
     if platform == "n64":

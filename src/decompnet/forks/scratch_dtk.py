@@ -82,7 +82,7 @@ def _vfs_read(disc: Path, inner: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="decompwtf-disc-") as tmp:
         out = Path(tmp) / Path(inner).name
         res = subprocess.run(capped([_dtk(), "vfs", "cp", f"{disc}:{inner}", str(out)]), capture_output=True, text=True,
-                             timeout=600)
+                             timeout=600, encoding="utf-8", errors="replace")
         if res.returncode != 0 or not out.exists():
             raise ForkError(f"couldn't read {inner} from the disc image: {(res.stderr or res.stdout).strip()[-300:]}")
         return out.read_bytes()
@@ -108,7 +108,7 @@ def vfs_copy(disc: Path, inner: list[str], dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for i in range(0, len(inner), 64):
         res = subprocess.run(capped([_dtk(), "vfs", "cp", "-q", *[f"{disc}:{x}" for x in inner[i:i + 64]], f"{dest}{os.sep}"]),
-                             capture_output=True, text=True, timeout=1800)
+                             capture_output=True, text=True, timeout=1800, encoding="utf-8", errors="replace")
         if res.returncode != 0:
             raise ForkError(f"couldn't copy files out of the disc image: {(res.stderr or res.stdout).strip()[-400:]}")
 
@@ -195,14 +195,14 @@ def _libs_block(compiler: str, sources: list[str]) -> str:
 
 def _write_configure(root: Path, game_id: str, compiler: str, sources: list[str]) -> None:
     p = root / "configure.py"
-    s = p.read_text()
+    s = p.read_text(encoding="utf-8")
     s = re.sub(r'VERSIONS = \[\n.*?\n\]', f'VERSIONS = [\n    "{game_id}",  # 0\n]', s, count=1, flags=re.S)
     s = re.sub(r'^config\.linker_version = ".*"$', f'config.linker_version = "{compiler}"', s, count=1, flags=re.M)
     if "config.shift_jis = False" not in s:  # sources are plain C (turn it back on for Japanese string literals)
         s = s.replace(f'config.linker_version = "{compiler}"', f'config.linker_version = "{compiler}"\nconfig.shift_jis = False', 1)
     start = s.index("config.libs = [")
     end = s.index("# Optional callback to adjust link order")
-    p.write_text(s[:start] + _libs_block(compiler, sources) + s[end:])
+    p.write_text(s[:start] + _libs_block(compiler, sources) + s[end:], encoding="utf-8")
 
 
 def _build(fp: ForkProject, log) -> tuple[bool, str]:
@@ -217,13 +217,13 @@ def _name_entry(root: Path, game_id: str, dol: bytes) -> bool:
     path = root / "config" / game_id / "symbols.txt"
     if not path.exists():
         return False
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if re.search(r"^__start = ", text, re.M):
         return False
     entry = struct.unpack(">I", dol[0xE0:0xE4])[0]
     new, n = re.subn(rf"^\w+ = (\.init|\.text):0x{entry:08X};", rf"__start = \1:0x{entry:08X};", text, count=1, flags=re.M)
     if n:
-        path.write_text(new)
+        path.write_text(new, encoding="utf-8")
     return bool(n)
 
 
@@ -231,7 +231,7 @@ def _code_units(root: Path, game_id: str) -> list[tuple[int, int, str]]:
     """(start, end, section) of the code regions dtk split out automatically (not .init: hand-written start-up)."""
     from elftools.elf.elffile import ELFFile
 
-    cfg = json.loads((root / "build" / game_id / "config.json").read_text())
+    cfg = json.loads((root / "build" / game_id / "config.json").read_text(encoding="utf-8"))
     out = []
     for unit in (cfg.get("units") or []):
         m = re.match(r"auto_\d+_([0-9A-F]{8})_(\w+)$", unit.get("name", ""))
@@ -277,10 +277,10 @@ mw_comment_version: {comment_version(compiler)}
 detect_objects: true
 detect_strings: true
 write_asm: true
-""")
-    (config / "build.sha1").write_text(f"{sha1}  build/{gid}/main.dol\n")
+""", encoding="utf-8")
+    (config / "build.sha1").write_text(f"{sha1}  build/{gid}/main.dol\n", encoding="utf-8")
     (root / "include").mkdir(exist_ok=True)
-    (root / "include" / "common.h").write_text(TYPES_H)
+    (root / "include" / "common.h").write_text(TYPES_H, encoding="utf-8")
     _write_configure(root, gid, compiler, [])
 
     fp = ForkProject(root)
@@ -293,7 +293,7 @@ write_asm: true
 
     units = _code_units(root, gid)
     sources = []
-    splits = (config / "splits.txt").read_text().rstrip("\n") + "\n"
+    splits = (config / "splits.txt").read_text(encoding="utf-8").rstrip("\n") + "\n"
     for start, end, section in units:
         name = f"auto/text_{start:08X}.c"
         sources.append(name)
@@ -301,8 +301,8 @@ write_asm: true
         src = root / "src" / name
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_text(f'/* Functions from 0x{start:08X} to 0x{end:08X}, found by decomp-toolkit. */\n'
-                       f'#include "common.h"\n')
-    (config / "splits.txt").write_text(splits)
+                       f'#include "common.h"\n', encoding="utf-8")
+    (config / "splits.txt").write_text(splits, encoding="utf-8")
     _write_configure(root, gid, compiler, sources)
     log(f"{len(sources)} source files for agents to write into")
     ok, tail = _build(fp, log)
@@ -314,9 +314,9 @@ write_asm: true
         "game": {"what": "your copy of the game", "path": f"orig/{gid}/" + ("sys/main.dol" if info["kind"] == "dol" else game.name),
                  "sha1": hashlib.sha1((orig / "sys" / "main.dol").read_bytes()).hexdigest() if info["kind"] == "dol" else None},
         "setup": [["python", "configure.py", *tool_args()], ["ninja"]],
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
     (root / "README.example.md").unlink(missing_ok=True)
-    with open(root / ".gitignore", "a") as f:
+    with open(root / ".gitignore", "a", encoding="utf-8") as f:
         f.write("\n# decomp.wtf\n.decomp-wtf/\n")
     (root / "README.md").write_text(f"""# {info['title']} ({gid}) decompilation
 
@@ -328,7 +328,7 @@ the layout GameCube and Wii decomps use. Every build rebuilds `main.dol` and che
 3. Decompiled code goes in `src/`; `objdiff` (objdiff.json) shows each function's progress.
 
 Compiler: CodeWarrior {compiler} (change `config.linker_version` in configure.py if the game used another).
-""")
+""", encoding="utf-8")
     if shutil.which("git"):
         for cmd in (["git", "init", "-q", "-b", "main"], ["git", "add", "-A"],
                     ["git", "-c", "user.name=decomp.wtf", "-c", "user.email=noreply@decomp.wtf", "commit", "-q", "-m",

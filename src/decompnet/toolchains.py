@@ -75,7 +75,7 @@ def current_platform() -> str:
 
 
 def registry() -> dict[str, Toolchain]:
-    data = tomllib.loads(resources.files("decompnet").joinpath("toolchains.toml").read_text())
+    data = tomllib.loads(resources.files("decompnet").joinpath("toolchains.toml").read_text(encoding="utf-8"))
     return {tid: Toolchain(id=tid, **spec) for tid, spec in data.items()}
 
 
@@ -106,7 +106,7 @@ def path(tid: str) -> Path:
 
 def installed(tid: str) -> dict | None:
     m = path(tid) / MANIFEST
-    return json.loads(m.read_text()) if m.exists() else None
+    return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
 
 
 def require(tid: str) -> Path:
@@ -227,7 +227,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
         "id": tid, "name": tc.name, "license": tc.license, "source": tc.source,
         "parts": pinned, "commit": tc.commit or None, "installed_at": time.time(),
         "license_accepted": bool(tc.proprietary and accept_license),
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
     log(f"{tid}: installed at {dest}")
     return dest
 
@@ -281,7 +281,8 @@ def java_version() -> int:
     if not exe:
         return 0
     try:
-        out = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=20)
+        out = subprocess.run([exe, "-version"], capture_output=True, text=True, timeout=20,
+                             encoding="utf-8", errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return 0
     m = _re.search(r'version "(\d+)', out.stderr + out.stdout)

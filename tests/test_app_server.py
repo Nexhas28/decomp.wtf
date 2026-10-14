@@ -13,7 +13,8 @@ from decompnet.app import agents
 from decompnet.app.engine import RomNetwork
 from decompnet.app.server import build
 
-pytestmark = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or not shutil.which("ld.lld"),
+# the tests that import the demo ROM (the rest, such as the GUI's security, run anywhere)
+needs_demo = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or not shutil.which("ld.lld"),
                                 reason="needs gcc-2.7.2-kmc")
 PORT, SECRET = 6499, "s3cret-for-tests"
 
@@ -47,6 +48,7 @@ def test_gui_needs_the_secret_and_the_right_host(app):
     assert client.post("/api/settings", json={"autopilot": False}, headers={"X-Decomp": "1"}).json()["autopilot"] is False
 
 
+@needs_demo
 def test_import_demo_and_follow_it_live(app):
     client, net, _ = app
     h = {"X-Decomp": "1"}
@@ -91,6 +93,7 @@ def test_parse_agent_output():
     assert agents.parse_line("claude", "not json at all") == [("info", "not json at all")]
 
 
+@needs_demo
 def test_builtin_api_agent_matches_a_function(app, monkeypatch):
     """A scripted OpenAI-compatible model: claim, compile the right C, stop. The tool loop must do the rest."""
     client, net, manager = app
@@ -128,6 +131,7 @@ def test_agent_spend_is_read_from_their_output():
     assert ("usage", json.dumps({"usd": 0.01})) in opencode
 
 
+@needs_demo
 def test_helpers_are_remembered_to_resume(app):
     client, net, manager = app
     slug = net.store.one("SELECT slug FROM projects")["slug"]
