@@ -168,29 +168,76 @@ class DiffResult:
             return 100.0
         return max(0.0, 100.0 * (1 - self.score / self.max_score)) if self.max_score else 0.0
 
-    def render(self, context: int = 2, max_rows: int = 80) -> str:
-        """Compact side-by-side diff showing only mismatches and a little context."""
-        legend = "markers: r=regalloc s=stack-offset i=operand |=different insn <=missing (target only) >=extra (yours only) o=reordered"
-        width = max((len(t) for _, t, _ in self.rows), default=10) + 2
-        width = min(width, 48)
-        show = set()
-        for i, (m, _, _) in enumerate(self.rows):
-            if m != " ":
-                show.update(range(max(0, i - context), min(len(self.rows), i + context + 1)))
-        lines = [f"   {'TARGET':<{width}}| YOURS"]
-        prev = -1
-        for i in sorted(show):
-            if i != prev + 1:
-                lines.append("   ...")
-            m, t, c = self.rows[i]
+    def render(self, context: int = 2, max_rows: int = 60) -> str:
+        """Compact side-by-side diff: a count of each kind of mismatch, then only mismatches with a little context.
+        Long runs of missing or extra instructions are shortened (a half-written function would otherwise spend
+        every row on code that isn't there yet), so each compile costs the agent little context."""
+        return render_rows(self.rows, context, max_rows)
+
+
+MARKERS = {"<": "missing", ">": "extra", "|": "different", "o": "reordered", "r": "regalloc", "s": "stack",
+           "i": "operand"}
+LEGEND = ("markers: r=regalloc s=stack-offset i=operand |=different insn <=missing (target only) >=extra (yours only) "
+          "o=reordered")
+
+
+def render_rows(rows: list[tuple[str, str, str]], context: int = 2, max_rows: int = 60, run: int = 6,
+                legend: str = LEGEND) -> str:
+    counts = Counter(m for m, _, _ in rows if m != " ")
+    summary = ", ".join(f"{n} {MARKERS.get(m, m)}" for m, n in counts.most_common())
+    width = min(max((len(t) for _, t, _ in rows), default=10) + 2, 44)
+    show = set()
+    for i, (m, _, _) in enumerate(rows):
+        if m != " ":
+            show.update(range(max(0, i - context), min(len(rows), i + context + 1)))
+    lines = [f"   {'TARGET':<{width}}| YOURS"]
+    order = sorted(show)
+    prev, k = -1, 0
+    while k < len(order):
+        i = order[k]
+        if i != prev + 1:
+            lines.append("   ...")
+        m = rows[i][0]
+        j = i
+        while m in "<>" and j + 1 < len(rows) and rows[j + 1][0] == m:
+            j += 1
+        if j - i + 1 > run:  # a long run of one kind: its start and end, and how much is in between
+            for a in (i, i + 1):
+                lines.append(f" {m} {rows[a][1][:width - 1]:<{width}}| {rows[a][2]}")
+            lines.append(f"   ... {j - i - 2} more {MARKERS[m]} ({'target only' if m == '<' else 'yours only'}) ...")
+            lines.append(f" {m} {rows[j][1][:width - 1]:<{width}}| {rows[j][2]}")
+            prev = j
+            while k < len(order) and order[k] <= j:
+                k += 1
+        else:
+            m, t, c = rows[i]
             lines.append(f" {m} {t[:width - 1]:<{width}}| {c}")
             prev = i
-            if len(lines) >= max_rows:
-                lines.append(f"   ... ({len(self.rows) - i - 1} more rows truncated)")
-                break
-        if prev != len(self.rows) - 1 and len(lines) < max_rows:
+            k += 1
+        if len(lines) >= max_rows and k < len(order):
+            lines.append(f"   ... ({len(rows) - prev - 1} more rows not shown: fix these first)")
+            break
+    else:
+        if prev != len(rows) - 1:
             lines.append("   ...")
-        return legend + "\n" + "\n".join(lines)
+    return (f"{summary}\n" if summary else "") + legend + "\n" + "\n".join(lines)
+
+
+_SPLAT_PREFIX = re.compile(r"^/\*\s*[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+[0-9A-Fa-f]{8}\s*\*/\s*")
+
+
+def compact_asm(text: str) -> str:
+    """splat's listing without the per-line `/* offset address bytes */` comment and alignment padding: about half
+    the size, so an agent's context holds more of the work. Labels (.L80012345) still carry the addresses."""
+    out = []
+    for line in text.splitlines():
+        m = _SPLAT_PREFIX.match(line)
+        if m:
+            op, _, args = line[m.end():].strip().partition(" ")
+            line = f"  {op} {args.strip()}" if args.strip() else f"  {op}"
+            line = re.sub(r",\s+", ", ", line)
+        out.append(line)
+    return "\n".join(out)
 
 
 def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:

@@ -98,24 +98,11 @@ class FunctionDiff:
     def target_asm(self) -> str:
         return "\n".join(t for _, t, _ in self.rows if t)
 
-    def render(self, context: int = 2, max_rows: int = 90) -> str:
-        legend = "markers: |=different instruction i=operand differs <=missing (target only) >=extra (yours only)"
-        width = min(46, max((len(t) for _, t, _ in self.rows), default=10) + 2)
-        show = set()
-        for i, (m, _, _) in enumerate(self.rows):
-            if m != " ":
-                show.update(range(max(0, i - context), min(len(self.rows), i + context + 1)))
-        lines, prev = [f"   {'TARGET':<{width}}| YOURS"], -1
-        for i in sorted(show):
-            if i != prev + 1:
-                lines.append("   ...")
-            m, t, b = self.rows[i]
-            lines.append(f" {m} {t[:width - 1]:<{width}}| {b}")
-            prev = i
-            if len(lines) >= max_rows:
-                lines.append(f"   ... ({len(self.rows) - i - 1} more rows)")
-                break
-        return legend + "\n" + "\n".join(lines)
+    def render(self, context: int = 2, max_rows: int = 60) -> str:
+        from ..scoring import render_rows
+
+        return render_rows(self.rows, context, max_rows, legend="markers: |=different instruction i=operand differs "
+                           "<=missing (target only) >=extra (yours only)")
 
 
 def _sym(obj: dict | None, name: str) -> dict | None:

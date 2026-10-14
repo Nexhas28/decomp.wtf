@@ -565,6 +565,12 @@ class RomNetwork(Network):
         if alike:
             lines += ["", "### Looks like (already matched; read with get_function)",
                       ", ".join(f"{r['name']} ({sim * 100:.0f}% similar)" for r, sim in alike)]
+            r, sim = alike[0]
+            src = self.store.one("SELECT matched_source FROM functions WHERE project_id=? AND name=?", proj["id"], r["name"])
+            if sim >= 0.8 and src and src["matched_source"] and len(src["matched_source"]) <= 3000:
+                # nearly the same code: its matching C is the best starting point there is (saves a tool call)
+                lines += [f"Matching C of {r['name']} ({sim * 100:.0f}% similar): start from this",
+                          "```c", src["matched_source"].strip(), "```"]
         lines += ["", "Names: use the names shown here (or rename_symbol to give an address a real name). "
                       "Your code is linked at this function's address and must reproduce the ROM bytes exactly."]
         return lines
@@ -1144,7 +1150,7 @@ class RomNetwork(Network):
             "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
-                         "supported": tc.supported},
+                         "supported": tc.supported, "wsl": tc.via_wsl},
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             "context_version": self._context(proj["id"])["version"],

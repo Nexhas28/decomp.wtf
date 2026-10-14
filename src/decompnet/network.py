@@ -314,7 +314,7 @@ class Network:
                       "each function, never its code. Disassemble your own lawful copy with "
                       f"`decompnet local asm <your-object.o> {fn['name']}` and diff locally with `decompnet local diff`."]
         else:
-            lines += ["", "### Target assembly", "```asm", self._asm_text(fn, proj), "```"]
+            lines += ["", "### Target assembly", "```asm", scoring.compact_asm(self._asm_text(fn, proj)), "```"]
         lines += self._extra_brief(fn, proj)
         if fn["status"] != "matched":
             if fn["best_source"]:
