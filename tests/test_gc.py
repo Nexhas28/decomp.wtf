@@ -6,6 +6,8 @@ agents' C must be judged by the project's own build and objdiff. CodeWarrior is 
 where the `mwcc` toolchain was installed with its license accepted.
 """
 
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -65,3 +67,57 @@ def test_agents_match_functions(gc):
     net.release(agent, f"fn_{syms['player_take_damage']:08X}", "", slug)
     root = Path(net.project_row(slug)["root"])
     assert "Match fn_" in subprocess.run(["git", "log", "--oneline"], cwd=root, capture_output=True, text=True).stdout
+
+
+def test_a_file_is_split_and_its_match_moves_along(gc):
+    """split_file: the matched function and what follows it go to a new file; the game still builds identically
+    and the match still counts (it runs after test_agents_match_functions)."""
+    net, slug = gc
+    syms = {s.name: s["st_value"] for s in ELFFile(open(ELF, "rb")).get_section_by_name(".symtab").iter_symbols()}
+    fp = net.forks.get(slug)[1]
+    at = syms["clamp_s32"]
+    name = f"fn_{at:08X}"
+    assert net._function(name, slug)["status"] == "matched"
+    old = net.forks.file_status(slug, name).splitlines()[0][3:]
+    agent, _ = net.local_agent("gc-splitter")
+    out = net.forks.split_file(agent, slug, old, f"0x{at:X}")
+    assert out.startswith("✅"), out
+    new = f"src/auto/text_{at:08X}.c"
+    assert (fp.root / new).exists() and f"{name}(" in (fp.root / new).read_text()
+    assert f"{name}(" not in (fp.root / old).read_text()
+    assert net._function(name, slug)["status"] == "matched"
+    assert net.forks.file_status(slug, name).startswith(f"## {new}")
+    assert fp.verify()[0]
+    assert "Split text_" in fp.git("log", "--format=%s", "-1")[1]
+
+
+def test_code_without_a_file_gets_one(gc):
+    """start_files: a stretch of code no file covers (here: a split file taken out again) gets a source file, the
+    game still builds identically, and its functions can be worked on again."""
+    net, slug = gc
+    fp = net.forks.get(slug)[1]
+    proj = net.project_row(slug)
+    cfg = json.loads(proj["config"])
+    asm_only = net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='nosource'", proj["id"])["n"]
+    from decompnet.forks import dtksplits
+
+    mod = dtksplits.modules(fp.root, cfg["version"])["main"]
+    sp = dtksplits.Splits.parse(mod.splits.read_text())
+    gone = sp.files.pop()  # the last file: its code becomes an auto unit
+    mod.splits.write_text(sp.render())
+    conf = fp.root / "configure.py"
+    conf.write_text(re.sub(rf'\s*Object\(NonMatching, "{re.escape(gone.name)}"\),', "", conf.read_text()))
+    (fp.root / "src" / gone.name).unlink()
+    assert fp.verify()[0]
+    net.forks.check(slug, log=lambda *_: None)
+    pid = proj["id"]
+    assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='nosource'", pid)["n"] > asm_only
+    total = net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=?", pid)["n"]
+    plan = net.forks.code_without_files(slug, fp.report())
+    assert [x[1] for x in plan["split"]] == [gone.name], plan
+    res = net.forks.start_files(slug, log=lambda *_: None)
+    assert res["split"] == [gone.name] and res["functions"] > 0, res
+    assert (fp.root / "src" / gone.name).exists() and fp.verify()[0]
+    # (the start-up code in .init stays assembly: it's hand-written)
+    assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=? AND status='nosource'", pid)["n"] == asm_only
+    assert net.store.one("SELECT COUNT(*) n FROM functions WHERE project_id=?", pid)["n"] == total

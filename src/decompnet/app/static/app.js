@@ -622,6 +622,24 @@ function renderStats(ov) {
 
 function renderCompilerNotice(ov) {
   const n = $("compilerNotice");
+  const unc = ov.kind === "fork" && ov.ready ? ov.uncovered : null;
+  if (unc && unc.functions) {
+    n.hidden = false;
+    n.className = "notice";
+    n.innerHTML = `<span><b>${unc.functions.toLocaleString()} functions</b> are in code no source file covers yet, so agents can't decompile them. decomp.wtf can give each stretch of code a file (checked against the game's checksum, committed to git).</span><span class="grow"></span><button class="primary small-btn" id="startFiles" type="button"${S.startingFiles ? " disabled" : ""}>${S.startingFiles ? "Splitting the game…" : "Give them source files"}</button>`;
+    $("startFiles").onclick = async () => {
+      S.startingFiles = true;
+      renderCompilerNotice(ov);
+      try {
+        const { job } = await api("/api/fork/start-files", { method: "POST", body: { slug: S.slug } });
+        const res = await followJob(job);
+        toast(`${(res && res.functions || 0).toLocaleString()} more functions can be decompiled now.`, "match");
+        await refreshMap();
+      } catch (e) { toast(esc(e.message), "err"); }
+      S.startingFiles = false;
+    };
+    return;
+  }
   if (ov.kind === "fork" || ov.compiler.installed) { n.hidden = true; return; }
   n.hidden = false;
   if (!ov.compiler.supported) {
@@ -1400,6 +1418,7 @@ function eventHtml(ev) {
     case "context": return `${who} updated ${ev.agent ? "shared code" : "context"}: ${esc(d)}`;
     case "rename": return `${who} renamed ${esc(d)}`;
     case "split": return `${who} split ${esc(d)}`;
+    case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
     case "collab": return esc(d);

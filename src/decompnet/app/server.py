@@ -541,6 +541,18 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return fail(e)
         return JSONResponse({"job": jobs.start("fork-check", lambda log: net.forks.check(slug, log=log))})
 
+    @mcp.custom_route("/api/fork/start-files", methods=["POST"])
+    async def api_fork_start_files(request: Request) -> Response:
+        """Give the code no source file covers source files (dtk-template projects), verified by the game's checksum."""
+        if (bad := guard(request, write=True)):
+            return bad
+        slug = str((await body(request)).get("slug", ""))
+        try:
+            fork_of(slug)
+        except NetworkError as e:
+            return fail(e)
+        return JSONResponse({"job": jobs.start("fork-start-files", lambda log: net.forks.start_files(slug, log=log))})
+
     mcp.custom_route("/api/fork/needs", methods=["GET"])(with_project(lambda s, r, d: net.forks.needs(fork_of(s)["slug"])))
 
     # ------------------------------------------------------------------ installs, agents, settings

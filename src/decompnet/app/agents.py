@@ -650,6 +650,10 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                                                        new=st("replacement", True), message=st("why", True))),
         "file_status": ("How far a source file (or a function's file) is from being linked: functions left, its data "
                         "next to the original's, why the last link failed.", s(path=st("file or function", True))),
+        "split_file": ("Divide a source file at a function: it and the rest of the file's code (and data from the given "
+                       "offsets) go to a new file. Kept only if the game still builds identically.",
+                       s(path=st("file", True), at=st("function name or .text offset", True),
+                         new_name=st("new file path (optional)"), data=st("e.g. .rodata:0x88 .data:0x28 (optional)"))),
     }
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "

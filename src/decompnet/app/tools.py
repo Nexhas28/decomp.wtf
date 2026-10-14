@@ -164,10 +164,12 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "edit_file": lambda net, agent, slug, path, old, new, message:
         net.forks.edit_file(agent, _fork(net, slug, "edit_file"), path, old, new, message),
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
+    "split_file": lambda net, agent, slug, path, at, new_name="", data="":
+        net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "read_data"}
-FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status"}
+FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
 def tool_names(fork: bool) -> list[str]:
@@ -330,6 +332,16 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         functions still differ, its data next to the original's (with what to fix), why the last link failed.
         A file is linked (the game built from its C) once every function and all its data match."""
         return await run(ctx, "file_status", path=path)
+
+    @mcp.tool()
+    async def split_file(ctx: Context, path: str, at: str, new_name: str = "", data: str = "") -> str:
+        """Forks only (GameCube/Wii): divide a source file in two where the game's original files divided: the
+        function `at` (name or .text offset) and every one after it in the file go to a new file `new_name`
+        (default: text_<offset> next to it), with their C. `data` moves the end of each data section too
+        (".rodata:0x88 .data:0x28": where the new file's part starts; file_status shows the ranges). Kept only if
+        the game still builds byte for byte and every match still matches. A file links only when its code and
+        data are exactly one original file's."""
+        return await run(ctx, "split_file", path=path, at=at, new_name=new_name, data=data)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:

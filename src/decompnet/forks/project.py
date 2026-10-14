@@ -61,6 +61,7 @@ class Unit:
     scratch: dict | None
     options: dict | None = None  # the unit's own objdiff options
     mappings: dict | None = None  # objdiff symbol mappings (target name -> base name)
+    auto: bool = False  # split off by dtk because no file covers it (auto_00_80003100_text)
 
 
 @functools.lru_cache(maxsize=64)
@@ -387,7 +388,7 @@ class ForkProject:
             out.append(Unit(u.get("name") or u.get("path") or "?", self.root / t if t else None,
                             self.root / b if b else None, meta.get("source_path"),
                             bool(meta.get("complete", u.get("complete", False))), u.get("scratch"),
-                            u.get("options") or None, u.get("symbol_mappings") or None))
+                            u.get("options") or None, u.get("symbol_mappings") or None, bool(meta.get("auto_generated"))))
         return out
 
     def units(self) -> list[Unit]:
@@ -472,6 +473,14 @@ class ForkProject:
             return self._states_in((self.root / "configure.py").read_text(errors="replace"))
         except OSError:
             return {}
+
+    def src_dir(self) -> str:
+        """Where configure.py's source paths start (dtk-template: config.src_dir, "src")."""
+        try:
+            m = _SRC_DIR.search((self.root / "configure.py").read_text(errors="replace"))
+        except OSError:
+            m = None
+        return (m.group(1) if m else "src").strip("/")
 
     @staticmethod
     def _states_in(text: str) -> dict[str, tuple[str, int, int]]:
