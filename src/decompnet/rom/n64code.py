@@ -124,7 +124,7 @@ def find_segments(rom: bytes, taken: list[tuple[int, int, int]]) -> list[tuple[i
 
 
 def _place(rom: bytes, lo: int, hi: int, floor: int, calls: list[int],
-           known: list[tuple[int, int]] = ()) -> tuple[int, int, int, int] | None:
+           known: list[tuple[int, int]] = (), regions=REGIONS) -> tuple[int, int, int, int] | None:
     """(start, end, vram, calls that landed on a function start) for one stretch of code, or None."""
     words = struct.unpack(f">{(hi - lo) // 4}I", rom[lo:hi])
     frames = [i * 4 for i, w in enumerate(words) if _frame(w)]
@@ -132,7 +132,7 @@ def _place(rom: bytes, lo: int, hi: int, floor: int, calls: list[int],
     if len(frames) < 8 or len(returns) < 8:
         return None
     best: tuple[int, int, set[int]] | None = None  # (hits, base, the calls' targets)
-    for lo_addr, hi_addr in REGIONS:
+    for lo_addr, hi_addr in regions:
         own = set(_jal_targets(words, lo_addr))
         votes: collections.Counter = collections.Counter()
         for t in own:

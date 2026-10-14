@@ -342,8 +342,39 @@ def _add_code_segments(config: Path, workdir: Path, image: str, log=print) -> st
     return image
 
 
-def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResult:
-    """Run splat on workdir/rom_name and return every function and data symbol it found."""
+def _add_overlays(config: Path, workdir: Path, image: str, found: list[tuple[str, bytes, int, int]], log=print) -> str:
+    """PlayStation overlays (overlays.py): each appended to a working copy of the program's image, as a code segment
+    of its own at the address it's loaded at. Returns the image splat reads."""
+    import hashlib
+
+    import yaml
+
+    data = bytearray((workdir / image).read_bytes())
+    cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
+    segs = [s for s in cfg["segments"] if not isinstance(s, list)]
+    for name, code, vram, code_at in found:
+        data += bytes(-len(data) % 0x10 + 0x10)
+        start = len(data)
+        data += code
+        subs = [[start, "data", f"ovl_{name}_header"]] if code_at else []  # what comes before its code: a header
+        segs.append({"name": f"ovl_{name}", "type": "code", "start": start, "vram": vram,
+                     "subsegments": subs + [[start + code_at, "c", f"ovl_{name}"]]})
+    data += bytes(-len(data) % 0x10)
+    segs.append([len(data)])
+    out = f"{Path(image).stem}.overlays{Path(image).suffix}"
+    (workdir / out).write_bytes(data)
+    cfg["segments"] = segs
+    cfg.setdefault("options", {})["target_path"] = out
+    cfg["sha1"] = hashlib.sha1(bytes(data)).hexdigest()
+    config.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=None), encoding="utf-8")
+    log(f"added {len(found)} overlay{'s' if len(found) != 1 else ''} ({sum(len(o[1]) for o in found) // 1024} KiB of code)")
+    return out
+
+
+def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print,
+              overlays: list[tuple[str, bytes, int, int]] | None = None) -> SplitResult:
+    """Run splat on workdir/rom_name and return every function and data symbol it found. `overlays`: code from
+    other files of a PlayStation disc, each with the address it's loaded at."""
     import yaml
 
     log("finding the code segments")
@@ -364,6 +395,8 @@ def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResul
     big_endian = platform == "n64"
     if platform == "n64":
         image = _add_code_segments(config, workdir, image, log)
+    elif overlays:
+        image = _add_overlays(config, workdir, image, overlays, log)
     log("disassembling every function")
     out += "\n" + _splat(["split", config.name], workdir)
 
@@ -376,13 +409,19 @@ def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResul
         fn = parse_function(path, path.parent.parent.name, big_endian)
         if fn is not None:
             functions.append(fn)
-    seen, unique = set(), []
+    seen: dict[str, int] = {}  # name -> where it is in the image
+    unique = []
     rom = (workdir / image).read_bytes()
     for fn in sorted(functions, key=lambda f: f.vram):
-        if fn.name not in seen:
-            seen.add(fn.name)
-            _complete_delay_slot(fn, rom, big_endian)
-            unique.append(fn)
+        if fn.name in seen:  # overlays loaded at the same address: the same name in another overlay
+            if seen[fn.name] == fn.rom:
+                continue
+            fn.name = f"{fn.segment}_{fn.name}"
+            if fn.name in seen:
+                continue
+        seen[fn.name] = fn.rom
+        _complete_delay_slot(fn, rom, big_endian)
+        unique.append(fn)
     data = []
     for path in sorted((workdir / "asm" / "data").glob("**/*.s")):
         data += parse_data(path)

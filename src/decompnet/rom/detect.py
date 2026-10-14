@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+import struct
 from pathlib import Path
 
-from . import chd, gba, n64, ps2, psx
+from . import chd, gba, n64, overlays, ps2, psx
 from .n64 import RomError
 
 PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2", "gba": "Game Boy Advance"}
@@ -20,6 +21,7 @@ class Picked:
     filename: str  # name to store it under in the project folder
     info: dict
     big_endian: bool
+    overlays: list = field(default_factory=list)  # (name, bytes, load address): code in other files on the disc
 
 
 def _program(data: bytes, name: str = "") -> Picked | None:
@@ -71,4 +73,13 @@ def _from_disc(src) -> Picked:
     picked = _program(raw, boot)
     if picked is None:
         raise RomError(f"the disc's program {boot} isn't a PlayStation executable this app can read")
+    if picked.platform == "psx":
+        main = (picked.info["load"], picked.info["load"] + picked.info["size"] - 0x800)
+    else:
+        segs = overlays._elf_segments(raw) or []
+        main = (min((a for a, _ in segs), default=0), max((a + len(d) for a, d in segs), default=0))
+    try:
+        picked.overlays = overlays.find(psx._Disc(src), boot, picked.platform, main)
+    except (RomError, struct.error, IndexError):  # an odd disc: the program alone still works
+        picked.overlays = []
     return picked
