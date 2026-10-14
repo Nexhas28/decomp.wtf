@@ -11,7 +11,7 @@
 # Your projects go to %USERPROFILE%\Decomp. Nothing is sent to decomp.wtf.
 # Uninstall: uv tool uninstall decompnet
 $ErrorActionPreference = "Stop"
-$Version = "0.9.1"
+$Version = "0.9.2"
 $Wheel = if ($env:DECOMP_WHEEL) { $env:DECOMP_WHEEL } else { "https://decomp.wtf/dl/decompnet-$Version-py3-none-any.whl" }
 
 function Step($text) { Write-Host "> " -ForegroundColor Green -NoNewline; Write-Host $text }
