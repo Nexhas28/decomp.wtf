@@ -49,6 +49,9 @@ it doesn't count. There are two ways in:
   PlayStation 1 and 2, N64, GBA, DS, Switch, PC, Xbox 360 and more, add your own copy of its game, and your agents
   carry on where the community left off, in the project's real source code.
 
+On GameCube and Wii the goal is what real decomps aim for: every file **linked**, so the game is built from its C and
+still comes out byte for byte. That's the starting point for a native PC port.
+
 Everything runs on your computer. No account, no telemetry, nothing uploaded.
 
 ## Install
@@ -161,11 +164,30 @@ decomp.wtf plugs your agents into them as they are:
    file, matched look-alikes and a machine draft. Its code goes into the real source file, the project's build
    compiles it with the project's compilers, and [objdiff](https://github.com/encounter/objdiff) judges it.
 4. **Every match is a git commit** on `decomp-wtf`, ready for you to review and, if the project welcomes it, send
-   upstream.
+   upstream. Nothing is sent anywhere by itself.
 
-Guard rails, learned from people who ran agents on decomps before: agents can only write C/C++ sources and
-headers (never targets, assembly, configs or build scripts), inline assembly is refused, and a change that
-breaks any function that already matched is undone.
+Guard rails, learned from people who ran agents on decomps before: agents write only C/C++ sources and headers,
+never targets, assembly or build scripts, and inline assembly is refused. A change that breaks any function that
+already matched is undone. The project's file layout (which code belongs to which source file) and which files are
+linked are changed by decomp.wtf itself, never typed by an agent, and kept only when the game still builds byte for
+byte.
+
+### From matched to linked
+
+A function at 100% is matched. A file is **linked** when all of it, functions *and* data, matches: the project then
+builds the game from that C instead of from the original's code, and checks the whole game against its checksum.
+That's decomp.dev's "linked" measure, and it's what a decomp needs before the C can become a port. For
+GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps between:
+
+- **Every function gets a source file.** Most projects still have code no file covers: in Mario Party 6, 17,923
+  functions. **Give them source files** gives each stretch of that code a file of its own (starting agents does it too),
+  and `split_file` divides one where the game's original files divided.
+- **Files closest to done come first.** When a match finishes a file's functions, the agent is shown the file's data
+  next to the original's, with what to fix (a table that should be `const`, a static that belongs inside a
+  function). `file_status` shows it any time.
+- **Finished files link themselves.** decomp.wtf marks the file Matching, builds the game and runs the project's
+  checksum check, and keeps the change only if it passes. A linked file can't be changed in a way that alters the
+  game. The app shows **% linked** next to % matched.
 
 ## Features
 
@@ -180,6 +202,8 @@ breaks any function that already matched is undone.
 | **Shared knowledge** | Structs and prototypes go into one header, accepted only if every match so far still matches. |
 | **Safe renames** | Matching works by address, so naming functions and data can never break a match. |
 | **Public decomps** | Fork any of 245 community projects from decomp.dev and keep going with your agents, judged by objdiff. |
+| **Linked, like real decomps** | GameCube and Wii files link into the game as soon as all of their code and data match, checked against the game's checksum. |
+| **A file for every function** | Code no source file covers gets one, and agents divide files where the originals did, verified the same way. |
 | **Look-alikes** | `find_similar` spots copy-pasted and inlined code across the whole game and starts agents from what already matches. |
 | **Drafts** | m2c for MIPS, PowerPC and ARM; optional Ghidra for x86, AArch64 and everything else. |
 | **Agent toolkit** | A data inspector, a call graph, splitting merged functions, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
@@ -201,6 +225,8 @@ breaks any function that already matched is undone.
 
 Agents only get decomp.wtf's tools: no shell, and no access to your files beyond a fork's own source tree. The app installs missing agents for you
 and tells you how to sign in. You pay your own provider; in our tests a small function cost Claude Code about 8 cents.
+Big functions take many more attempts, and cheaper models often get stuck on them on register allocation, so expect
+the easy part of a game to go fast and the rest to take real time.
 
 ## Decompile together
 
@@ -255,7 +281,7 @@ or judged by objdiff inside the project's own build (GameCube, Wii, DS).
 **The base for ports and mods.** *Export project* writes a normal decomp tree (matched functions as C, the rest as
 assembly from splat or luvdis, a linker script and `build.py`) and proves it rebuilds your game byte for byte.
 GameCube and Wii projects are dtk-template projects and DS projects are ds-decomp projects; both rebuild the game on
-every build. Game code and data stay out of git: they're regenerated from your own copy, so the tree can be shared
+every build, and GameCube and Wii files are linked as they're finished. Game code and data stay out of git: they're regenerated from your own copy, so the tree can be shared
 and continued with any tool or agent.
 
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
@@ -279,7 +305,7 @@ uv run pytest
 | :-- | :-- |
 | `src/decompnet/rom/` | ROM reading (`n64.py`, `psx.py`), splitting with splat (`split.py`), the symbol table and the matcher (`match.py`). |
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
-| `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts. |
+| `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it: every function of the original source matches. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
@@ -308,6 +334,11 @@ decomp.wtf contains no game code and doesn't provide ROMs. Use games you own, do
 protection, and don't publish decompiled code of games whose rights you don't hold. When you continue a public
 decomp, follow that project's license and contribution rules; forking runs its build scripts on your computer, so
 fork projects you trust.
+
+Many community decomps don't accept AI-written contributions, and the ones that do expect a person to stand behind
+every line. decomp.wtf never sends anything upstream: your agents' work stays on your local branch. Before you open a
+pull request, read the project's CONTRIBUTING (or ask its maintainers), review the code yourself, and say how it
+was made.
 
 ## License
 
