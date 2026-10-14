@@ -118,6 +118,27 @@ def segments_from_config(path: Path) -> list[Segment]:
     return out
 
 
+def code_ranges(path: Path) -> list[tuple[int, int, int]]:
+    """(rom_start, rom_end, vram) of what splat's config disassembles as code: the code subsegments, not the data
+    after them (create_config can file a whole segment's tail as data: GoldenEye's game code is in there)."""
+    import yaml
+
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    out = []
+    for seg in segments_from_config(path):
+        raw = next((s for s in cfg.get("segments", []) if isinstance(s, dict) and s.get("start") == seg.rom_start
+                    and s.get("type") == "code"), None)
+        subs = [s for s in (raw or {}).get("subsegments") or [] if isinstance(s, list) and s]
+        if not subs:
+            out.append((seg.rom_start, seg.rom_end, seg.vram))
+            continue
+        for i, sub in enumerate(subs):
+            if len(sub) > 1 and sub[1] in ("c", "asm", "hasm"):
+                end = next((int(t[0]) for t in subs[i + 1:]), seg.rom_end)
+                out.append((int(sub[0]), end, seg.vram + int(sub[0]) - seg.rom_start))
+    return out
+
+
 def named_symbols(workdir: Path) -> dict[str, int]:
     out = {}
     path = workdir / "symbol_addrs.txt"
@@ -268,35 +289,57 @@ def _gp_from_entry(image: bytes, entry: int, segments: list[Segment]) -> int:
     return 0
 
 
-def _add_code_segments(config: Path, rom: bytes, log=print) -> int:
+def _add_code_segments(config: Path, workdir: Path, image: str, log=print) -> str:
     """An N64 game's code outside the main segment (n64code.py), added to splat's config as code segments of their
-    own. Returns how many."""
+    own. Compressed code (Rare's, Yaz0) is unpacked first and appended to a working copy of the ROM, which splat then
+    reads instead (and an export rebuilds). Returns the image splat reads."""
+    import hashlib
+
     import yaml
 
-    from .n64code import find_segments
+    from .n64code import find_segments, unpack_code
 
-    taken = [(s.rom_start, s.rom_end, s.vram) for s in segments_from_config(config)]
+    original = image
+    rom = (workdir / image).read_bytes()
+    packed = unpack_code(rom)
+    if packed:
+        work = bytearray(rom)
+        for _, data in packed:  # each after a gap, so pieces of different blocks never run together
+            work += bytes(-len(work) % 0x10 + 0x2000)
+            work += data
+        work += bytes(-len(work) % 0x10)
+        image = f"{Path(image).stem}.unpacked{Path(image).suffix}"
+        (workdir / image).write_bytes(work)
+        rom = bytes(work)
+        kib = sum(len(d) for _, d in packed) // 1024
+        log(f"unpacked {len(packed)} compressed code block{'s' if len(packed) != 1 else ''} ({kib} KiB)")
+    taken = code_ranges(config)
     found = find_segments(rom, taken) if taken else []
     if not found:
-        return 0
+        return original
     cfg = yaml.safe_load(config.read_text(encoding="utf-8"))
+    if packed:
+        cfg.setdefault("options", {})["target_path"] = image
+        cfg["sha1"] = hashlib.sha1(rom).hexdigest()
 
     def start_of(seg):
         return seg[0] if isinstance(seg, list) else seg.get("start")
 
     starts = {st for st, _, _ in found}
-    segs = [s for s in cfg["segments"] if not (isinstance(s, dict) and s.get("type") == "bin" and start_of(s) in starts)]
+    segs = [s for s in cfg["segments"] if not (isinstance(s, dict) and s.get("type") == "bin" and start_of(s) in starts)
+            and not isinstance(s, list)]  # the end marker comes back at the image's end
     for st, en, vram in found:
         name = f"code_{vram:08X}"
         segs.append({"name": name, "type": "code", "start": st, "vram": vram, "subsegments": [[st, "c", name]]})
-        if en < len(rom) and not any(start_of(s) == en for s in segs):
+        if en < len(rom) and not any(start_of(s) == en for s in segs if not isinstance(s, list)):
             segs.append({"type": "bin", "start": en})
     segs.sort(key=lambda s: start_of(s) if start_of(s) is not None else -1)
+    segs.append([len(rom)])
     cfg["segments"] = segs
     config.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=None), encoding="utf-8")
     kib = sum(en - st for st, en, _ in found) // 1024
     log(f"found {len(found)} more code segment{'s' if len(found) != 1 else ''} the game loads later ({kib} KiB)")
-    return len(found)
+    return image
 
 
 def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResult:
@@ -320,7 +363,7 @@ def split_rom(workdir: Path, rom_name: str = "rom.z64", log=print) -> SplitResul
     compiler, platform, gp = _patch_config(config)
     big_endian = platform == "n64"
     if platform == "n64":
-        _add_code_segments(config, (workdir / image).read_bytes(), log)
+        image = _add_code_segments(config, workdir, image, log)
     log("disassembling every function")
     out += "\n" + _splat(["split", config.name], workdir)
 

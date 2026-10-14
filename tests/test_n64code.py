@@ -46,3 +46,32 @@ def test_code_at_an_address_already_taken_is_left_out():
 def test_nothing_but_data_finds_nothing():
     rom = bytes(range(256)) * 0x2000
     assert find_segments(rom, [(0x1000, 0x2000, 0x80000400)]) == []
+
+
+def test_packed_code_at_a_tlb_address_is_unpacked_and_placed():
+    """Perfect Dark keeps its code packed (0x1173, the unpacked size, a deflate stream) and runs it at 0x7F000000
+    through the TLB: unpacked, appended, and placed at its address."""
+    import zlib
+
+    from decompnet.rom.n64code import unpack_code
+
+    code = _code(0x7F000000, 160)  # its calls are 0x7F... addresses: a jal keeps the top four bits
+    packer = zlib.compressobj(9, zlib.DEFLATED, -15)
+    packed = b"\x11\x73" + len(code).to_bytes(3, "big") + packer.compress(code) + packer.flush()
+    rom = bytearray(0x100000)
+    main = _code(0x80000400, 40)
+    rom[0x1000:0x1000 + len(main)] = main
+    rom[0x40000:0x40000 + len(packed)] = packed
+    blocks = unpack_code(bytes(rom))
+    assert blocks == [(0x40000, code)]
+    image = bytes(rom) + bytes(0x2000) + code
+    found = find_segments(image, [(0x1000, 0x1000 + len(main), 0x80000400)])
+    assert (len(rom) + 0x2000, len(image), 0x7F000000) in found
+
+
+def test_yaz0():
+    from decompnet.rom.n64code import yaz0
+
+    # "abcabcabc": three literals, then a back-reference 3 back, 6 long (0x40 >> 4 = 4, + 2)
+    data = b"Yaz0" + (9).to_bytes(4, "big") + bytes(8) + bytes([0b11100000]) + b"abc" + bytes([0x40, 0x02])
+    assert yaz0(data) == b"abcabcabc"
