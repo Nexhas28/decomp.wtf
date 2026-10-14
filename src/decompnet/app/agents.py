@@ -44,7 +44,7 @@ KINDS = {
     "claude": Kind("claude", "Claude Code", "claude", "Anthropic",
                    {"unix": "curl -fsSL https://claude.ai/install.sh | bash",
                     "windows": "irm https://claude.ai/install.ps1 | iex"},
-                   "Open a terminal and run `claude` once to sign in.", "https://docs.claude.com/en/docs/claude-code"),
+                   "Open a terminal, run `claude` and sign in with /login.", "https://docs.claude.com/en/docs/claude-code"),
     "codex": Kind("codex", "Codex CLI", "codex", "OpenAI",
                   {"unix": "npm install -g @openai/codex", "windows": "npm install -g @openai/codex"},
                   "Run `codex login` once in a terminal.", "https://github.com/openai/codex"),
@@ -66,6 +66,10 @@ API_PRESETS = {
     "openai": {"name": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5", "key": True},
     "custom": {"name": "Custom", "base_url": "", "model": "", "key": True},
 }
+
+# what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
+_SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
+                         r"auth(?:entication)? method", re.I)
 
 _versions: dict[str, tuple[float, str | None]] = {}
 _models: dict[str, tuple[float, list[dict]]] = {}
@@ -326,6 +330,7 @@ class Session:
     proc: subprocess.Popen | None = None
     usd: float = 0.0  # what the agent's provider charged, as the agent reports it
     tokens: int = 0
+    signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
 
     def push(self, kind: str, text: str) -> None:
         self.seq += 1
@@ -501,6 +506,9 @@ class Manager:
                 ok = False
             if s.stop.is_set():
                 break
+            if s.signed_out:
+                s.state = "error"
+                break
             failures = 0 if ok else failures + 1
             if failures >= 3:
                 s.state = "error"
@@ -625,18 +633,25 @@ class Manager:
                     errors.append(line.strip())
         threading.Thread(target=drain_err, daemon=True).start()
         saw_tool = False
+        said: collections.deque = collections.deque(maxlen=20)
         for line in proc.stdout:
             for kind, text in parse_line(s.kind, line):
                 if kind == "usage":
                     self._account(s, json.loads(text))
                     continue
                 saw_tool |= kind == "tool"
+                said.append(text)
                 s.push(kind, text)
             if s.stop.is_set():
                 _terminate(proc)
                 break
         code = proc.wait()
         s.proc = None
+        if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
+            s.signed_out = True
+            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {KINDS[s.kind].signin}"
+            s.push("error", s.error)
+            return False
         if code != 0 and not s.stop.is_set():
             tail = " · ".join(list(errors)[-3:]) or f"exited with code {code}"
             s.error = tail[:300]

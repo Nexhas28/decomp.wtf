@@ -1,7 +1,9 @@
 """The local app: GUI API security, demo import, live feed, agent output parsing, the built-in API agent."""
 
 import json
+import os
 import shutil
+import sys
 import time
 
 import httpx
@@ -120,6 +122,16 @@ def test_builtin_api_agent_matches_a_function(app, monkeypatch):
     assert manager._run_api(s, agent) is True
     assert net._function("func_800007F4", slug)["status"] == "matched"
     assert "byte-identical" in seen[-1]["messages"][-1]["content"]
+
+
+def test_an_agent_nobody_signed_in_to_stops_and_says_so(tmp_path, monkeypatch):
+    """Claude Code without a sign-in exits at once: say that (not "exited with code 1") and don't keep retrying."""
+    manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
+    code = "print('Not logged in \\u00b7 Please run /login'); raise SystemExit(1)"
+    monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ)))
+    s = agents.Session("claude-1", "claude", "Claude Code #1", "game", "claude-1", {})
+    assert manager._run_cli(s, "token", tmp_path) is False
+    assert s.signed_out and "isn't signed in" in s.error and "/login" in s.error
 
 
 def test_agent_spend_is_read_from_their_output():
