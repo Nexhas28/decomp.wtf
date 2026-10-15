@@ -8,6 +8,7 @@ and the guards reject every change next to it.
 """
 
 import json
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,7 +93,7 @@ def fork(tmp_path):
     (repo / "expected" / "target.s").write_text(TARGET)
     _run(repo, str(tc / "as"), "-mips3", "-EB", "-o", "expected/lit.o", "expected/target.s")
     (repo / "build.ninja").write_text(
-        f"rule cc\n  command = {tc}/gcc -B{tc}/ -c -G0 -mips3 -mgp32 -mfp32 -O2 -Iinclude $in -o $out\n"
+        f"rule cc\n  command = {shlex.quote(str(tc))}/gcc -B{shlex.quote(str(tc))}/ -c -G0 -mips3 -mgp32 -mfp32 -O2 -Iinclude $in -o $out\n"
         "build build/lit.o: cc src/lit.c | include/lit.h\n")
     (repo / "objdiff.json").write_text(json.dumps({"custom_make": "ninja", "units": [
         {"name": "lit", "target_path": "expected/lit.o", "base_path": "build/lit.o",
