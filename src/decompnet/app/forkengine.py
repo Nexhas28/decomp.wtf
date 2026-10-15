@@ -147,6 +147,9 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
 _ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
+# a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,
+# #include "src/Runtime.PPCEABI.H/runtime.c" (its asm helpers, which every module links a copy of)
+_SOURCE_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+\.(?:c|cc|cp|cpp))"', re.M)
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 
 
@@ -1264,12 +1267,27 @@ class ForkEngine:
         return "\n".join(lines)
 
     def _current_source(self, fp: ForkProject, fn) -> str | None:
+        """fn's definition as its file has it now, also when the file gets it by including another source file."""
         unit = fp.unit(fn["unit"])
         if not unit.source or not (fp.root / unit.source).exists():
             return None
-        text = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
-        _, span = self._find(text, self._names(self._meta(fn), fn))
-        return text[span[0]:span[1]] if span else None
+        names = self._names(self._meta(fn), fn)
+        todo, seen = [fp.root / unit.source], set()
+        while todo and len(seen) < 6:
+            path = todo.pop(0)
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                text = path.read_text(errors="replace", encoding="utf-8")
+            except OSError:
+                continue
+            _, span = self._find(text, names)
+            if span:
+                return text[span[0]:span[1]]
+            for inc in _SOURCE_INCLUDE.findall(text):
+                todo += [p for p in (fp.root / inc, fp.root / "src" / inc, path.parent / inc) if p.is_file()][:1]
+        return None
 
     def twin_source(self, proj, a, b, names: dict[str, str], includes: bool = False) -> str | None:
         """a's matched definition, from its source file, written for its twin b: names swapped (see app/twins.py),
@@ -1314,6 +1332,65 @@ class ForkEngine:
         if self._find(code, self._names(self._meta(b), b))[1] is None:
             return None  # a's definition isn't written under its symbol (a macro, another spelling): can't rename it
         return "\n".join(head) + ("\n" if head else "") + code
+
+    def c_linkage(self, proj, a, b, source: str) -> str | None:
+        """a's code made into b's, given C linkage (`extern "C"` on its definition and prototypes) when it goes
+        from a C file into a C++ one: there its names would be mangled (fn_1_BB34 becomes fn_1_BB34__Fis), so
+        the build has no fn_1_BB34 at all (0%). None when that isn't the case."""
+        fp = ForkProject(Path(proj["root"]))
+        src_a, src_b = fp.unit(a["unit"]).source or "", fp.unit(b["unit"]).source or ""
+        cpp = (".cpp", ".cp", ".cc", ".cxx")
+        sym = self._meta(b).get("symbol") or b["name"]
+        if not src_b.endswith(cpp) or src_a.endswith(cpp) or "__" in sym.strip("_"):
+            return None
+        _, span = self._find(source, self._names(self._meta(b), b))
+        if span is None or re.match(r"\s*(?:static|inline)\b", source[span[0]:span[1]]):
+            return None
+        head = []
+        for line in source[:span[0]].splitlines():
+            if drafts._DECL.match(line.strip()) and "(" in line and 'extern "C"' not in line:
+                line = 'extern "C" ' + re.sub(r"^\s*extern\s+", "", line.strip())
+            head.append(line)
+        return "".join(line + "\n" for line in head) + 'extern "C" ' + source[span[0]:]
+
+    def twin_declaration(self, proj, a, b, missing: str, names: dict[str, str]) -> str | None:
+        """A declaration of `missing`, a name the code made from a's for b uses where b's file doesn't declare it yet
+        (the compiler's "undefined identifier"): b's file's own (its prototype, or the head of its definition, both
+        may come further down), else a's file's for the same name, renamed. Data only as extern: b's file keeps the
+        data it defines."""
+        from . import twins
+
+        fp = ForkProject(Path(proj["root"]))
+        ua, ub = fp.unit(a["unit"]), fp.unit(b["unit"])
+        try:
+            text_a = (fp.root / ua.source).read_text(errors="replace", encoding="utf-8")
+            text_b = (fp.root / ub.source).read_text(errors="replace", encoding="utf-8") if (fp.root / ub.source).exists() else ""
+        except (OSError, TypeError):
+            return None
+        a_name = {v: k for k, v in names.items()}.get(missing, missing)
+
+        def declared(text: str, name: str) -> str | None:
+            for line in _file_scope_lines(text):
+                if line.startswith("#") or not re.search(rf"(?<![\w:]){re.escape(name)}\s*[(\[;=]", line):
+                    continue
+                if "(" in line.split("=", 1)[0] and line.endswith(";"):
+                    return line  # a prototype
+                if drafts._DECL.match(line) or "=" in line:  # data: refer to it, never define it again
+                    left = re.sub(r"\bstatic\s+", "", line.split("=", 1)[0].rstrip(" ;"))
+                    return left + ";" if left.startswith("extern") else f"extern {left};"
+            span = csource.find(text, name)
+            if span is not None:
+                head = text[span[0]:span[1]].split("{", 1)[0].strip()
+                if "(" in head:
+                    return head + ";"
+            return None
+
+        if (own := declared(text_b, missing)) is not None:
+            return own
+        theirs = declared(text_a, a_name)
+        if theirs is None:
+            return None
+        return re.sub(r"^(?:static\s+|inline\s+)+", "", twins.apply(theirs, names))  # b's file doesn't define it
 
     def twin_types(self, proj, a, b, source: str) -> str:
         """The file-scope type definitions (struct, union, enum, typedef) of a's file that `source` (a's code made
@@ -1574,8 +1651,12 @@ class ForkEngine:
             source = None
         out = ["", f"### Identical code: {a['name']} ({a['unit']}) is the same machine code and already matches"]
         if source and len(source) < 6000:
-            out += ["Its code with this function's names: try it first. If it doesn't build or match as is, this file "
-                    "lacks something that one has (a type, a declaration, an include):", "```c", source.strip(), "```"]
+            why = self.net.twins.miss_why(fn["id"])
+            out += ["Its code with this function's names: start from it. "
+                    + (f"decomp.wtf tried it as is: {why}. Fix that (this file lacks something the other one has: a "
+                       "type, a declaration, an include, or declares a callee differently)." if why else
+                       "If it doesn't build or match as is, this file lacks something that one has (a type, a "
+                       "declaration, an include)."), "```c", source.strip(), "```"]
         elif self.is_asm(proj, a):
             out.append("It's hand-written assembly there, so this one is too: release it with a note saying so.")
         else:
@@ -1650,8 +1731,15 @@ class ForkEngine:
         """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
         is undone and kept only as the function's best attempt (autopilot's drafts). `prelude`: (decomp.wtf's own
         tries) type definitions the code needs, placed after the file's includes. `quiet`: (the permuter's
-        variants) recorded only when better than this score."""
-        res = self._attempt(agent, slug, function, source, keep, prelude, quiet)
+        variants) recorded only when better than this score. A try that isn't kept holds the function only while
+        it builds (twins' tries come unclaimed: a 30-minute claim each kept agents off them, then counted as given up)."""
+        held = None if keep else self._hold_for_try(slug, function, agent)
+        try:
+            res = self._attempt(agent, slug, function, source, keep, prelude, quiet)
+        finally:
+            if held is not None:
+                with self.net.store.tx() as db:
+                    db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (held, agent.id))
         link = self.net.links.get(slug)
         if link is None or res["score"] is None:
             return res
@@ -1673,6 +1761,17 @@ class ForkEngine:
             if fn["best_score"] is None or res["score"] <= fn["best_score"]:
                 threading.Thread(target=self._report_best, args=(link, agent, name, source, res["score"]), daemon=True).start()
         return res
+
+    def _hold_for_try(self, slug: str, function: str, agent: Agent) -> int | None:
+        """Claim an open function nobody holds for one quick try; its id, or None (held already, or matched)."""
+        fn = self._fn(slug, function)
+        now = time.time()
+        with self.net.store.tx() as db:
+            self.net._expire_claims(db)
+            if fn["status"] != "open" or db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
+                return None
+            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
+        return fn["id"]
 
     @staticmethod
     def _follow(link) -> None:

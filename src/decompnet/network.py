@@ -26,6 +26,7 @@ CLAIM_TTL = 30 * 60
 # A function an agent just released goes to the back of the queue for this long, for every agent: the next one
 # starts on something fresh instead of passing the same function back and forth. Asked for by name, it comes at once.
 RELEASE_COOLDOWN = 15 * 60
+MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their claims never mean "given up on"
 # Twins first (see app/twins.py): a function whose code the game has more than once (boost: how many more times)
 # and isn't too big or given up on, best value per instruction first; its twins (boost -1) last, as they match for
 # free once it does.
@@ -173,8 +174,11 @@ class Network:
 
     def _expire_claims(self, db) -> None:
         now = time.time()
+        own = {r["id"] for r in db.execute("SELECT id FROM agents WHERE name IN (?, ?)", MACHINE_AGENTS)}
         for row in db.execute("SELECT c.function_id, c.agent_id, f.project_id, f.name FROM claims c "
                               "JOIN functions f ON f.id=c.function_id WHERE c.expires_at < ?", (now,)).fetchall():
+            if row["agent_id"] in own:  # decomp.wtf's own tries (cut short by a restart): nobody gave up on it
+                continue
             db.execute("UPDATE functions SET abandons=abandons+1 WHERE id=?", (row["function_id"],))
             self._event(db, row["project_id"], row["agent_id"], "expired", row["name"])
         db.execute("DELETE FROM claims WHERE expires_at < ?", (now,))
@@ -431,9 +435,15 @@ class Network:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
         return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
 
-    def stall_note(self, function_id: int, agent_id: int, after: int = 4) -> str:
+    def stall_note(self, function_id: int, agent_id: int, after: int | None = None) -> str:
         """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
-        mostly do in the first few tries, and the agent's time is better spent on the next one."""
+        mostly do in the first few tries, and the agent's time is better spent on the next one. Big functions get
+        longer (a quarter of Mario Party 6's agent matches over 64 instructions took more than 4 compiles, and
+        those functions hold most of the code left)."""
+        if after is None:
+            row = self.store.one("SELECT n_insns FROM functions WHERE id=?", function_id)
+            n = (row["n_insns"] if row else 0) or 0
+            after = 4 if n < 64 else 6 if n < 128 else 8 if n < 256 else 10
         rows = self.store.all("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 16",
                               function_id, agent_id)
         best, since = None, 0
@@ -690,7 +700,7 @@ class Network:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
             for table in ("claims", "attempts"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
-            for table in ("notes", "events", "context_versions", "functions", "symbols"):
+            for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
             db.execute("DELETE FROM projects WHERE id=?", (proj["id"],))
         return len(ids)
@@ -723,6 +733,20 @@ class Network:
             "SELECT n.id, f.name AS function, a.name AS agent, n.text FROM notes n LEFT JOIN functions f "
             "ON f.id=n.function_id LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? ORDER BY n.id",
             proj["id"])]
+
+    def learnings(self, slug: str, budget: int = 2500) -> str:
+        """The project-wide notes agents left (newest first, within `budget` characters), for every new session:
+        what one agent works out about the compiler or the project, the next one starts with."""
+        proj = self._project(slug)
+        out, used = [], 0
+        for r in self.store.all("SELECT text FROM notes WHERE project_id=? AND function_id IS NULL ORDER BY id DESC LIMIT 40",
+                                proj["id"]):
+            text = " ".join(r["text"].split())[:600]
+            if used + len(text) > budget:
+                break
+            out.append(f"- {text}")
+            used += len(text)
+        return "\n".join(out)
 
     def delete_note(self, note_id: int) -> None:
         with self.store.tx() as db:

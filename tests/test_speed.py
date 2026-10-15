@@ -118,6 +118,33 @@ def test_a_match_matches_its_twins(game):
         assert row["status"] == "matched" and data in row["matched_source"] and f"{name}(" in row["matched_source"]
 
 
+def test_a_twin_that_didnt_match_isnt_tried_again_until_its_code_changes(game, monkeypatch):
+    """Every agent start runs the full pass: without a memory it compiled every known miss again (Mario Party 6:
+    about 900, 15 minutes beside the agents)."""
+    net, slug, _ = game
+    agent, _ = net.local_agent("agent")
+    if net._function("player_take_damage", slug)["status"] != "matched":
+        source = csource.get((GAME / "game.c").read_text(), "player_take_damage")
+        assert net.attempt(agent, "player_take_damage", source, slug)["matched"]
+    name = twin(net, slug, "player_take_damage", 0x80400200)
+    tried = []
+    monkeypatch.setattr(net.twins, "_attempt_twin",
+                        lambda agent, proj, a, b, source: tried.append(b["name"]) or ("miss", "undefined identifier 'x'"))
+    assert net.twins.run(slug).tried == 1 and tried == [name]
+    job = net.twins.run(slug)  # the next agent start
+    assert job.tried == 0 and tried == [name]
+    assert net.twins.miss_why(net._function(name, slug)["id"]) == "undefined identifier 'x'"  # for the agent's brief
+    proj = net.project_row(slug)
+    net.twins.update_boosts(proj)  # after the pass: an agent gets it first, starting from its twin's code
+    assert net._function(name, slug)["boost"] == 1
+    real = net.twins.source_for
+    monkeypatch.setattr(net.twins, "source_for", lambda proj, a, b, includes=False: real(proj, a, b, includes) + "\n/* changed */")
+    assert net.twins.run(slug).tried == 1 and tried == [name, name]  # its twin's code changed: tried again
+    with net.store.tx() as db:
+        db.execute("DELETE FROM functions WHERE name=?", (name,))
+    net.twins.forget(net.project_row(slug))
+
+
 def test_an_agents_match_reaches_its_twins_at_once(game, monkeypatch):
     """While the full twins pass runs (12 minutes on Mario Party 6), an agent's match is tried on its twins at once;
     the pass's own matches aren't queued again (it tries their twins itself)."""

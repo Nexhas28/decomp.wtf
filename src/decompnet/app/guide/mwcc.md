@@ -12,11 +12,31 @@ Inlining (the biggest source of mismatches)
 - Vector/matrix math and getters are usually header inlines in the project: use them rather than
   writing the arithmetic out, or the instruction order differs.
 
-Registers and stack
-- Callee-saved registers are handed out from r31 downward roughly in order of first use; reordering
-  local declarations or first uses changes which r31/r30... a value gets.
-- Locals keep declaration order on the stack; unexplained gaps usually mean a removed or inlined local
-  (or a struct temporary).
+Registers (GC/1.x's allocator, documented from the compiler itself; Wii/DS versions behave alike)
+- Callee-saved registers are claimed on demand from r31 down (r31, r30, ... r14; f31 down for floats).
+  Volatiles (r0, r3-r12) go to values that don't live across a call.
+- Named locals are numbered in reverse declaration order, and that order decides who gets r31, r30...:
+  when two callee-saved registers are swapped against the target, swap those two locals' declarations.
+  First use doesn't matter as much as declaration order; a local assigned twice can split into two values.
+- Only registers differ (structure, offsets, calls all match): try declaration order first, then whether a
+  value is a separate local or recomputed, then the expression's form. It's almost never a compiler flag.
+
+Stack frame (`stwu r1, -N(r1)` and every r1 offset)
+- The frame holds every local and temporary the compiler ever needed: GC/1.0-1.2.5 never reclaims a dead
+  slot, so a local you removed, an inlined call's temporaries or a struct copy still take room.
+- Frame too small: the original had more locals (often a temporary struct, an inlined helper's locals, or a
+  value kept in a variable instead of recomputed). Too big: you have one the original didn't.
+- When everything matches but the frame size and r1 offsets, the code is right: fix the locals, not the
+  logic, and know that the match percentage barely moves until the frame is exactly right.
+- Locals sit in declaration order (arrays and structs first in some versions): a slot in the wrong place
+  usually means the declaration order differs.
+
+Respellings to try before anything odd (plausible code a developer wrote, in this order)
+- a condition as a bool/int vs. a comparison; the comparison the other way round (`a < b` / `b > a`);
+  `return x;` from each branch vs. one exit; declaration order; a local vs. an expression inline;
+  integer reassociation (`a + b + c` grouping); parameters in their own locals; bitfields vs. masks.
+- Not these: `volatile`, empty `asm`, `do {} while (0)`, pointless temporaries or casts that only push the
+  score: they are fake matches, and the project would reject them.
 
 Code shape
 - `if`/`else` keeps source order: the fall-through block is the first branch you wrote.

@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS symbols(
   project_id INTEGER NOT NULL, name TEXT NOT NULL, address INTEGER NOT NULL, size INTEGER NOT NULL DEFAULT 0,
   kind TEXT NOT NULL DEFAULT 'data', preview TEXT, PRIMARY KEY(project_id, name));
 CREATE INDEX IF NOT EXISTS idx_symbols_addr ON symbols(project_id, address);
+CREATE TABLE IF NOT EXISTS twin_misses(
+  function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
+  PRIMARY KEY(function_id, source_hash));
 """
 
 # Columns added after the first release; applied in place to existing databases.
@@ -84,6 +87,22 @@ class Store:
         # removing a project left its symbols behind before 0.10.3, and the next import (which may get the same id)
         # ran into them
         self.conn.execute("DELETE FROM symbols WHERE project_id NOT IN (SELECT id FROM projects)")
+        # before 0.10.4 a twin's try left the function claimed by the autopilot for 30 minutes, and each expiry
+        # counted as an agent giving up on it: thousands of functions were put last for nothing. Counted again,
+        # once, from what agents actually did (releases, and their own claims that ran out)
+        if self.conn.execute("SELECT 1 FROM settings WHERE key='abandons_recounted'").fetchone() is None:
+            self.conn.executescript("""
+                BEGIN;
+                CREATE TEMP TABLE gave_up AS SELECT project_id, detail AS name, COUNT(*) AS n FROM events
+                  WHERE kind='release' OR (kind='expired' AND COALESCE(agent_id, -1) NOT IN
+                    (SELECT id FROM agents WHERE name IN ('autopilot', 'permuter')))
+                  GROUP BY project_id, detail;
+                CREATE INDEX temp.gave_up_name ON gave_up(project_id, name);
+                UPDATE functions SET abandons = COALESCE((SELECT n FROM gave_up g WHERE g.project_id=functions.project_id
+                                                          AND g.name=functions.name), 0) WHERE abandons > 0;
+                DROP TABLE gave_up;
+                INSERT INTO settings(key, value) VALUES('abandons_recounted', '1');
+                COMMIT;""")
         self.lock = threading.RLock()
 
     @contextmanager

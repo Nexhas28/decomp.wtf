@@ -85,6 +85,24 @@ def test_agent_matches_a_new_function_and_commits(fork):
 
 
 @needs_tools
+def test_decomp_wtfs_own_tries_leave_no_claim_behind(fork):
+    """A twin's code tried on an unclaimed function used to leave it claimed by the autopilot for 30 minutes (agents
+    were kept off it), and the expiry counted as giving up on it: Mario Party 6 had 3,132 such expiries in 5 hours."""
+    net, slug, _ = fork
+    autopilot, _ = net.local_agent("autopilot")
+    name = "checksum_save"
+    fn = net.store.one("SELECT id, status, abandons FROM functions WHERE name=?", name)
+    if fn["status"] != "open" or net.store.one("SELECT 1 FROM claims WHERE function_id=?", fn["id"]):
+        pytest.skip("checksum_save isn't open and free in this run")
+    res = net.forks.attempt(autopilot, slug, name, _ref(name).replace("return", "return 1 +", 1), keep=False)
+    assert not res["matched"]
+    assert net.store.one("SELECT 1 FROM claims WHERE function_id=?", fn["id"]) is None
+    with net.store.tx() as db:  # one cut short by a restart runs out: nobody gave up on the function
+        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], autopilot.id, 0, 1))
+        net._expire_claims(db)
+    assert net.store.one("SELECT abandons FROM functions WHERE id=?", fn["id"])["abandons"] == fn["abandons"]
+
+
 def test_near_miss_gets_a_diff_and_release_restores_the_best(fork):
     net, slug, agent = fork
     root = Path(net.project_row(slug)["root"])
@@ -419,3 +437,23 @@ def test_a_catalog_that_cant_be_had_says_why(tmp_path, monkeypatch):
     cache.write_text(json.dumps({"projects": [{"owner": "o", "repo": "r", "platform": "gc"}]}))
     os.utime(cache, (0, 0))  # an old copy is better than nothing
     assert [p["id"] for p in catalog.catalog(cache)] == ["o/r"]
+
+
+def test_c_code_going_into_a_cpp_file_gets_c_linkage(tmp_path, monkeypatch):
+    """A twin's code from a C file tried in one of decomp.wtf's C++ files built, but had no fn_1_BB34 in it (the
+    name was mangled): 471 of Mario Party 6's twin misses. With extern "C" on it and its prototypes, it matches."""
+    from types import SimpleNamespace
+
+    from decompnet.app import forkengine
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    units = {"a": SimpleNamespace(source="src/a.c"), "b": SimpleNamespace(source="src/b.cpp"),
+             "c": SimpleNamespace(source="src/c.cpp")}
+    monkeypatch.setattr(forkengine, "ForkProject", lambda root: SimpleNamespace(unit=lambda name: units[name]))
+    row = lambda name, unit: {"name": name, "unit": unit, "meta": json.dumps({"symbol": name})}
+    source = "extern void __dl__FPv(void *ptr);\nint fn_1_BB34(int p) {\n    __dl__FPv((void *)p);\n    return p;\n}\n"
+    got = net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1EE74", "a"), row("fn_1_BB34", "b"), source)
+    assert got == 'extern "C" void __dl__FPv(void *ptr);\nextern "C" int fn_1_BB34(int p) {\n    __dl__FPv((void *)p);\n    return p;\n}\n'
+    assert net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1", "c"), row("fn_1_BB34", "b"), source) is None  # C++ to C++
+    static = source.replace("int fn_1_BB34", "static int fn_1_BB34")
+    assert net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1EE74", "a"), row("fn_1_BB34", "b"), static) is None

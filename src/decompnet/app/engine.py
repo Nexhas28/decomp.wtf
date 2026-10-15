@@ -1693,10 +1693,11 @@ class RomNetwork(Network):
 
     def chat_agent(self, base: str) -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
-        or base-2, base-3... when another session of the same agent is active right now."""
+        or base_2, base_3... when another session of the same agent is active right now (never base-2: that's the
+        name of a helper session, see local_agent)."""
         base = re.sub(r"[^A-Za-z0-9_.-]+", "-", base).strip("-")[:30] or "chat"
         for n in range(1, 100):
-            name = base if n == 1 else f"{base}-{n}"
+            name = base if n == 1 else f"{base}_{n}"
             row = self.store.one("SELECT id, origin, last_seen FROM agents WHERE name=?", name)
             if row is None or (row["origin"] == "chat" and (row["last_seen"] or 0) < time.time() - 600):
                 break
@@ -1715,12 +1716,15 @@ class RomNetwork(Network):
         return bool(row) and row["origin"] == "chat"
 
     def local_agent(self, name: str) -> tuple[Agent, str]:
-        """An agent identity for one runner on this machine (created on first use)."""
+        """An agent identity for one runner on this machine (created on first use). A name an agent the user talks
+        to had before 0.10.4 (chat identities were numbered like helper sessions) becomes the runner's: a helper
+        never gets the chat agent's tools, and the chat agent never takes over the runner's identity."""
         row = self.store.one("SELECT id FROM agents WHERE name=?", name)
         if row is not None:
             token = "dn_" + secrets.token_urlsafe(24)
             with self.store.tx() as db:
-                db.execute("UPDATE agents SET token_hash=? WHERE id=?", (_hash_token(token), row["id"]))
+                db.execute("UPDATE agents SET token_hash=?, origin=CASE origin WHEN 'chat' THEN 'local' ELSE origin END "
+                           "WHERE id=?", (_hash_token(token), row["id"]))
         else:
             token = self.register_agent(name, "you", trusted=True, origin="local")
         return self.authenticate(token), token

@@ -72,9 +72,10 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
    The workflow and {compiler_guide} guides are below. find_similar(function) shows look-alike functions;
    a matched one is the best starting point.
 4. Score 0 = matched and saved. Before moving on, share what you learned: edit_context for prototypes and
-   structs you worked out, rename_symbol for functions/data whose purpose is now clear.
-5. No better after 4 compiles in a row? release_function with precise notes (what you tried, what is
-   left) and claim the next one: most functions that match do so in the first few tries.
+   structs you worked out, rename_symbol for functions/data whose purpose is now clear, and add_note (no
+   function) for a compiler quirk or convention every agent here should know: the next sessions start with it.
+5. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
+   then release_function with precise notes (what you tried, what is left) and claim the next one.
 
 Write plausible original code, pure C (no inline asm). Be brief in your messages: work, don't narrate.
 """
@@ -99,13 +100,15 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    goes into the source file in place of the old one, the file is built with the project's compiler and
    diffed. Fix structure first (control flow, calls), then types and expressions, registers last.
 4. 100% = matched, committed to git. Structs, prototypes, globals or helpers you need go in with
-   edit_file (a header or the top of the source file); an edit that breaks any match is undone.
+   edit_file (a header or the top of the source file); an edit that breaks any match is undone. Found a
+   compiler quirk or project convention others should know? add_note with no function: every new session
+   starts with those notes.
 5. The goal is linked files: the game built from the C, byte for byte. When a match finishes a file's
    functions, you're shown its data next to the original's: fix what differs (order, const, statics,
    values) with edit_file until file_status says it matches; decomp.wtf then links the file.
-6. No better after 4 compiles in a row? release_function with precise notes (what you tried, what is
-   left) and claim the next: most functions that match do so in the first few tries. Very large
-   functions: get the structure right and release with notes.
+6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
+   then release_function with precise notes (what you tried, what is left) and claim the next. Very large
+   functions: get the structure right first; a near miss is worth the extra compiles.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Write code a human would have written: match the file's style and names.

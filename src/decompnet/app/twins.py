@@ -34,6 +34,11 @@ log = logging.getLogger("decomp.wtf")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
 _CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
+# A twin's code that didn't match isn't tried again for this long while neither function's code changes (the
+# same source gives the same result): every agent start's pass would otherwise redo hundreds of compiles (Mario
+# Party 6: about 900, 15 minutes beside the agents). After a while it's tried again: a header can have changed.
+MISS_TTL = 24 * 3600
+_GENERATED = ("__dt__", "__ct__", "__sinit", "__vt__")  # C++ code the compiler writes: nothing to copy
 
 
 @dataclass
@@ -344,11 +349,18 @@ class Twins:
             if p.size >= 8:
                 groups[p.key].append(fid)
         updates = []
+        names = {r["id"]: r["name"] for r in self.net.store.all(
+            "SELECT id, name FROM functions WHERE project_id=? AND status='matched'", proj["id"])}
         for members in groups.values():
             open_ = sorted(f for f in members if rows.get(f) == "open")
-            if any(rows.get(f) == "matched" for f in members):
+            matched = [f for f in members if rows.get(f) == "matched"]
+            if matched:
                 if pending:
                     updates += [(-1, f) for f in open_]
+                elif not any(names.get(f, "").startswith(_GENERATED) for f in matched):
+                    # its twin's code didn't match by itself (a type or declaration this file lacks, mostly):
+                    # an agent starts from it, shown in the brief, so these go first
+                    updates += [(1, f) for f in open_]
                 continue
             if len(open_) < 2:
                 continue
@@ -433,9 +445,7 @@ class Twins:
         if pa is None or pb is None or pa.key != pb.key:
             return None
         if self.net.fork_slug(proj["slug"]):
-            meta_a, meta_b = json.loads(a["meta"] or "{}"), json.loads(b["meta"] or "{}")
-            sym_a, sym_b = meta_a.get("symbol") or a["name"], meta_b.get("symbol") or b["name"]
-            names = renames(pa, pb, sym_a, sym_b)
+            names = self._fork_names(pa, pb, a, b)
             if names is None:
                 return None
             return self.net.forks.twin_source(proj, a, b, names, includes)
@@ -458,6 +468,11 @@ class Twins:
                 decls.append(apply(line, {old_name: new_name}))
         return "\n".join(decls) + ("\n" if decls else "") + apply(source, names)
 
+    @staticmethod
+    def _fork_names(pa: Print, pb: Print, a, b) -> dict[str, str] | None:
+        meta_a, meta_b = json.loads(a["meta"] or "{}"), json.loads(b["meta"] or "{}")
+        return renames(pa, pb, meta_a.get("symbol") or a["name"], meta_b.get("symbol") or b["name"])
+
     # ------------------------------------------------------------------ the work
 
     def try_pair(self, agent, proj, a_id: int, b_id: int) -> str:
@@ -478,6 +493,26 @@ class Twins:
             with self._lock:
                 self._trying.discard(b_id)
 
+    @staticmethod
+    def _miss_key(source: str) -> str:
+        return hashlib.sha1(source.encode("utf-8", "replace")).hexdigest()[:20]
+
+    def _missed(self, b_id: int, source: str) -> bool:
+        return self.net.store.one("SELECT 1 FROM twin_misses WHERE function_id=? AND source_hash=? AND at > ?",
+                                  b_id, self._miss_key(source), time.time() - MISS_TTL) is not None
+
+    def known_miss(self, proj, a_id: int, b_id: int) -> bool:
+        """Whether a's code was tried on b, as it is now, and didn't match (see MISS_TTL)."""
+        a = self.net.store.one("SELECT * FROM functions WHERE id=?", a_id)
+        b = self.net.store.one("SELECT * FROM functions WHERE id=?", b_id)
+        if a is None or b is None:
+            return False
+        try:
+            source = self.source_for(proj, a, b)
+        except (NetworkError, OSError, ValueError):
+            return False
+        return bool(source) and self._missed(b_id, source)
+
     def _try_pair(self, agent, proj, a, b) -> str:
         try:
             source = self.source_for(proj, a, b)
@@ -489,22 +524,65 @@ class Twins:
                 self.net.forks.mark_asm(b, a["name"])
                 return "asm"
             return "skip"
+        if self._missed(b["id"], source):
+            return "known"
+        outcome, why = self._attempt_twin(agent, proj, a, b, source)
+        if outcome == "miss":
+            with self.net.store.tx() as db:
+                db.execute("INSERT OR REPLACE INTO twin_misses(function_id, source_hash, project_id, at, why) "
+                           "VALUES(?,?,?,?,?)", (b["id"], self._miss_key(source), proj["id"], time.time(), why))
+        return outcome
+
+    def miss_why(self, b_id: int) -> str | None:
+        """What the last try of its twin's code said (the compiler's first error, or how close it came)."""
+        row = self.net.store.one("SELECT why FROM twin_misses WHERE function_id=? ORDER BY at DESC LIMIT 1", b_id)
+        return row["why"] if row else None
+
+    @staticmethod
+    def _why(res: dict) -> str:
+        """The gist of a try that didn't match: the compiler's first error, or how close it came."""
+        if res.get("score") is None:
+            lines = [ln.strip(" #") for ln in (res.get("text") or "").splitlines()
+                     if re.search(r"undefined|undeclared|expected|illegal|redefin|not a |declaration|conversion", ln)]
+            return (lines[0] if lines else "it didn't build")[:300]
+        return (res.get("text") or "").splitlines()[0][:300] if res.get("text") else f"score {res.get('score')}"
+
+    def _attempt_twin(self, agent, proj, a, b, source: str) -> tuple[str, str]:
         note = f"/* identical to {a['name']} (matched), with its names changed by decomp.wtf */\n"
         try:
             if self.net.fork_slug(proj["slug"]):
-                forks = self.net.forks
-                res = forks.attempt(agent, proj["slug"], b["name"], note + source, keep=False)
-                if res.get("score") is None and (types := forks.twin_types(proj, a, b, source)):  # a type a's file has
-                    res = forks.attempt(agent, proj["slug"], b["name"], note + source, keep=False, prelude=types)
-                if res.get("score") is None and (more := self.source_for(proj, a, b, includes=True)) and more != source:
-                    res = forks.attempt(agent, proj["slug"], b["name"], note + more, keep=False,
-                                        prelude=forks.twin_types(proj, a, b, more))
+                forks, slug, src, prelude = self.net.forks, proj["slug"], source, ""
+                res = forks.attempt(agent, slug, b["name"], note + src, keep=False)
+                if res.get("score") is None and (types := forks.twin_types(proj, a, b, src)):  # a type a's file has
+                    prelude = types
+                    res = forks.attempt(agent, slug, b["name"], note + src, keep=False, prelude=prelude)
+                if res.get("score") is None and (more := self.source_for(proj, a, b, includes=True)) and more != src:
+                    src, prelude = more, forks.twin_types(proj, a, b, more)
+                    res = forks.attempt(agent, slug, b["name"], note + src, keep=False, prelude=prelude)
+                if res.get("score") is not None and not res.get("percent") and (c := forks.c_linkage(proj, a, b, src)):
+                    src = c  # built, but nothing of it in the object: C code in a C++ file, its name mangled
+                    res = forks.attempt(agent, slug, b["name"], note + src, keep=False, prelude=prelude)
+                # the compiler names one undeclared name per build (a callee b's file declares further down, say):
+                # declared as the files declare it, then built again
+                prints, decls = self.prints(proj), []
+                names = self._fork_names(prints[a["id"]], prints[b["id"]], a, b) if a["id"] in prints and b["id"] in prints else None
+                for _ in range(4):
+                    m = names is not None and res.get("score") is None and \
+                        re.search(r"undefined identifier '(\w+)'", res.get("text") or "")
+                    if not m:
+                        break
+                    decl = forks.twin_declaration(proj, a, b, m.group(1), names)
+                    if not decl or decl in decls:
+                        break
+                    decls.append(decl)  # after the file's includes: also when the file declares it further down
+                    res = forks.attempt(agent, slug, b["name"], note + src, keep=False,
+                                        prelude="\n".join([prelude, *decls]).strip("\n"))
             else:
                 res = self.net.try_quietly(agent, proj, b, note + source)
         except NetworkError as e:
             log.info("twins: %s from %s: %s", b["name"], a["name"], str(e)[:300])
-            return "skip"
-        return "match" if res.get("matched") else "miss"
+            return "skip", ""
+        return ("match", "") if res.get("matched") else ("miss", self._why(res))
 
     def run(self, slug: str, job: Job | None = None, only: set[int] | None = None, workers: int = 3) -> Job:
         """Try matched code on every unmatched twin (or the twins of `only`), until a pass matches nothing new
@@ -540,15 +618,16 @@ class Twins:
                     except Exception as e:  # one odd function must not stop the rest
                         log.info("twins: %s failed: %s", pair, e)
                         outcome = "skip"
-                    job.tried += outcome not in ("skip", "asm")
+                    job.tried += outcome not in ("skip", "asm", "known")
                     job.matched += outcome == "match"
                     job.asm += outcome == "asm"
                     if outcome == "match":
                         fresh.add(pair[1])
 
                 by_target: dict[int, tuple[int, int]] = {}
-                for p in pairs:  # one try per unmatched function
-                    by_target.setdefault(p[1], p)
+                for p in pairs:  # one try per unmatched function, unless its twin's code already failed on it
+                    if p[1] not in by_target and not self.known_miss(proj, *p):
+                        by_target[p[1]] = p
                 with self.net.store.tx() as db:  # agents leave these for last meanwhile: they may be free in a minute
                     db.executemany("UPDATE functions SET boost=-1 WHERE id=? AND status='open'", [(b,) for b in by_target])
                 with ThreadPoolExecutor(max_workers=workers) as pool:

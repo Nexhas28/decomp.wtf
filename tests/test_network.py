@@ -202,3 +202,54 @@ def test_moderation_tools(net, agents):
     assert net.remove_project("demo") == 13
     for table in ("projects", "functions", "attempts", "notes", "events", "context_versions"):
         assert net.store.one(f"SELECT COUNT(*) AS n FROM {table}")["n"] == 0, table
+
+
+def test_give_ups_are_recounted_once_without_decomp_wtfs_own_expiries(tmp_path):
+    """Before 0.10.4 the autopilot's leftover claims counted as agents giving up (see test_forks): opening the
+    database counts each function's give-ups again from releases and agents' own expired claims."""
+    import sqlite3
+
+    from decompnet.store import Store
+
+    path = tmp_path / "old.db"
+    Store(path)
+    db = sqlite3.connect(path)
+    db.execute("DELETE FROM settings WHERE key='abandons_recounted'")  # a database from before
+    db.execute("INSERT INTO agents(id,name,token_hash,created_at) VALUES(1,'autopilot','x',0),(2,'claude-1','y',0)")
+    db.execute("INSERT INTO projects(id,slug,root,config) VALUES(1,'p','/','{}')")
+    db.execute("INSERT INTO functions(project_id,name,abandons) VALUES(1,'f',5),(1,'g',3)")
+    for agent, kind, fn in [(1, "expired", "f"), (1, "expired", "f"), (2, "release", "f"), (1, "expired", "g"),
+                            (2, "expired", "g"), (2, "release", "g")]:
+        db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(1,?,?,?,0)", (agent, kind, fn))
+    db.commit()
+    db.close()
+    store = Store(path)
+    assert {r["name"]: r["abandons"] for r in store.all("SELECT name, abandons FROM functions")} == {"f": 1, "g": 2}
+    with store.tx() as tx:
+        tx.execute("UPDATE functions SET abandons=7 WHERE name='f'")
+    assert Store(path).one("SELECT abandons FROM functions WHERE name='f'")["abandons"] == 7  # once only
+
+
+def test_every_new_session_starts_with_what_agents_learned(net, agents):
+    """Project-wide notes (compiler quirks, conventions) go into every session's prompt, newest first, within a
+    budget: what one agent works out, the next one starts with."""
+    alice, _ = agents
+    net.add_note(alice, "demo", "old tip: " + "x" * 300)
+    net.add_note(alice, "demo", "MWCC here: declare the loop counter last to get r31")
+    net.add_note(alice, "demo", "a note on one function only", "clamp_s32")
+    learned = net.learnings("demo", budget=400)
+    assert learned.startswith("- MWCC here") and "one function only" not in learned and "old tip" in learned
+    assert "old tip" not in net.learnings("demo", budget=100)
+
+
+def test_big_functions_get_more_compiles_before_the_nudge_to_move_on(net, agents):
+    alice, _ = agents
+    fn = net.store.one("SELECT id FROM functions WHERE name='clamp_s32'")
+    with net.store.tx() as db:
+        for score in (50, 60, 60, 70, 80, 90, 95):
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,source,created_at) VALUES(?,?,?,?,?,?)",
+                       (fn["id"], alice.id, score, 1, "x", 0))
+    assert "No better in your last 6" in net.stall_note(fn["id"], alice.id)  # a small function: after 4
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET n_insns=300 WHERE id=?", (fn["id"],))
+    assert net.stall_note(fn["id"], alice.id) == ""  # a big one: not before 10

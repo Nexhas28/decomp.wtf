@@ -754,12 +754,16 @@ class Manager:
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)
         if ov.get("kind") == "fork":
-            topics = ["fork", "objdiff"]
+            # CodeWarrior's register and stack rules decide most of what's left on GameCube, Wii and DS
+            topics = ["fork", "objdiff", *(["mwcc"] if ov.get("platform") in ("gc", "wii", "nds") else [])]
         else:
             topics = ["workflow", {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
                 "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")]
         text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
             tools._guide(t) for t in topics)
+        if (learned := self.net.learnings(s.slug)):
+            text += ("\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
+                     f"add_note and no function):\n{learned}\n")
         if (wish := self.net.instructions(s.slug)):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
         return text
@@ -784,6 +788,10 @@ class Manager:
         env = dict(os.environ)
         if WIN:
             env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
+        # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
+        # workspace's .agents/mcp_config.json) reaches decomp.wtf through the `decomp mcp` the user connected it
+        # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
+        env["DECOMP_SESSION_TOKEN"] = token
         prompt = self.prompt(s)
         model = s.options.get("model") or ""
         if s.kind == "claude":
@@ -842,6 +850,12 @@ class Manager:
         return argv(cmd), env, prompt
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
+        if s.kind == "antigravity" and s.runs == 1:
+            from . import connect  # (connect imports this module)
+
+            if not connect.status("antigravity"):  # decomp.wtf's tools only reach it through the user's settings
+                raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.wtf "
+                            "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0

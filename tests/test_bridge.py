@@ -39,6 +39,24 @@ def test_bridge_imports_and_works(tmp_path):
             out["compile"] = await call("compile_and_diff", function="func_800007F4",
                                         source="s32 func_800007F4(s32 v) { return v < 0 ? -v : v; }")
             out["progress"] = await call("progress")
+
+        # a helper session decomp.wtf started, whose agent only loads the user's own MCP servers (Antigravity CLI):
+        # the same bridge works as the session's agent, with a helper's tools and no new identity
+        from decompnet.app.engine import RomNetwork
+
+        net = RomNetwork(tmp_path / ".decomp" / "decomp.db", tmp_path)
+        _, token = net.local_agent("antigravity-1")
+        before = net.store.one("SELECT COUNT(*) AS n FROM agents")["n"]
+        helper = StdioServerParameters(command=sys.executable, args=["-m", "decompnet.app.cli", "mcp"],
+                                       env={**env, "DECOMP_AGENT_NAME": "antigravity", "DECOMP_SESSION_TOKEN": token})
+        async with Client(helper, read_timeout_seconds=300) as c:
+            out["helper_instructions"] = c.instructions or ""
+            out["helper_tools"] = {t.name for t in (await c.list_tools()).tools}
+            r = await c.call_tool("claim_function", {})
+            out["helper_claim"] = r.is_error, "\n".join(getattr(x, "text", "") for x in r.content)
+        out["agents_added"] = net.store.one("SELECT COUNT(*) AS n FROM agents")["n"] - before
+        out["helper_holds"] = net.store.one("SELECT COUNT(*) AS n FROM claims c JOIN agents a ON a.id=c.agent_id "
+                                            "WHERE a.name='antigravity-1'")["n"]
         return out
 
     try:
@@ -52,3 +70,6 @@ def test_bridge_imports_and_works(tmp_path):
     compiled = out["compile"][1]
     assert "MATCH" in compiled or "already matched" in compiled  # the autopilot may have been first
     assert "functions" in out["progress"][1]
+    assert "claim_function" in out["helper_tools"] and not {"import_game", "start_agents", "open_gui"} & out["helper_tools"]
+    assert "import_game" not in out["helper_instructions"]  # the helper's instructions, not the chat agent's
+    assert not out["helper_claim"][0] and out["helper_holds"] == 1 and out["agents_added"] == 0

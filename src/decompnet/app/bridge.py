@@ -5,6 +5,10 @@ agent uses it, this starts decomp.wtf in the background if it isn't running, get
 passes the app's tools through over stdio: the agent can import your game, work on it, start helper agents and open
 the live view, and everything it does shows up in the app as it happens.
 
+Started by an agent decomp.wtf runs itself (a helper session whose agent only loads the MCP servers in the user's own
+settings, like Antigravity CLI), it works as that session's agent instead (DECOMP_SESSION_TOKEN): the same identity,
+tools and instructions the session would get connecting directly.
+
 stdout is the MCP channel: everything else goes to stderr.
 """
 
@@ -12,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -66,9 +71,10 @@ def mint(info: dict, name: str) -> str:
     return data["token"]
 
 
-async def proxy(info: dict, token: str, name: str) -> None:
+async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None:
     """Pass the app's tools through. When the app restarts (an update, or the user quit and started it again) the
-    session is gone: connect again, with a new identity if it's a new app, and repeat the call.
+    session is gone: connect again, with a new identity if it's a new app, and repeat the call. A helper session
+    (`helper`) keeps its own identity: the app that started it is the one that knows it.
 
     One task owns the connection (anyio wants a client opened and closed by the same task); a call that finds the
     session lost asks it for a new one and waits."""
@@ -109,7 +115,7 @@ async def proxy(info: dict, token: str, name: str) -> None:
             _log("decomp.wtf restarted: connecting again")
             try:
                 fresh = await asyncio.to_thread(ensure_app, home_dir())
-                if (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"]):
+                if not helper and (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"]):
                     conn["token"] = await asyncio.to_thread(mint, fresh, name)  # a new app: a new identity
                 conn["info"] = fresh
             except (OSError, ValueError, KeyError, SystemExit) as e:
@@ -149,7 +155,7 @@ async def proxy(info: dict, token: str, name: str) -> None:
             return await remote_call(lambda r: r.call_tool(params.name, params.arguments or {}))
 
         server = Server("decomp", version=__version__, title="decomp.wtf",
-                        instructions=CHAT_INSTRUCTIONS + "\n" + (conn["remote"].instructions or ""),
+                        instructions=("" if helper else CHAT_INSTRUCTIONS + "\n") + (conn["remote"].instructions or ""),
                         on_list_tools=list_tools, on_call_tool=call_tool)
         async with stdio_server() as (read, write):
             await server.run(read, write, server.create_initialization_options())
@@ -157,14 +163,17 @@ async def proxy(info: dict, token: str, name: str) -> None:
 
 
 def main(name: str = "chat") -> int:
+    session = os.environ.get("DECOMP_SESSION_TOKEN", "").strip()  # a helper session decomp.wtf started
     try:
         info = ensure_app(home_dir())
-        token = mint(info, name)
+        token = session or mint(info, name)
     except (OSError, ValueError, KeyError) as e:
         _log(f"couldn't connect to decomp.wtf: {e}. Try `decomp stop`, then use this again.")
         return 1
+    if session:
+        _log("connected as the helper session decomp.wtf started")
     try:
-        asyncio.run(proxy(info, token, name))
+        asyncio.run(proxy(info, token, name, helper=bool(session)))
     except KeyboardInterrupt:
         pass
     return 0

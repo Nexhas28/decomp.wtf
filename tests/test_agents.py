@@ -3,6 +3,8 @@ stdin, `decomp connect`, and the compact context agents get (assembly, diffs).""
 
 import json
 
+import pytest
+
 from decompnet import scoring
 from decompnet.app import agents, connect
 
@@ -78,6 +80,7 @@ def test_prompts_go_in_on_stdin_never_the_command_line(tmp_path, monkeypatch):
         cmd, env, stdin = m._command(s, "tok", work)
         assert not any("line one" in a for a in cmd), (kind, cmd)
         assert "line one" in stdin and "some-model" in cmd
+        assert env["DECOMP_SESSION_TOKEN"] == "tok"  # a `decomp mcp` the agent starts works as this session
     # Antigravity: one stream-json user message, the server in the workspace's own MCP config
     m = _manager(tmp_path, monkeypatch, "antigravity")
     s = agents.Session("antigravity-2", "antigravity", "a", "demo", "antigravity-2", {})
@@ -134,3 +137,30 @@ def test_diffs_sum_up_and_shorten_long_runs():
     assert text.splitlines()[0] == "300 missing, 1 regalloc"
     assert "... 297 more missing (target only) ..." in text and "lw $v0, 299($s0)" in text
     assert len(text.splitlines()) < 15
+
+
+def test_helpers_and_the_agent_you_talk_to_never_share_an_identity(tmp_path):
+    """8 Antigravity helpers showed as 15 agents: the helpers reached decomp.wtf through the user's own `decomp mcp`,
+    which signed each in as a new agent of the user's, named like the helpers (antigravity-9...). Chat identities
+    are numbered differently now, and a helper never counts as the agent the user talks to."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    a, _ = net.chat_agent("antigravity")
+    b, _ = net.chat_agent("antigravity")  # a second chat session at the same time
+    assert (a.name, b.name) == ("antigravity", "antigravity_2")
+    net.register_agent("antigravity-2", "you", origin="chat")  # a chat identity from before, named like a helper
+    helper, _ = net.local_agent("antigravity-2")
+    assert not net.is_chat(helper) and net.is_chat(a)
+    assert net.local_agent("autopilot")[0].name == "autopilot"
+
+
+def test_antigravity_helpers_say_when_it_isnt_connected(tmp_path, monkeypatch):
+    from decompnet.app import connect
+
+    m = _manager(tmp_path, monkeypatch, "antigravity")
+    monkeypatch.setattr(connect, "status", lambda kind: False)
+    s = agents.Session("antigravity-1", "antigravity", "a", "demo", "antigravity-1", {})
+    s.runs = 1
+    with pytest.raises(agents.Fatal, match="decomp connect antigravity"):
+        m._run_cli(s, "tok", tmp_path)
