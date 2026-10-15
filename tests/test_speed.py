@@ -109,11 +109,86 @@ def test_a_match_matches_its_twins(game):
     source = csource.get((GAME / "game.c").read_text(), "player_take_damage")
     assert net.attempt(agent, "player_take_damage", source, slug)["matched"]
     assert "Identical code" in net.get_function(same, slug)  # an agent who looks is shown it
+    net.twins.update_boosts(proj, pending=True)  # a pass is about to try the match on them: they go last meanwhile
+    assert [net._function(n, slug)["boost"] for n in (same, other)] == [-1, -1]
     job = net.twins.run(slug)
     assert job.matched == 2
     for name, data in ((same, "g_player"), (other, "D_80047000")):
         row = net._function(name, slug)
         assert row["status"] == "matched" and data in row["matched_source"] and f"{name}(" in row["matched_source"]
+
+
+def test_an_agents_match_reaches_its_twins_at_once(game, monkeypatch):
+    """While the full twins pass runs (12 minutes on Mario Party 6), an agent's match is tried on its twins at once;
+    the pass's own matches aren't queued again (it tries their twins itself)."""
+    from decompnet.app.twins import Job
+
+    net, slug, _ = game
+    queued = []
+    monkeypatch.setattr(net.twins, "after_match", lambda proj, fid: queued.append(fid))
+    monkeypatch.setitem(net.twins.jobs, slug, Job())  # running
+    proj = net.project_row(slug)
+    agent, _ = net.local_agent("agent")
+    autopilot, _ = net.local_agent("autopilot")
+    RomNetwork.on_match(net, proj, 1, autopilot)
+    RomNetwork.on_match(net, proj, 2, agent)
+    net.twins.jobs[slug].state = "done"
+    RomNetwork.on_match(net, proj, 3, autopilot)  # (autopilot's drafts, after the pass)
+    assert queued == [2, 3]
+
+
+def test_one_full_pass_at_a_time(game, monkeypatch):
+    """Agents starting (refresh, in the background) and autopilot (full_pass) share one twins pass; the claim order
+    is stored before the pass (sessions wait for it: job.ordered)."""
+    import threading
+    import time
+
+    net, slug, _ = game
+    gate, real_run, results = threading.Event(), net.twins.run, []
+    monkeypatch.setattr(net.twins, "run", lambda slug, job=None, only=None: (gate.wait(10), real_run(slug, job, only))[1])
+    job = net.twins.refresh(slug)
+    assert net.twins.jobs[slug] is job and job.ordered.wait(10)
+    waiter = threading.Thread(target=lambda: results.append(net.twins.full_pass(slug)))
+    waiter.start()
+    time.sleep(0.3)
+    assert waiter.is_alive()  # waiting for the running pass, not starting another
+    gate.set()
+    waiter.join(60)
+    assert results == [job] and job.state == "done"
+
+
+def test_assembly_is_left_out(game):
+    """A function that's hand-written assembly isn't handed out; asked for by name, the next one is."""
+    net, slug, _ = game
+    agent, _ = net.local_agent("asm-asker")
+    proj = net.project_row(slug)
+    row = net.store.one("SELECT id, name FROM functions WHERE project_id=? AND status='open' AND "
+                        "id NOT IN (SELECT function_id FROM claims) ORDER BY id LIMIT 1", proj["id"])
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='asm' WHERE id=?", (row["id"],))
+    try:
+        out = tools.call(net, agent, slug, "claim_function", {"function": row["name"]})
+        assert "is hand-written assembly" in out and "## CLAIMED" in out
+        held = net.store.one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
+                             agent.id)["name"]
+        assert held != row["name"]
+        net.release(agent, held, "", slug)
+    finally:
+        with net.store.tx() as db:
+            db.execute("UPDATE functions SET status='open' WHERE id=?", (row["id"],))
+
+
+def test_stats_count_a_match_made_meanwhile(game):
+    """/api/stats with a match recorded after it started counting (the twins pass matches every second)."""
+    import time
+
+    net, slug, _ = game
+    proj = net.project_row(slug)
+    with net.store.tx() as db:
+        fid = db.execute("SELECT id FROM functions WHERE project_id=? AND status='matched' LIMIT 1",
+                         (proj["id"],)).fetchone()["id"]
+        db.execute("UPDATE functions SET matched_at=? WHERE id=?", (time.time() + 5, fid))
+    assert net.stats(slug)["matches_per_hour"][23] >= 1
 
 
 def test_a_batch_of_small_functions_in_one_call(game):

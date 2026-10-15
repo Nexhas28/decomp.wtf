@@ -570,6 +570,22 @@ async function refreshMap(force = true) {
   renderOverview();
 }
 
+/* Helpers that just stopped on an error (the provider out of credit, a sign-in...): said once per error, as eight
+   agents on one account stop together */
+function toastStopped(before, now) {
+  const was = new Map(before.map((s) => [s.id, s.state]));
+  const why = new Map();
+  for (const s of now) {
+    if (s.state !== "error" || !was.has(s.id) || was.get(s.id) === "error") continue;
+    if (!why.has(s.error)) why.set(s.error, []);
+    why.get(s.error).push(s.label);
+  }
+  for (const [error, labels] of why) {
+    const who = labels.length > 1 ? `${labels[0]} and ${labels.length - 1} more` : labels[0];
+    toast(`${esc(who)} stopped: ${esc(error || "an error")}`, "err");
+  }
+}
+
 let polling = false;
 async function poll(first) {
   if (polling || !S.slug) return;
@@ -598,6 +614,7 @@ async function poll(first) {
     if (!first) applyAttempts(live.attempts);
     addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
+    if (!first) toastStopped(S.sessions || [], live.sessions);
     S.sessions = live.sessions;
     for (const s of live.sessions) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
@@ -1392,6 +1409,12 @@ function spark(points, w = 240, h = 34) {
     <circle cx="${last[0]}" cy="${last[1]}" r="2.6" fill="var(${done ? "--match" : "--work"})"/></svg>`;
 }
 
+/* No compile yet: the agent is reading (the function, its file, look-alikes), for this long so far */
+function reading(c) {
+  const min = c.claimed_at ? Math.floor((Date.now() / 1000 - c.claimed_at) / 60) : 0;
+  return min >= 1 ? `reading · ${min} min` : "reading";
+}
+
 function renderNow(claims) {
   const box = $("now");
   claims = claims.filter((c) => c.agent !== AUTO);
@@ -1401,7 +1424,7 @@ function renderNow(claims) {
     const p = pctOf(c.best_score, c.n_insns);
     const [sym, unit] = c.name.split(/@(.*)/s);  // a fork's symbol@file: the symbol first, the file after it
     return `<div class="job" data-fn="${esc(c.name)}"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(sym)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span><span class="job-who" title="${esc(c.agent)}">${esc(c.agent)}</span></div>
-      ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? "starting" : pctText(p)}</b></div></div>`;
+      ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? reading(c) : pctText(p)}</b></div></div>`;
   }).join("");
   box.querySelectorAll(".job").forEach((j) => { j.onclick = () => openFn(j.dataset.fn); });
 }

@@ -27,11 +27,13 @@ from io import BytesIO
 from pathlib import Path
 
 from ..elfobj import _MASKS, Reloc, mask_relocs
+from ..handwritten import ppc_reason
 from ..network import NetworkError
 
 log = logging.getLogger("decomp.wtf")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
+_CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
 
 
 @dataclass
@@ -41,6 +43,7 @@ class Print:
     refs: list[str]  # the name each relocation refers to, in order (sections as ".data" etc.)
     size: int
     addrs: list[int] = field(default_factory=list)  # ROM projects: the address each relocation fills in
+    asm: str = ""  # why no compiler makes this code (see handwritten.py), or ""
 
 
 def _mask(code: bytearray, relocs: list[tuple[int, int]], arch: str, order: str) -> None:
@@ -60,7 +63,8 @@ def _key(code: bytes, layout: list[tuple[int, int]]) -> str:
 
 
 def object_prints(data: bytes) -> dict[str, Print]:
-    """Fingerprints of every function an object file defines, by symbol."""
+    """Fingerprints of every function an object file defines, by symbol (with, for PowerPC, whether its code is
+    hand-written assembly)."""
     from elftools.elf.elffile import ELFFile
     from elftools.elf.relocation import RelocationSection
 
@@ -79,7 +83,8 @@ def object_prints(data: bytes) -> dict[str, Print]:
         sec = elf.get_section(shndx)
         if sec["sh_type"] == "SHT_NOBITS":
             continue
-        code = bytearray(sec.data())
+        raw = sec.data()
+        code = bytearray(raw)
         rels: list[tuple[int, int, str]] = []
         for rs in elf.iter_sections():
             if not isinstance(rs, RelocationSection) or rs["sh_info"] != shndx:
@@ -96,7 +101,8 @@ def object_prints(data: bytes) -> dict[str, Print]:
             lo = s["st_value"] & ~1 if arch == "arm" else s["st_value"]
             mine = [(o - lo, t, n) for o, t, n in rels if lo <= o < lo + s["st_size"]]
             out[s.name] = Print(_key(bytes(code[lo:lo + s["st_size"]]), [(o, t) for o, t, _ in mine]),
-                                [n for _, _, n in mine], s["st_size"])
+                                [n for _, _, n in mine], s["st_size"],
+                                asm=(ppc_reason(raw[lo:lo + s["st_size"]]) or "") if arch == "ppc" else "")
     return out
 
 
@@ -180,9 +186,10 @@ class Job:
     pairs: int = 0
     tried: int = 0
     matched: int = 0
-    asm: int = 0  # twins of assembly functions, taken out of agents' way
+    asm: int = 0  # hand-written assembly (twins of asm functions, code no compiler makes), out of agents' way
     started_at: float = field(default_factory=time.time)
     stop: threading.Event = field(default_factory=threading.Event)
+    ordered: threading.Event = field(default_factory=threading.Event)  # assembly set aside, claim order stored
 
 
 class Twins:
@@ -194,7 +201,8 @@ class Twins:
         self._lock = threading.Lock()
         self._queue: dict[int, set[int]] = defaultdict(set)  # project id -> newly matched functions to propagate
         self._busy: set[int] = set()
-        self.jobs: dict[str, Job] = {}
+        self._trying: set[int] = set()  # functions a pass is trying now (a full pass and one after a match can overlap)
+        self.jobs: dict[str, Job] = {}  # slug -> the full pass (the one the overview shows)
 
     # ------------------------------------------------------------------ fingerprints
 
@@ -226,6 +234,8 @@ class Twins:
             cache = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cache = {}
+        if cache.get("_v") != _CACHE_VERSION:
+            cache = {"_v": _CACHE_VERSION}
         rows = self.net.store.all("SELECT id, name, unit, meta FROM functions WHERE project_id=?", proj["id"])
         by_unit: dict[str, list] = defaultdict(list)
         for r in rows:
@@ -246,14 +256,14 @@ class Twins:
                     prints = object_prints(unit.target.read_bytes())
                 except Exception:  # an object pyelftools can't read: no twins for it
                     prints = {}
-                entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size] for k, p in prints.items()}}
+                entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size, p.asm] for k, p in prints.items()}}
                 cache[uname] = entry
                 changed = True
             for r in urows:
                 sym = json.loads(r["meta"] or "{}").get("symbol") or r["name"].split("@")[0]
                 p = entry["prints"].get(sym)
                 if p:
-                    out[r["id"]] = Print(p[0], p[1], p[2])
+                    out[r["id"]] = Print(p[0], p[1], p[2], asm=p[3] if len(p) > 3 else "")
         if changed:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,44 +331,98 @@ class Twins:
                 out[f] = len(open_)
         return out
 
-    def update_boosts(self, proj) -> int:
+    def update_boosts(self, proj, pending: bool = False) -> int:
         """Store the claim order twins give (functions.boost): for each group of identical unmatched functions, one
-        gets the group's size - 1 (matching it matches the others), the others -1. Returns how many groups."""
-        sizes = self.group_sizes(proj)
-        groups: dict[str, list[int]] = defaultdict(list)
+        gets the group's size - 1 (matching it matches the others), the others -1. `pending`: a pass is about to
+        try matched code on its unmatched twins, which go last meanwhile (-1): they may be free in a minute.
+        Returns how many groups."""
         prints = self.prints(proj)
-        for fid in sizes:
-            groups[prints[fid].key].append(fid)
+        rows = {r["id"]: r["status"] for r in self.net.store.all(
+            "SELECT id, status FROM functions WHERE project_id=?", proj["id"])}
+        groups: dict[str, list[int]] = defaultdict(list)
+        for fid, p in prints.items():
+            if p.size >= 8:
+                groups[p.key].append(fid)
         updates = []
         for members in groups.values():
-            if len(members) < 2:
+            open_ = sorted(f for f in members if rows.get(f) == "open")
+            if any(rows.get(f) == "matched" for f in members):
+                if pending:
+                    updates += [(-1, f) for f in open_]
                 continue
-            members.sort()
-            updates.append((len(members) - 1, members[0]))
-            updates += [(-1, f) for f in members[1:]]
+            if len(open_) < 2:
+                continue
+            updates.append((len(open_) - 1, open_[0]))
+            updates += [(-1, f) for f in open_[1:]]
         with self.net.store.tx() as db:
             db.execute("UPDATE functions SET boost=0 WHERE project_id=? AND boost!=0", (proj["id"],))
             db.executemany("UPDATE functions SET boost=? WHERE id=?", updates)
         return sum(1 for b, _ in updates if b > 0)
 
+    def set_aside_asm(self, proj) -> int:
+        """Unmatched functions whose code no compiler makes (see handwritten.py) get status 'asm': out of agents'
+        way. Returns how many."""
+        if not self.net.fork_slug(proj["slug"]):
+            return 0
+        prints = self.prints(proj)
+        found = [fid for fid, p in prints.items() if p.asm]
+        n = 0
+        for at in range(0, len(found), 500):
+            chunk = found[at:at + 500]
+            for r in self.net.store.all(f"SELECT * FROM functions WHERE id IN ({','.join('?' * len(chunk))}) "
+                                        "AND status='open'", *chunk):
+                self.net.forks.mark_asm(r, reason=prints[r["id"]].asm)
+                n += 1
+        return n
+
+    def _full_running(self, slug: str) -> bool:
+        return (job := self.jobs.get(slug)) is not None and job.state == "running"
+
     def refresh(self, slug: str) -> Job | None:
-        """Bring a project's twins up to date in the background: fingerprints, free matches from matched twins,
-        the claim order. Runs when agents start on a project and before autopilot's drafts."""
+        """Bring a project's twins up to date in the background (see full_pass). Runs when agents start."""
         if (job := self.jobs.get(slug)) is not None and job.state == "running":
             return job
         if slug in self.net.links:  # a room member: the host's copy does this, and its matches come back here
             return None
         job = Job()
-        self.jobs[slug] = job
+        with self._lock:
+            self.jobs[slug] = job  # now: agents starting meanwhile wait for its claim order (job.ordered)
 
         def work() -> None:
             try:
-                self.run(slug, job)
-                self.update_boosts(self.net.project_row(slug))
+                self.full_pass(slug, job)
             except Exception as e:
                 log.info("twins: %s: %s", slug, e)
                 job.state = "done"
         threading.Thread(target=work, daemon=True, name=f"twins-{slug}").start()
+        return job
+
+    def full_pass(self, slug: str, job: Job | None = None) -> Job:
+        """Hand-written assembly set aside, the claim order (agents claim in it from the start, not after the pass),
+        matched code tried on every unmatched twin, the claim order again. One at a time per project: while one runs
+        (agents started it, say), a second call waits for it."""
+        with self._lock:
+            running = self.jobs.get(slug)
+            if running is not None and running.state == "running" and running is not job:
+                job, mine = running, False
+            else:
+                job, mine = job or Job(), True
+                self.jobs[slug] = job
+        if not mine:
+            while job.state == "running":
+                time.sleep(1)
+            return job
+        try:
+            proj = self.net.project_row(slug)
+            job.asm += self.set_aside_asm(proj)
+            self.update_boosts(proj, pending=True)
+            job.ordered.set()
+            self.run(slug, job)
+            self.update_boosts(self.net.project_row(slug))
+        finally:
+            job.ordered.set()
+            if job.state == "running":  # (it failed before the pass)
+                job.state = "stopped" if job.stop.is_set() else "done"
         return job
 
     def source_for(self, proj, a, b, includes: bool = False) -> str | None:
@@ -404,6 +468,17 @@ class Twins:
             return "skip"
         if self.net.store.one("SELECT 1 FROM claims WHERE function_id=?", b_id):
             return "skip"  # an agent is on it: its brief names the twin (see twin_of)
+        with self._lock:
+            if b_id in self._trying:
+                return "skip"
+            self._trying.add(b_id)
+        try:
+            return self._try_pair(agent, proj, a, b)
+        finally:
+            with self._lock:
+                self._trying.discard(b_id)
+
+    def _try_pair(self, agent, proj, a, b) -> str:
         try:
             source = self.source_for(proj, a, b)
         except (NetworkError, OSError, ValueError) as e:
@@ -438,14 +513,17 @@ class Twins:
 
         proj = self.net.project_row(slug)
         job = job or Job()
-        self.jobs[slug] = job
+        if only is None:  # (a pass after a match runs beside the full one: the overview shows the full one)
+            self.jobs[slug] = job
+            job.ordered.set()
         agent, _ = self.net.local_agent("autopilot")
         if self.net.fork_slug(slug):
             workers = min(workers, 2)  # each try builds a file
         seen: set[tuple[int, int]] = set()
         try:
             for _ in range(6):
-                pairs = [p for p in self.pairs(proj, only) if p not in seen and p[1] not in {q[1] for q in seen}]
+                tried = {q[1] for q in seen}
+                pairs = [p for p in self.pairs(proj, only) if p not in seen and p[1] not in tried]
                 if not pairs or job.stop.is_set():
                     break
                 seen |= set(pairs)
@@ -512,7 +590,8 @@ class Twins:
                     try:
                         if self.pairs(proj, batch):
                             self.run(proj["slug"], only=batch)
-                            self.update_boosts(proj)  # twins that didn't match by themselves: back in line
+                            # twins that didn't match by themselves: back in line (unless a full pass is still on)
+                            self.update_boosts(proj, pending=self._full_running(proj["slug"]))
                     except Exception as e:
                         log.info("twins after a match: %s", e)
             finally:

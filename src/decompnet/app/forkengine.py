@@ -145,6 +145,7 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 
 
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
+_ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 _PRAGMA = re.compile(r"^#\s*pragma\b")
 
@@ -604,11 +605,11 @@ class ForkEngine:
                     meta["held"] = self._meta(old)["held"]
                     if sym in held.get(uname, ()):
                         fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
-                if old is not None and self._meta(old).get("asm_twin"):
-                    meta["asm_twin"] = self._meta(old)["asm_twin"]
+                if old is not None:
+                    meta.update({k: v for k, v in self._meta(old).items() if k in _ASM_KEYS})
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
-                if status == "open" and meta.get("asm_twin"):
-                    status = "asm"  # the same code is hand-written assembly elsewhere: not for agents
+                if status == "open" and any(meta.get(k) for k in _ASM_KEYS):
+                    status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
                 score = None if fuzzy is None else scaled(fuzzy, n)
                 vram = md.get("virtual_address")
                 if old is None:
@@ -1358,11 +1359,14 @@ class ForkEngine:
         src = self._current_source(ForkProject(Path(proj["root"])), fn)
         return bool(src and _ASM_DEF.match(src))
 
-    def mark_asm(self, fn, twin_name: str) -> None:
-        """b's code is a matched assembly function's (runtime helpers each module links its own copy of): agents
-        can't write it in C, so it's out of their way."""
+    def mark_asm(self, fn, twin_name: str | None = None, reason: str | None = None) -> None:
+        """fn's code is a matched assembly function's (runtime helpers each module links its own copy of), or code
+        no compiler makes (`reason`: see handwritten.py): agents can't write it in C, so it's out of their way."""
         meta = self._meta(fn)
-        meta["asm_twin"] = twin_name
+        if twin_name:
+            meta["asm_twin"] = twin_name
+        if reason:
+            meta["asm_code"] = reason
         with self.net.store.tx() as db:
             db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", (json.dumps(meta), fn["id"]))
 
@@ -1477,7 +1481,7 @@ class ForkEngine:
                    (time.time(), agent.id if agent else None, source, r["id"]))
         db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
         self.net._event(db, proj["id"], agent.id if agent else None, "match", r["name"])
-        self.net.on_match(proj, r["id"])
+        self.net.on_match(proj, r["id"], agent)
 
     def brief(self, fn, agent: Agent | None, header: str) -> str:
         proj = self.net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])

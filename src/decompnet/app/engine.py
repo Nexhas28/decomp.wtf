@@ -1457,10 +1457,9 @@ class RomNetwork(Network):
         try_one = try_one or self._autopilot_one
         try:  # identical code first: free, and it takes those functions off the drafts' list
             if slug not in self.links:  # (a room member's matches come from the host)
-                job = self.twins.run(slug)
+                job = self.twins.full_pass(slug)
                 state["twins"] = job.matched
                 state["matched"] += job.matched
-                self.twins.update_boosts(proj)
         except Exception as e:
             logging.getLogger("decomp.wtf").info("autopilot twins: %s", e)
         state["phase"] = "drafts"
@@ -1495,9 +1494,14 @@ class RomNetwork(Network):
                     self._event(db, proj["id"], agent.id, "autopilot",
                                 f"{drafts} of {state['tried']} functions matched from machine drafts")
 
-    def on_match(self, proj, function_id: int) -> None:
-        if proj is not None and not (proj["slug"] in self.twins.jobs and self.twins.jobs[proj["slug"]].state == "running"):
-            self.twins.after_match(proj, function_id)
+    def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
+        """Its twins get its code, at once. (Not for the full twins pass's own matches while it runs: it tries
+        those twins itself.)"""
+        if proj is None:
+            return
+        if agent is not None and agent.name == "autopilot" and self.twins._full_running(proj["slug"]):
+            return
+        self.twins.after_match(proj, function_id)
 
     def try_quietly(self, agent, proj, fn, source: str) -> dict:
         """Judge one candidate for a function nobody holds (autopilot's tries): held only while it compiles,
@@ -1645,7 +1649,7 @@ class RomNetwork(Network):
         per_hour = [0] * 24
         for r in self.store.all("SELECT matched_at FROM functions WHERE project_id=? AND status='matched' AND matched_at > ?",
                                 pid, now - 86400):
-            per_hour[23 - min(23, int((now - r["matched_at"]) // 3600))] += 1
+            per_hour[23 - min(23, max(0, int((now - r["matched_at"]) // 3600)))] += 1  # (one matched since `now`: this hour)
         compiles = self.store.one("SELECT COUNT(*) AS n FROM attempts t JOIN functions f ON f.id=t.function_id "
                                   "WHERE f.project_id=? AND t.created_at > ?", pid, now - 3600)["n"]
         return {"agents": board[:24], "matches_per_hour": per_hour, "compiles_last_hour": compiles}

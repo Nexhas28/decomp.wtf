@@ -151,6 +151,21 @@ def is_local(base: str, resolve: bool = True) -> bool:
 # what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
                          r"auth(?:entication)? method", re.I)
+# what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
+# "insufficient_quota", Anthropic: "credit balance is too low"): trying again can't help until it's topped up
+_NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
+                        r"credit balance is too low|payment required|out of credits?", re.I)
+# and when it's asked too much at once (HTTP 429): it works again in a while
+_THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency limit|\b429\b|overloaded", re.I)
+
+
+def no_credit(said: str) -> str | None:
+    """The helper's error when its model's provider says the account is out of credit, else None."""
+    if not (m := _NO_CREDIT.search(said)):
+        return None
+    return (f"the model's provider says the account is out of credit (\u201c{m.group(0)}\u201d): top it up, then "
+            "start the agents again")
+
 
 _versions: dict[str, tuple[float, str | None]] = {}
 _models: dict[str, tuple[float, list[dict]]] = {}
@@ -501,6 +516,7 @@ class Session:
     usd: float = 0.0  # what the agent's provider charged, as the agent reports it
     tokens: int = 0
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
+    throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
 
     def push(self, kind: str, text: str) -> None:
         self.seq += 1
@@ -652,11 +668,16 @@ class Manager:
         self.assignments[agent.id] = s.slug
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
-        failures = 0
+        failures = throttles = 0
         s.push("info", f"{s.label} starting on {s.slug}")
         if (prep := self._prep.get(s.slug)) is not None:
             s.push("info", "first giving the game's code without a source file one (about a minute)")
             prep.wait(900)
+        twins = getattr(getattr(self.net, "twins", None), "jobs", {}).get(s.slug)
+        if twins is not None and not twins.ordered.is_set():
+            s.push("info", "first setting hand-written assembly aside and putting the functions in order "
+                           "(seconds; a minute the first time)")
+            twins.ordered.wait(120)
         while not s.stop.is_set():
             if self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
@@ -697,6 +718,14 @@ class Manager:
             if s.signed_out:
                 s.state = "error"
                 break
+            if s.throttled and throttles < 10:  # the provider's limit, not the agent's failure: wait it out
+                s.throttled, throttles = False, throttles + 1
+                s.state = "waiting"
+                s.push("info", "the model's provider says too many requests at once: trying again in a minute "
+                               "(fewer agents at once on this account would wait less)")
+                s.stop.wait(60)
+                continue
+            throttles = 0 if ok else throttles
             failures = 0 if ok else failures + 1
             if failures >= 3:
                 s.state = "error"
@@ -857,6 +886,10 @@ class Manager:
         s.proc = None
         if refused and not s.stop.is_set():
             raise Fatal(refused)  # every retry would be refused the same way
+        if code != 0 and not s.stop.is_set() and (why := no_credit(" ".join([*said, *errors]))):
+            raise Fatal(why)  # every agent on this account fails the same way until it's topped up
+        if code != 0 and not s.stop.is_set() and _THROTTLED.search(" ".join([*said, *errors])):
+            s.throttled = True
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
             s.signed_out = True
             s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {signin(KINDS[s.kind])}"
@@ -906,6 +939,9 @@ class Manager:
                         break
                     budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
                 if r.status_code != 200:
+                    if (why := no_credit(r.text)) or r.status_code == 402:
+                        raise Fatal(why or no_credit("payment required"))
+                    s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
                     s.error = f"API error {r.status_code}: {r.text[:300]}"
                     if _too_long(r):
                         s.error = ("the model's context is too small for this work even after trimming: give it at "

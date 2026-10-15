@@ -134,6 +134,39 @@ def test_an_agent_nobody_signed_in_to_stops_and_says_so(tmp_path, monkeypatch):
     assert s.signed_out and "isn't signed in" in s.error and "/login" in s.error
 
 
+def test_an_agent_out_of_credit_stops_and_says_so(tmp_path, monkeypatch):
+    """DeepSeek's "Insufficient Balance" (here through opencode): stop at once and say what to do. "Too many
+    requests" is the provider's limit of requests at once: not a failure, the session waits and tries again."""
+    manager = agents.Manager(None, tmp_path, "http://127.0.0.1:9/mcp")
+    s = agents.Session("opencode-1", "opencode", "opencode #1", "game", "opencode-1", {})
+
+    def says(text: str) -> None:
+        code = f"print({text!r}); raise SystemExit(1)"
+        monkeypatch.setattr(manager, "_command", lambda s, token, workdir: ([sys.executable, "-c", code], dict(os.environ), ""))
+
+    says("AI_APICallError: Insufficient Balance (request_id: 3e759c3b)")
+    with pytest.raises(agents.Fatal, match="out of credit .*Insufficient Balance.*top it up"):
+        manager._run_cli(s, "token", tmp_path)
+    says("AI_APICallError: Too many requests. Your current concurrency is 5, which exceeds your concurrency limit of 5")
+    assert manager._run_cli(s, "token", tmp_path) is False and s.throttled
+
+
+@needs_demo
+def test_builtin_api_agent_out_of_credit(app, monkeypatch):
+    client, net, manager = app
+    slug = net.store.one("SELECT slug FROM projects")["slug"]
+    answers = iter([httpx.Response(429, json={"error": {"message": "Rate limit reached for requests"}}),
+                    httpx.Response(402, json={"error": {"message": "Insufficient Balance"}})])
+    real = httpx.Client
+    monkeypatch.setattr(agents.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(lambda r: next(answers)), **kw))
+    s = agents.Session("api-c", "api", "Test", slug, "api-credit", {"base_url": "http://mock/v1", "model": "m",
+                                                                    "context_tokens": 32768})
+    agent, _ = net.local_agent("api-credit")
+    assert manager._run_api(s, agent) is False and s.throttled
+    with pytest.raises(agents.Fatal, match="out of credit"):
+        manager._run_api(s, agent)
+
+
 def test_agent_spend_is_read_from_their_output():
     claude = agents.parse_line("claude", json.dumps({"type": "result", "total_cost_usd": 0.42, "num_turns": 9}))
     assert ("usage", json.dumps({"usd": 0.42})) in claude and any(k == "info" for k, _ in claude)
