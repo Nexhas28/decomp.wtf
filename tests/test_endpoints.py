@@ -3,6 +3,7 @@ context size and limit of sessions at once; sessions spread across the ones pick
 endpoint."""
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -80,7 +81,10 @@ def test_a_saved_key_never_goes_to_an_address_typed_in(tmp_path):
 def test_sessions_are_numbered_per_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(agents.Manager, "_run", lambda self, s: None)
     monkeypatch.setattr(agents.Manager, "_prepare", lambda self, slug: None)
-    m = agents.Manager(SimpleNamespace(), tmp_path, "http://127.0.0.1:1/mcp")
+    # start() registers workers under the store's lock and checks the project isn't being rescanned
+    net = SimpleNamespace(store=SimpleNamespace(lock=threading.Lock()), project_row=lambda slug: {"id": 1},
+                          _require_not_rescanning=lambda pid: None)
+    m = agents.Manager(net, tmp_path, "http://127.0.0.1:1/mcp")
     m.start("api", "p", 2, {"provider_name": "gpu-box", "endpoint": "e1"})
     m.start("api", "p", 1, {"provider_name": "laptop", "endpoint": "e2"})
     m.start("api", "p", 1, {"provider_name": "gpu-box", "endpoint": "e1"})
