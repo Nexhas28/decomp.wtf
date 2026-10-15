@@ -47,6 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_symbols_addr ON symbols(project_id, address);
 CREATE TABLE IF NOT EXISTS twin_misses(
   function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
   PRIMARY KEY(function_id, source_hash));
+CREATE TABLE IF NOT EXISTS search_budgets(
+  function_id INTEGER PRIMARY KEY, epoch TEXT NOT NULL DEFAULT '', policy_version INTEGER NOT NULL DEFAULT 1,
+  turns_used INTEGER NOT NULL DEFAULT 0, max_turns INTEGER NOT NULL DEFAULT 4,
+  improvements INTEGER NOT NULL DEFAULT 0, cooldown_until REAL NOT NULL DEFAULT 0,
+  reset_reason TEXT, last_at REAL);
 """
 
 # Columns added after the first release; applied in place to existing databases.
