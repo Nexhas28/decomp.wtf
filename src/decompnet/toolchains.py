@@ -117,11 +117,14 @@ def get(tid: str) -> Toolchain:
 
 def data_dir() -> Path:
     """Per-user data directory for decompnet (toolchains, caches)."""
+    env = os.environ.get("XDG_DATA_HOME")
+    if env:  # set explicitly: it wins on every platform
+        return Path(env) / "decompnet"
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "decompnet"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "decompnet"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "decompnet"
+    return Path.home() / ".local" / "share" / "decompnet"
 
 
 def root() -> Path:
