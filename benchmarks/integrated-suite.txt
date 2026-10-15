@@ -1,13 +1,15 @@
-........................sssssssssss.s..s..s.s.....F.....s.s..sssssssssss [ 17%]
-sss...............ssss.ss............................ssssFFFFFFFFFssssss [ 35%]
-ssssssEEEEEEE...E..EE...E.F...sssssssssss...........................s... [ 53%]
-.......s.......EE........EEEEEFEEEE.EE.EE..ss.s......................... [ 71%]
-..............EEFE.sEsss....ssF..sssssssssssssssssssssss................ [ 89%]
-............sssssssssss.....sFFFF.F..ssssss                              [100%]
+.............................................sssssssssss.s..s..s.s.....F [ 14%]
+.....s..........................................s..ssssssssssssss....... [ 28%]
+.......................ssss.ss............................ssssFFFFFFFFFs [ 42%]
+sssssssssssEEEEEEE...E..EE...E.F...sssssssssss.......................... [ 57%]
+.s..........s.......EE........EEEEEFEEEE.EE.EE..ss.s.................... [ 71%]
+...................EEFE.sEsss....ssF..sssssssssssssssssssssss........... [ 85%]
+..........................................sssssssssss.....sFFFF.F..sssss [ 99%]
+s                                                                        [100%]
 ==================================== ERRORS ====================================
 ________________ ERROR at setup of test_fork_state_after_setup _________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -33,8 +35,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -48,7 +50,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _______ ERROR at setup of test_agent_matches_a_new_function_and_commits ________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -74,8 +76,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -89,7 +91,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ______ ERROR at setup of test_decomp_wtfs_own_tries_leave_no_claim_behind ______
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -115,8 +117,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -130,7 +132,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 __ ERROR at setup of test_near_miss_gets_a_diff_and_release_restores_the_best __
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -156,8 +158,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -171,7 +173,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ________________________ ERROR at setup of test_guards _________________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -197,8 +199,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -212,7 +214,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ____________________ ERROR at setup of test_read_and_search ____________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -238,8 +240,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -253,7 +255,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ____________________ ERROR at setup of test_function_detail ____________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -279,8 +281,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -294,7 +296,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _____________________ ERROR at setup of test_find_similar ______________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -320,8 +322,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -335,7 +337,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _______________ ERROR at setup of test_ghidra_drafts_for_a_unit ________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -361,8 +363,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -376,7 +378,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 __ ERROR at setup of test_rewriting_a_matched_function_must_keep_it_matching ___
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -402,8 +404,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -417,7 +419,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _ ERROR at setup of test_a_unit_without_a_compiled_object_is_measured_as_not_matched _
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x106a338c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-183'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x1096d48c0>, _basetemp=PosixPath.../ff/<tmp>/T/pytest-of-<user>/pytest-276'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -443,8 +445,8 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x109774ec0>
-version = None, log = <function fork.<locals>.<lambda> at 0x1097bcb80>
+self = <decompnet.forks.project.ForkProject object at 0x10ce11670>
+version = None, log = <function fork.<locals>.<lambda> at 0x10cddcae0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -458,7 +460,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ________________ ERROR at setup of test_agent_session_over_http ________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_agent_session_over_http0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_agent_session_over_http0')
 
     @pytest.fixture
     def server(tmp_path):
@@ -552,7 +554,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ______________ ERROR at setup of test_tools_require_a_valid_token ______________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_tools_require_a_valid_tok0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_tools_require_a_valid_tok0')
 
     @pytest.fixture
     def server(tmp_path):
@@ -646,7 +648,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ________________ ERROR at setup of test_every_solution_matches _________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_every_solution_matches0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_every_solution_matches0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -740,7 +742,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________ ERROR at setup of test_wrong_attempt_gets_scored_diff _____________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_wrong_attempt_gets_scored0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_wrong_attempt_gets_scored0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -834,7 +836,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_compile_error_and_rejection_are_reported ________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_compile_error_and_rejecti0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_compile_error_and_rejecti0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -928,7 +930,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____ ERROR at setup of test_claims_are_exclusive_and_scheduler_spreads_work ____
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_claims_are_exclusive_and_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_claims_are_exclusive_and_0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1022,7 +1024,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_release_hands_off_best_attempt_and_notes ________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_release_hands_off_best_at0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_release_hands_off_best_at0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1116,7 +1118,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________ ERROR at setup of test_context_edits_are_regression_tested __________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_context_edits_are_regress0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_context_edits_are_regress0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1210,7 +1212,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _ ERROR at setup of test_scratch_compiles_on_matched_functions_give_no_credit __
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_scratch_compiles_on_match0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_scratch_compiles_on_match0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1304,7 +1306,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _________________________ ERROR at setup of test_auth __________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_auth0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_auth0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1398,7 +1400,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ________________________ ERROR at setup of test_export _________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_export0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_export0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1492,7 +1494,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______________ ERROR at setup of test_status_shows_legal_basis ________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_status_shows_legal_basis0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_status_shows_legal_basis0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1586,7 +1588,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ___________________ ERROR at setup of test_moderation_tools ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_moderation_tools0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_moderation_tools0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1680,7 +1682,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ___ ERROR at setup of test_every_new_session_starts_with_what_agents_learned ___
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_every_new_session_starts_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_every_new_session_starts_0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1774,7 +1776,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _ ERROR at setup of test_big_functions_get_more_compiles_before_the_nudge_to_move_on _
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_big_functions_get_more_co0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_big_functions_get_more_co0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1868,7 +1870,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________________ ERROR at setup of test_registration_guards __________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_registration_guards0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_registration_guards0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1962,7 +1964,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_reputation_gates_header_edits_and_budget ________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_reputation_gates_header_e0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_reputation_gates_header_e0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -2056,7 +2058,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________ ERROR at setup of test_function_page_has_full_history _____________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_function_page_has_full_hi0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_function_page_has_full_hi0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -2150,7 +2152,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________ ERROR at setup of test_upstream_export_commits_with_credit __________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_upstream_export_commits_w0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_upstream_export_commits_w0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -2245,8 +2247,8 @@ clang: error: unknown argument: '-flive-patching=inline-only-static'
 =================================== FAILURES ===================================
 ____________ test_the_api_agent_stays_within_a_small_local_context _____________
 
-app = (<starlette.testclient.TestClient object at 0x10969ab40>, <decompnet.app.engine.RomNetwork object at 0x1095b2510>, <decompnet.app.agents.Manager object at 0x1095d37d0>)
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1096ab3e0>
+app = (<starlette.testclient.TestClient object at 0x10c319ee0>, <decompnet.app.engine.RomNetwork object at 0x10c2698b0>, <decompnet.app.agents.Manager object at 0x10c090200>)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10bba9760>
 
     def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
         """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
@@ -2259,7 +2261,7 @@ E       TypeError: 'NoneType' object is not subscriptable
 tests/test_app_server.py:309: TypeError
 _____________ test_a_literal_named_and_placed_differently_matches ______________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x109735010>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce10440>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_a_literal_named_and_placed_differently_matches(fork):
         net, slug, agent = fork
@@ -2273,7 +2275,7 @@ E         + open
 tests/test_fork_judge.py:119: AssertionError
 ____________ test_resubmitting_a_matched_function_is_never_rejected ____________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1091fff20>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10be0b1a0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_resubmitting_a_matched_function_is_never_rejected(fork):
         net, slug, agent = fork
@@ -2287,7 +2289,7 @@ E       assert 'still matches' in "❌ BUILD ERROR (your change was undone)\n(Th
 tests/test_fork_judge.py:128: AssertionError
 _____________________ test_a_wrong_constant_is_not_a_match _____________________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1097361e0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce41a30>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_a_wrong_constant_is_not_a_match(fork):
         net, slug, agent = fork
@@ -2297,13 +2299,13 @@ E       AssertionError: ❌ BUILD ERROR (your change was undone)
 E         (The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)
 E         ninja isn't installed
 E       assert (not False and 'constants' in "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed")
-E        +  where False = <built-in method startswith of str object at 0x1096cc6f0>('✅')
-E        +    where <built-in method startswith of str object at 0x1096cc6f0> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
+E        +  where False = <built-in method startswith of str object at 0x10c1f5980>('✅')
+E        +    where <built-in method startswith of str object at 0x10c1f5980> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
 
 tests/test_fork_judge.py:134: AssertionError
 ___________ test_a_reference_by_another_name_matches_with_a_warning ____________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x10975a120>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce04710>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_a_reference_by_another_name_matches_with_a_warning(fork):
         net, slug, agent = fork
@@ -2313,13 +2315,13 @@ E       AssertionError: ❌ BUILD ERROR (your change was undone)
 E         (The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)
 E         ninja isn't installed
 E       assert (False)
-E        +  where False = <built-in method startswith of str object at 0x1096cca50>('✅ MATCH')
-E        +    where <built-in method startswith of str object at 0x1096cca50> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
+E        +  where False = <built-in method startswith of str object at 0x10c1f5b30>('✅ MATCH')
+E        +    where <built-in method startswith of str object at 0x10c1f5b30> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
 
 tests/test_fork_judge.py:147: AssertionError
 ______________ test_a_stale_match_in_the_database_blocks_nothing _______________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x10975a3f0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10c31ac60>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_a_stale_match_in_the_database_blocks_nothing(fork):
         net, slug, agent = fork
@@ -2332,13 +2334,13 @@ E       AssertionError: ❌ BUILD ERROR (your change was undone)
 E         (The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)
 E         ninja isn't installed
 E       assert False
-E        +  where False = <built-in method startswith of str object at 0x1096ccc00>('✅ MATCH')
-E        +    where <built-in method startswith of str object at 0x1096ccc00> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
+E        +  where False = <built-in method startswith of str object at 0x10c1f5ce0>('✅ MATCH')
+E        +    where <built-in method startswith of str object at 0x10c1f5ce0> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
 
 tests/test_fork_judge.py:156: AssertionError
 _________________ test_an_edit_that_breaks_the_build_is_undone _________________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1097ad070>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce41fd0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_an_edit_that_breaks_the_build_is_undone(fork):
         net, slug, agent = fork
@@ -2348,13 +2350,13 @@ fork = (<decompnet.app.engine.RomNetwork object at 0x1097ad070>, 'literals', Age
 >       assert out.startswith("❌") and "compile" in out, out
 E       AssertionError: ⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.
 E       assert (False)
-E        +  where False = <built-in method startswith of str object at 0x1095b5bb0>('❌')
-E        +    where <built-in method startswith of str object at 0x1095b5bb0> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
+E        +  where False = <built-in method startswith of str object at 0x10c128df0>('❌')
+E        +    where <built-in method startswith of str object at 0x10c128df0> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
 
 tests/test_fork_judge.py:165: AssertionError
 __________ test_a_match_made_with_edit_file_is_a_match_like_any_other __________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1097af9b0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce41520>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_a_match_made_with_edit_file_is_a_match_like_any_other(fork):
         net, slug, agent = fork
@@ -2362,13 +2364,13 @@ fork = (<decompnet.app.engine.RomNetwork object at 0x1097af9b0>, 'literals', Age
 >       assert out.startswith("✅"), out
 E       AssertionError: ⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.
 E       assert False
-E        +  where False = <built-in method startswith of str object at 0x1095b52f0>('✅')
-E        +    where <built-in method startswith of str object at 0x1095b52f0> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
+E        +  where False = <built-in method startswith of str object at 0x10ce48530>('✅')
+E        +    where <built-in method startswith of str object at 0x10ce48530> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
 
 tests/test_fork_judge.py:178: AssertionError
 _______ test_edit_file_forgives_whitespace_and_shows_where_the_text_went _______
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1097cf2c0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce85250>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_edit_file_forgives_whitespace_and_shows_where_the_text_went(fork):
         net, slug, agent = fork
@@ -2378,13 +2380,13 @@ fork = (<decompnet.app.engine.RomNetwork object at 0x1097cf2c0>, 'literals', Age
 >       assert out.startswith("✅") and "/* tidied */" in path.read_text(), out
 E       AssertionError: ⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.
 E       assert (False)
-E        +  where False = <built-in method startswith of str object at 0x1095b5930>('✅')
-E        +    where <built-in method startswith of str object at 0x1095b5930> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
+E        +  where False = <built-in method startswith of str object at 0x10ce487b0>('✅')
+E        +    where <built-in method startswith of str object at 0x10ce487b0> = "⚠️ src/lit.c updated, but it still doesn't compile (it didn't before your edit either): fix it so its functions can be measured.".startswith
 
 tests/test_fork_judge.py:191: AssertionError
 ________________ test_lines_the_file_already_has_may_come_along ________________
 
-fork = (<decompnet.app.engine.RomNetwork object at 0x1097cd640>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
+fork = (<decompnet.app.engine.RomNetwork object at 0x10ce407a0>, 'literals', Agent(id=1, name='agent-1', owner='you', trusted=True))
 
     def test_lines_the_file_already_has_may_come_along(fork):
         """Includes and declarations sent with a function are placed in its file (agents' prototypes and pragma
@@ -2396,13 +2398,13 @@ E       AssertionError: ❌ BUILD ERROR (your change was undone)
 E         (The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)
 E         ninja isn't installed
 E       assert False
-E        +  where False = <built-in method startswith of str object at 0x1096ccdb0>('✅ MATCH')
-E        +    where <built-in method startswith of str object at 0x1096ccdb0> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
+E        +  where False = <built-in method startswith of str object at 0x10c1f5e90>('✅ MATCH')
+E        +    where <built-in method startswith of str object at 0x10c1f5e90> = "❌ BUILD ERROR (your change was undone)\n(The file didn't build before your change either, so the error may be in other code of the file: fix that with edit_file.)\nninja isn't installed".startswith
 
 tests/test_fork_judge.py:202: AssertionError
 ________________________ test_a_public_decomp_together _________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_a_public_decomp_together0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_a_public_decomp_together0')
 
     @needs_tools
     def test_a_public_decomp_together(tmp_path):
@@ -2429,9 +2431,9 @@ src/decompnet/app/forkengine.py:510: in setup
     fp.setup(cfg.get("version"), log=log)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <decompnet.forks.project.ForkProject object at 0x10975a2d0>
+self = <decompnet.forks.project.ForkProject object at 0x10c268290>
 version = None
-log = <function test_a_public_decomp_together.<locals>.<lambda> at 0x10a43fba0>
+log = <function test_a_public_decomp_together.<locals>.<lambda> at 0x10ce60fe0>
 
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
@@ -2445,7 +2447,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _____________________ test_expired_claims_are_reclaimable ______________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_expired_claims_are_reclai0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_expired_claims_are_reclai0')
 
     @needs_host_gcc
     def test_expired_claims_are_reclaimable(tmp_path):
@@ -2537,7 +2539,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________________ test_hash_only_project_stores_no_code _____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_hash_only_project_stores_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_hash_only_project_stores_0')
 
     @needs_host_gcc
     def test_hash_only_project_stores_no_code(tmp_path):
@@ -2556,7 +2558,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_hash_only_project_stores_0/hashdemo')}
+kwargs = {'cwd': PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_hash_only_project_stores_0/hashdemo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2633,8 +2635,8 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________________ test_builds_find_decomp_wtfs_own_ninja ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_builds_find_decomp_wtfs_o0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a375a30>
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_builds_find_decomp_wtfs_o0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10cf42270>
 
     def test_builds_find_decomp_wtfs_own_ninja(tmp_path, monkeypatch):
         """ninja comes in decomp.wtf's own environment, which isn't on PATH once decomp.wtf is installed (a GameCube game's
@@ -2663,7 +2665,7 @@ E         + branch
 tests/test_updates.py:24: AssertionError
 _____________________________ test_release_update ______________________________
 
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a2f9c40>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10cf7eea0>
 
     def test_release_update(monkeypatch):
         newer = ".".join(str(x + (1 if i == 2 else 0)) for i, x in enumerate(updates.version_key(__version__)))
@@ -2675,7 +2677,7 @@ E       assert (False)
 tests/test_updates.py:36: AssertionError
 ________ test_release_update_from_github_when_decomp_wtf_is_unreachable ________
 
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a376b10>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10cf7f080>
 
     def test_release_update_from_github_when_decomp_wtf_is_unreachable(monkeypatch):
         """Issue #15: decomp.wtf blocked or down: the release's version from GitHub, installed from its tag's archive."""
@@ -2716,7 +2718,7 @@ E         + https://api.github.com/repos/i12bp8/decomp.wtf/commits/cross-platfor
 tests/test_updates.py:47: AssertionError
 ______________________________ test_branch_update ______________________________
 
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a36f290>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10cf422d0>
 
     def test_branch_update(monkeypatch):
         have, head = "1" * 40, "2" * 40
@@ -2749,8 +2751,8 @@ E       PermissionError: [Errno 1] Operation not permitted: '/Users/<user>/Libra
 ../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: PermissionError
 ___________________ test_install_runs_uv_then_the_new_setup ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-183/test_install_runs_uv_then_the_0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10a2ef620>
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-276/test_install_runs_uv_then_the_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10cf433b0>
 
     @pytest.mark.skipif(sys.platform == "win32", reason="a shell script stands in for uv")
     def test_install_runs_uv_then_the_new_setup(tmp_path, monkeypatch):
@@ -2841,4 +2843,4 @@ ERROR tests/test_phase23.py::test_registration_guards - subprocess.CalledProc...
 ERROR tests/test_phase23.py::test_reputation_gates_header_edits_and_budget - ...
 ERROR tests/test_phase23.py::test_function_page_has_full_history - subprocess...
 ERROR tests/test_phase23.py::test_upstream_export_commits_with_credit - subpr...
-19 failed, 238 passed, 116 skipped, 30 errors in 12.45s
+19 failed, 340 passed, 116 skipped, 30 errors in 13.55s
