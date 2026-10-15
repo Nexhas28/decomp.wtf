@@ -1018,11 +1018,17 @@ DEFAULT_POLICY: dict[str, int] = {
 }
 
 
-def propose(source: str, rng: random.Random, policy: dict[str, int] | None = None) -> Mutation | None:
-    """One labelled mutation with its provenance, or None when no operator applies."""
+def propose(source: str, rng: random.Random, policy: dict[str, int] | None = None,
+            *, analysis: Analysis | None = None) -> Mutation | None:
+    """One labelled mutation with its provenance, or None when no operator applies.
+
+    `analysis` may be precomputed by the caller (the guided search analyses once per proposal and
+    reuses it for metrics); when omitted it is computed here. `policy` is an operator-id -> weight
+    map, as produced by the search package's mismatch routing."""
     if policy is None:
         policy = DEFAULT_POLICY
-    analysis = analyze(source)
+    if analysis is None:
+        analysis = analyze(source)
     if analysis.body is None:
         return _fallback_propose(source, rng)
     ops = [OPERATORS[op_id] for op_id, weight in policy.items() if weight > 0 and op_id in OPERATORS]
