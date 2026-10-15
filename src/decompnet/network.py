@@ -523,6 +523,9 @@ class Network:
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if stale_reason is not None:
                 return  # historical only: no best/status/claim/receipt/epoch changes
+            # P4.6: retain every distinct source as a provenance-tagged candidate instead of letting the
+            # latest draft overwrite the only copy; alternatives are never current-best unless rescored.
+            self._note_candidate(db, fn, via, source, snapshot)
             if score is not None:
                 cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
                                  "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
@@ -557,6 +560,43 @@ class Network:
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
+
+    def _note_candidate(self, db, fn, origin: str, source: str, snapshot: dict | None) -> None:
+        """P4.6: keep distinct sources as provenance-tagged alternatives (bounded per function). The
+        current best/matched source remains authoritative; candidates are only ever current-best after
+        being rescored under the current snapshot."""
+        if not source:
+            return
+        digest = snapshots.sha(source.encode())
+        if db.execute("SELECT 1 FROM candidates WHERE function_id=? AND source_digest=?", (fn["id"], digest)).fetchone():
+            return
+        db.execute(
+            "INSERT INTO candidates(function_id, origin, source, source_digest, evidence, score_version, created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (fn["id"], origin, source, digest,
+             snapshots.snapshot_id(snapshot) if snapshot else None,
+             snapshots.SCORER_VERSION, time.time()))
+        db.execute("DELETE FROM candidates WHERE function_id=? AND id NOT IN "
+                   "(SELECT id FROM candidates WHERE function_id=? ORDER BY id DESC LIMIT 50)", (fn["id"], fn["id"]))
+
+    def alternatives(self, function: str, project: str | None = None, limit: int = 10) -> str:
+        """The retained candidate sources for a function, newest first, with origin and whether each was
+        recorded under the current dependency snapshot (P4.6: alternatives are rescored before reuse)."""
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._context(proj["id"], fn["unit"])
+        rows = self.store.all(
+            "SELECT * FROM candidates WHERE function_id=? ORDER BY id DESC LIMIT ?", fn["id"], limit)
+        if not rows:
+            return f"No retained candidates for {fn['name']} yet."
+        out = [f"### {fn['name']}: {len(rows)} retained candidate(s)"]
+        for r in rows:
+            fresh = r["evidence"] is None or (
+                r["score_version"] == snapshots.SCORER_VERSION and ctx is not None
+                and r["evidence"] == snapshots.snapshot_id(snapshots.capture(fn, proj, ctx)))
+            out.append(f"- {r['origin']} ({'current-snapshot' if fresh else 'historical'}): "
+                       f"{r['source'].strip().splitlines()[0] if r['source'].strip() else '(empty)'}")
+        return "\n".join(out)
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """A function just matched (subclasses try its code on its twins)."""
@@ -801,7 +841,7 @@ class Network:
         proj = self._project(slug)
         with self.store.tx() as db:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
-            for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts"):
+            for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts", "candidates"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
@@ -815,7 +855,7 @@ class Network:
         with self.store.tx() as db:
             for table in ("claims", "attempts", "notes"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
-            for table in ("attempt_snapshots", "verification_receipts"):
+            for table in ("attempt_snapshots", "verification_receipts", "candidates"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
             db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "

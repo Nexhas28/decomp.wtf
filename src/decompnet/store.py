@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS verification_receipts(
   unit_code_data_match TEXT NOT NULL DEFAULT 'unverified',
   whole_image_checksum TEXT NOT NULL DEFAULT 'not_run',
   acceptance_policy TEXT NOT NULL, verified_at_utc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS candidates(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, origin TEXT NOT NULL,
+  source TEXT NOT NULL, source_digest TEXT NOT NULL, parent_id INTEGER,
+  evidence TEXT, score_version INTEGER, created_at REAL);
+CREATE INDEX IF NOT EXISTS idx_candidates_fn ON candidates(function_id);
 """
 
 # Columns added after the first release; applied in place to existing databases.
