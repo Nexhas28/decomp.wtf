@@ -39,9 +39,17 @@ def context_digest(ctx) -> str:
 
 
 def compiler_digest(proj) -> str:
-    """Compiler profile: toolchain, ordered flags, timeout. (PR-09 extends this with the toolchain
-    binaries' own manifests.)"""
-    return sha(json.dumps(json.loads(proj["config"]).get("compiler", {}), sort_keys=True).encode())
+    """Compiler profile identity. Delegates to toolchains.profile_identity (PR-14): toolchain, ordered
+    flags, wrapper, language, mode, ABI settings, scope, timeout AND the installed toolchain binary
+    manifests, so a flag change, a wrapper change or a reinstalled toolchain between capture and
+    acceptance is visible to the acceptance gate (V-05). Falls back to the plain config-dict hash if
+    the profile module is unavailable."""
+    try:
+        from . import toolchains
+
+        return toolchains.profile_identity(proj)
+    except Exception:  # profile identity unavailable: the conservative config-dict hash still catches flag changes
+        return sha(json.dumps(json.loads(proj["config"]).get("compiler", {}), sort_keys=True).encode())
 
 
 def capture(fn, proj, ctx) -> dict:
