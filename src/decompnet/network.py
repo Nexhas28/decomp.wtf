@@ -200,6 +200,27 @@ class Network:
         fingerprints. Projects whose targets come from a ROM link the candidate instead (see app.engine)."""
         return extract_function(obj, fn["name"]), None, []
 
+    def _compile_and_evaluate(self, fn, proj, source: str, ctx):
+        """Compile one exact translation-unit input and evaluate it against `fn`'s own target (plan P2.1):
+        the single compile + evaluate + score step shared by attempt() and by remote-result re-verification.
+        Returns (result, candidate, verdict, problems, diff); diff is None for hash-only projects and when
+        no candidate came out of the object. The caller is responsible for snapshot/acceptance checks."""
+        result = self._compile(proj, ctx["header"], source)
+        if not result.ok:
+            return result, None, None, [], None
+        cand, verdict, problems = self._evaluate(fn, proj, result.obj)
+        if cand is None or self._hash_only(fn):
+            return result, cand, verdict, problems, None
+        d = scoring.diff(self._target_obj(fn, proj), cand)
+        if verdict is not None:
+            d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+        return result, cand, verdict, problems, d
+
+    def _stale_text(self, proj, fn, snap: dict, why: str) -> str:
+        cur = self._context(proj["id"], fn["unit"])
+        versions = f" (v{snap['context_version']} -> v{cur['version']})" if why == "context changed" and cur else ""
+        return (f"⚠ the {why} during your compile{versions}: recorded as historical, not counted; re-read and retry")
+
     def _asm_text(self, fn, proj) -> str:
         return fn["asm"]
 
@@ -391,19 +412,33 @@ class Network:
 
         ctx = self._context(proj["id"], fn["unit"])
         snap = snapshots.capture(fn, proj, ctx)
-        result = self._compile(proj, ctx["header"], source)
+        result, cand, verdict, problems, d = self._compile_and_evaluate(fn, proj, source, ctx)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}", "score": None, "matched": False}
 
-        cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ Compiled, but the object has no function named `{fn['name']}`. "
                             f"Define it with exactly that name (non-static).", "score": None, "matched": False}
+
         if self._hash_only(fn):
             matched_now = cand.fingerprint() == fn["fingerprint"] and not scratch
+            score = 0 if matched_now else None
+        else:
+            matched_now = d.bytes_match and not scratch
+            score = d.score
+
+        ok, why = snapshots.check_current(self, proj, fn, snap)
+        if not ok:
+            # The context/target/compiler moved while this compiled: the result is historical search
+            # evidence only — never a current best or a match (plan P1.4).
+            self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=True,
+                         snapshot=snap, stale_reason=why)
+            return {"text": self._stale_text(proj, fn, snap, why), "score": score, "matched": False}
+
+        if self._hash_only(fn):
             self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
                          compiled=True, snapshot=snap)
             if matched_now:
@@ -412,10 +447,6 @@ class Network:
             return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
                             f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
                             "against your own lawful copy.", "score": None, "matched": False}
-        d = scoring.diff(self._target_obj(fn, proj), cand)
-        if verdict is not None:
-            d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-        matched_now = d.bytes_match and not scratch
         self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap)
 
         if scratch:
@@ -461,7 +492,11 @@ class Network:
                 "keeps your best attempt for whoever comes next.")
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
-                compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None):
+                compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
+                stale_reason: str | None = None):
+        """Record one attempt. `stale_reason` marks the result historical: it is stored (with its snapshot)
+        as search evidence but never updates best_score/status, never accepts a match and never writes a
+        receipt (plan P1.4: a stale compilation cannot become a current match)."""
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         with self.store.tx() as db:
@@ -471,12 +506,14 @@ class Network:
             if snapshot is not None:
                 db.execute(
                     "INSERT INTO attempt_snapshots(attempt_id, project_id, function_id, function_revision, "
-                    "context_version, context_digest, target_digest, compiler_digest, scorer_version, policy_version) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "context_version, context_digest, target_digest, compiler_digest, scorer_version, policy_version, "
+                    "stale_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (attempt_id, snapshot["project_id"], snapshot["function_id"], snapshot["function_revision"],
                      snapshot["context_version"], snapshot["context_digest"], snapshot["target_digest"],
-                     snapshot["compiler_digest"], snapshot["scorer_version"], snapshot["policy_version"]))
+                     snapshot["compiler_digest"], snapshot["scorer_version"], snapshot["policy_version"], stale_reason))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
+            if stale_reason is not None:
+                return  # historical only: no best/status/claim/receipt/epoch changes
             if score is not None:
                 cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
                                  "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
@@ -544,6 +581,7 @@ class Network:
             else:
                 new_header = header.rstrip("\n") + "\n\n" + new.strip("\n") + "\n"
             members = self._matched_using(proj, unit)
+            epoch = self.store.one("SELECT matched_epoch FROM projects WHERE id=?", proj["id"])["matched_epoch"]
             broken = self.regression_test(proj, new_header, only=members)
             if broken:
                 listing = "\n".join(f"- {name}: {why}" for name, why in broken[:10])
@@ -552,6 +590,8 @@ class Network:
             with self.store.tx() as db:
                 if self._latest_version(db, proj["id"], unit) != ctx["version"]:
                     continue  # someone else committed meanwhile: re-apply on top and re-test
+                if self._acceptance_moved(db, proj, unit, epoch, members):
+                    continue  # a match (or reset) changed the protected set while we validated: re-test
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                            "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, new_header, agent.id, message.strip(), time.time(), unit))
@@ -559,6 +599,15 @@ class Network:
                 self._event(db, proj["id"], agent.id, "context", f"v{version}{f' ({unit})' if unit else ''}: {message.strip()}")
             return f"✅ header is now v{version} (all {len(members)} matched functions that use it still match)."
         raise NetworkError("the header is being edited heavily right now; re-read it and retry")
+
+    def _acceptance_moved(self, db, proj, unit: str, epoch: int, members: list) -> bool:
+        """Did acceptance state change within the edited scope since validation started (plan P1.4 step 6)?
+        The project-wide header protects the whole project, so the project matched_epoch is authoritative.
+        A per-unit header protects only that unit: its matched set is the scoped epoch, so a match in an
+        unrelated unit never voids valid work (plan V-08)."""
+        if unit == "":
+            return db.execute("SELECT matched_epoch FROM projects WHERE id=?", (proj["id"],)).fetchone()["matched_epoch"] != epoch
+        return {m["id"] for m in self._matched_using(proj, unit)} != {m["id"] for m in members}
 
     def rename_symbol(self, agent: Agent, project: str | None, old: str, new: str, message: str = "") -> str:
         """Project-wide refactor: rename an identifier (field, type, global, function param...) in every
@@ -577,6 +626,7 @@ class Network:
             if not changed:
                 raise NetworkError(f"`{old}` does not occur in any header")
             matched = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
+            epoch = self.store.one("SELECT matched_epoch FROM projects WHERE id=?", proj["id"])["matched_epoch"]
             rewritten = {r["id"]: word.sub(new, r["matched_source"]) for r in matched}
             header_for = lambda fn: changed.get(self._effective_unit(fn, units), current[self._effective_unit(fn, units)]["header"])
             broken = self.regression_test(proj, None, sources=rewritten, only=matched, header_for=header_for)
@@ -585,11 +635,9 @@ class Network:
                 return f"❌ REJECTED: renaming breaks {len(broken)} matched function(s).\n{listing}"
             msg = message.strip() or f"rename {old} -> {new}"
             with self.store.tx() as db:
-                n_matched = db.execute("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='matched'",
-                                       (proj["id"],)).fetchone()["n"]
-                if n_matched != len(matched) or any(self._latest_version(db, proj["id"], u) != current[u]["version"]
-                                                    for u in changed):
-                    continue
+                if db.execute("SELECT matched_epoch FROM projects WHERE id=?", (proj["id"],)).fetchone()["matched_epoch"] != epoch \
+                        or any(self._latest_version(db, proj["id"], u) != current[u]["version"] for u in changed):
+                    continue  # a match (or another edit) landed while we validated: re-read and re-test
                 for u, header in changed.items():
                     version = self._next_version(db, proj["id"])
                     db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
