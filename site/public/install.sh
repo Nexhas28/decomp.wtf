@@ -69,7 +69,7 @@ bold "decomp.wtf setup"
 OS="$(uname -s)"
 case "$OS" in
   Linux) ;;
-  Darwin) fail "macOS isn't supported: decomp.wtf runs on Linux, and on Windows (in WSL 2). On a Mac, use a Linux machine or virtual machine." ;;
+  Darwin) fail "macOS isn't supported: decomp.wtf runs on Linux and on Windows (in WSL 2), on x86-64 PCs (the games' compilers are x86 programs). On an Intel Mac, an x86-64 Linux virtual machine works too." ;;
   *) fail "this installer is for Linux; on Windows run in PowerShell: irm https://decomp.wtf/install.ps1 | iex" ;;
 esac
 command -v curl >/dev/null || fail "curl is required"
