@@ -74,11 +74,11 @@ class Permuter:
             "SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open' "
             "AND f.best_source IS NOT NULL AND f.best_score > 0 AND f.best_score <= f.n_insns * 100 * ? "
             "AND f.n_insns > 0 AND f.n_insns <= 400 "
-            "AND f.id NOT IN (SELECT function_id FROM claims) "
+            "AND f.id NOT IN (SELECT function_id FROM claims WHERE expires_at > ?) "
             "AND NOT EXISTS (SELECT 1 FROM search_budgets b WHERE b.function_id=f.id "
             "AND b.turns_used >= b.max_turns) "
             "ORDER BY CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC, f.id ASC LIMIT ?",
-            proj["id"], NEAR, limit)
+            proj["id"], NEAR, time.time(), limit)
 
     def _turns_used(self, fn) -> int:
         """The function's persisted permuter search-budget state (PR-04 adds reset policy and
@@ -117,7 +117,6 @@ class Permuter:
                 for fn in todo:
                     if st.stop.is_set():
                         break
-                    self._charge_turn(fn)
                     try:
                         self._permute(agent, proj, fn, st)
                     except Exception as e:  # one odd function must not stop the rest
@@ -130,10 +129,11 @@ class Permuter:
         now = time.time()
         with self.net.store.tx() as db:
             self.net._expire_claims(db)
-            if db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
-                return False
-            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + SECONDS + 120))
-        return True
+            # INSERT OR IGNORE: the lease is granted atomically — of two workers racing on one
+            # function, exactly one wins, even across processes sharing the database file.
+            cur = db.execute("INSERT OR IGNORE INTO claims VALUES(?,?,?,?)",
+                             (fn["id"], agent.id, now, now + SECONDS + 120))
+            return cur.rowcount == 1
 
     def _let_go(self, agent, fn) -> None:
         with self.net.store.tx() as db:
@@ -142,9 +142,10 @@ class Permuter:
     def _permute(self, agent, proj, fn, st: State) -> None:
         if not self._hold(agent, fn):
             return
+        turn = self._charge_turn(fn)  # a failed claim costs nothing: only real search work is charged
         st.current, st.tried = fn["name"], st.tried + 1
         fork = self.net.fork_slug(proj["slug"])
-        rng = random.Random(f"{fn['id']}-{self._turns_used(fn)}")
+        rng = random.Random(f"{fn['id']}-{turn}")
         try:
             best_src = cur_src = fn["best_source"]
             best = cur = fn["best_score"]
