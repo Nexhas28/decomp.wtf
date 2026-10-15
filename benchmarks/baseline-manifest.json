@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "document": "decomp-wtf-implementation-plan Phase 0 / P0.1 baseline manifest",
+  "plan": {
+    "title": "decomp.wtf: Matching Accuracy, Performance and Analysis Integration",
+    "source": "/Users/<user>/Downloads/decomp-wtf_implementation-plan.md",
+    "document_version": "1.0"
+  },
+  "checkout": {
+    "repository": "https://github.com/Nexhas28/decomp.wtf",
+    "reviewed_commit": "575b4a30ed481ff5497dfb9ce4f599368a95a04a",
+    "working_tree": "/Users/<user>/Decomp/decomp-wtf",
+    "commit": "575b4a30ed481ff5497dfb9ce4f599368a95a04a",
+    "commit_subject": "Discontinue decomp.wtf",
+    "tree_status_at_baseline": "clean (HEAD == reviewed commit, unmodified)",
+    "package_version": "0.10.6",
+    "notes": "Upstream repo HEAD is the discontinued final release; this fork continues development from the reviewed commit."
+  },
+  "host": {
+    "os": "Darwin 27.0.0 (macOS), arm64",
+    "kernel": "Darwin Kernel Version 27.0.0 root:xnu-13432.1.9~1/RELEASE_ARM64_T6050",
+    "cpu": "Apple M5 Pro",
+    "memory_gb": 24,
+    "recorded_utc": "2026-10-15T23:06:16Z"
+  },
+  "runtimes": {
+    "system_python": "3.14.7 (/opt/homebrew/bin/python3)",
+    "dev_python": "CPython 3.12.13 (uv-managed)",
+    "uv": "0.12.3",
+    "dev_env": {
+      "layout": ".venv created with --system-site-packages plus a .pth file exposing the decompnet tool-venv site-packages",
+      "tool_venv": "~/.local/share/uv/tools/decompnet (runtime deps: capstone 5.0.7, mcp, pyelftools, splat64[mips], spimdisasm, rabbitizer, httpx, uvicorn, ninja)",
+      "pytest": "9.1.1",
+      "run_command": "PYTHONPATH=src .venv/bin/python -m pytest tests/ -q"
+    }
+  },
+  "toolchains": {
+    "home": "~/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains",
+    "installed": ["agbcc", "arm-gnu", "binutils-mips", "gcc-2.7.2-kmc", "gcc-2.7.2-psx", "gcc-2.8.1-psx", "m2c", "objdiff-cli", "luvdis", "cloudflared"],
+    "notes": "Each toolchain dir carries its own .decompnet-toolchain.json manifest (pinned versions). PSX GCC 2.7.2/2.8.1 and m2c are present on this host; GameCube/Wii (dtk) and IDO lanes are not installed here."
+  },
+  "ghidra": {
+    "status": "not-verified-on-this-host",
+    "notes": "Plan G-notes require the pinned Ghidra version and Java runtime to be recorded before Phase 7 admission work; recorded when Phase 7 starts."
+  },
+  "rea": {
+    "status": "local-checkout-suspected",
+    "path_candidate": "/Users/<user>/dev/g8r-private/rea",
+    "notes": "Recorded artifact identity and MCP schema when Phase 9 starts."
+  },
+  "baseline_tests": {
+    "command": "PYTHONPATH=src .venv/bin/python -m pytest tests/ -q",
+    "run_utc": "2026-10-15T23:06:16Z",
+    "outcome": "107 passed, 17 failed, 115 skipped, 30 errors",
+    "log": "benchmarks/baseline-pytest.txt",
+    "failure_classes": {
+      "linux_gcc_fixtures": "tests that compile projects/demo with the host 'gcc' fail on macOS because gcc is clang and rejects the demo's Linux flag set (e.g. -fno-reorder-blocks-and-partition, -flive-patching=inline-only-static)",
+      "fork_toolchains": "tests/test_fork_judge.py and tests/test_forks.py need objdiff/dtk builds on Linux; errored via subprocess",
+      "updates": "test_updates tests exercise uv/network paths not available in the sandboxed dev environment"
+    },
+    "verdict": "Baseline recorded. Linux-only lanes are explicitly untested on this host; PSX-lane tests (tests/test_psx.py) are among the passed/skipped set and are the relevant real-tool lane for the slus-01363 production project."
+  },
+  "code_path_inventory": {
+    "rom_attempts": "network.py Network.attempt -> _compile (compiler.py compile_source) -> _evaluate (app/engine.py RomNetwork._evaluate links candidate at target address) -> _record",
+    "fork_attempts": "network.py Network.attempt via app/forkengine.py forks.attempt (real build integration)",
+    "rom_batches": "app/engine.py RomNetwork.attempt_many (loops per-function compile; defect D02/D03 target of PR-11)",
+    "autopilot": "app/agents.py (built-in agent), app/launcher.py",
+    "twins": "app/twins.py (fingerprint reuse, twin_misses table)",
+    "background_permutation": "app/permute.py Permuter (candidates/_turns; defects D01 target of PR-03/04) + permuter.py mutate (D08 target of Phase 5)",
+    "distributed_worker_results": "app/collab.py room collaboration + network.py local ingress (target of PR-07)",
+    "context_edit": "network.py edit_context/rename_symbol (matched-set race target of PR-06)",
+    "store_migrations": "store.py SCHEMA + MIGRATIONS list (additive column migrations; new tables via CREATE TABLE IF NOT EXISTS)"
+  }
+}
