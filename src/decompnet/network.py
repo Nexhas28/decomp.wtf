@@ -467,14 +467,23 @@ class Network:
                        "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if score is not None:
-                db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
-                           "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
-                           (score, source, agent.id, fn["id"], score))
+                cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
+                                 "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
+                                 (score, source, agent.id, fn["id"], score))
+                # A materially better source from an agent is new search input: give the permuter a fresh
+                # budget (bounded, reset reason recorded). The permuter's own improvements don't reset its
+                # own budget — that would make the budget infinite. Equal scores (cosmetic changes) don't
+                # either: the strict best_score > ? comparison is what gates this.
+                if cur.rowcount and via != "permuter":
+                    db.execute("UPDATE search_budgets SET turns_used=0, epoch=?, reset_reason='better-source', "
+                               "last_at=? WHERE function_id=? AND turns_used > 0",
+                               (f"best-{score}", now, fn["id"]))
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
                            "matched_at=?, best_score=0, best_source=? WHERE id=?",
                            (source, agent.id, now, source, fn["id"]))
                 db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+                db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
@@ -522,6 +531,7 @@ class Network:
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                            "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, new_header, agent.id, message.strip(), time.time(), unit))
+                self._reset_budgets_for_context(db, proj["id"], unit, version)
                 self._event(db, proj["id"], agent.id, "context", f"v{version}{f' ({unit})' if unit else ''}: {message.strip()}")
             return f"✅ header is now v{version} (all {len(members)} matched functions that use it still match)."
         raise NetworkError("the header is being edited heavily right now; re-read it and retry")
@@ -560,6 +570,7 @@ class Network:
                     version = self._next_version(db, proj["id"])
                     db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                                "VALUES(?,?,?,?,?,?,?)", (proj["id"], version, header, agent.id, msg, time.time(), u))
+                    self._reset_budgets_for_context(db, proj["id"], u, version)
                 for fid, src in rewritten.items():
                     db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?", (src, src, fid))
                 for r in db.execute("SELECT id, best_source FROM functions WHERE project_id=? AND status='open' "
@@ -583,6 +594,17 @@ class Network:
         units = self._unit_contexts(proj["id"])
         return [f for f in self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
                 if self._effective_unit(f, units) == unit]
+
+    def _reset_budgets_for_context(self, db, project_id: int, unit: str, version: int) -> None:
+        """A committed header change is new search input for every function that compiles against that
+        header: their permuter budgets reset (bounded; reset reason recorded). Effective-unit logic
+        matches _effective_unit()."""
+        db.execute(
+            "UPDATE search_budgets SET turns_used=0, epoch=?, reset_reason='context-changed', last_at=? "
+            "WHERE turns_used > 0 AND function_id IN ("
+            "SELECT f.id FROM functions f WHERE f.project_id=? AND (CASE WHEN f.unit IN "
+            "(SELECT unit FROM context_versions WHERE project_id=? AND unit != '') THEN f.unit ELSE '' END)=?)",
+            (f"ctx-v{version}", time.time(), project_id, project_id, unit))
 
     def regression_test(self, proj, header: str | None, sources: dict[int, str] | None = None,
                         only: list | None = None, header_for=None) -> list[tuple[str, str]]:
