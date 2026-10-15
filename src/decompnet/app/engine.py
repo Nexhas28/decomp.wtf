@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import scoring, seeds, similarity, toolchains
+from .. import scoring, seeds, similarity, snapshots, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _hash_token
 from ..rom import detect, match, split
@@ -1079,11 +1079,36 @@ class RomNetwork(Network):
             pass
 
     def apply_reported_best(self, slug: str, name: str, score: int, source: str, agent: Agent) -> None:
-        """Host side: a room member's better attempt, as they report it (their own compile scored it)."""
+        """Host side: a room member reports a better attempt. Their score is a hint, never authority (plan
+        X-01): the source is recompiled and scored locally, and only the locally measured result is
+        recorded — as the function's best attempt, or as its match when it really matches."""
         fn = self._function(name, slug)
         if fn["status"] != "open" or score <= 0 or (fn["best_score"] is not None and score >= fn["best_score"]):
             return
-        self._record(fn, agent, score, source, self._context(fn["project_id"], fn["unit"])["version"], via="room")
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._context(fn["project_id"], fn["unit"])
+        snap = snapshots.capture(fn, proj, ctx)
+        result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        matched_now = False
+        local = None
+        if result.ok and cand is not None:
+            if self._hash_only(fn):
+                matched_now = cand.fingerprint() == fn["fingerprint"]
+                local = 0 if matched_now else None
+            else:
+                matched_now = d.bytes_match
+                local = d.score
+        ok, why = snapshots.check_current(self, proj, fn, snap)
+        if not ok:
+            self._record(fn, agent, local, source, ctx["version"], compiled=result.ok and cand is not None,
+                         via="room", snapshot=snap, stale_reason=why)
+        elif matched_now:
+            self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap)
+        elif local is not None and (fn["best_score"] is None or local < fn["best_score"]):
+            self._record(fn, agent, local, source, ctx["version"], compiled=True, via="room", snapshot=snap)
+        else:
+            self._record(fn, agent, local, source, ctx["version"], compiled=result.ok and cand is not None,
+                         via="room", snapshot=snap, stale_reason="room score not confirmed locally")
 
     def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
         if (fork := self.fork_slug(project)):
@@ -1132,15 +1157,36 @@ class RomNetwork(Network):
                        (project_id, aid, kind, detail, created_at))
 
     def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str) -> None:
+        """Member side: the room's host reports this function matched. A remote report is never accepted on
+        its own (plan X-01): the reported source is recompiled against the CURRENT local context and
+        evaluated against the local target; only a real local match goes through the normal acceptance
+        path (_record: receipt, matched_epoch). A forged or stale report is recorded as historical."""
         proj = self._project(slug)
-        aid = self._remote_agent(agent_name)
-        with self.store.tx() as db:
-            row = db.execute("SELECT id, status FROM functions WHERE project_id=? AND vram=?", (proj["id"], vram)).fetchone()
-            if row is None or row["status"] == "matched":
-                return
-            db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
-                       "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
-            db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+        fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
+        if fn is None or fn["status"] == "matched":
+            return
+        ctx = self._context(proj["id"], fn["unit"])
+        if ctx is None:
+            return
+        agent = Agent(self._remote_agent(agent_name), "@" + agent_name, "room", True)
+        snap = snapshots.capture(fn, proj, ctx)
+        result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        matched_now = False
+        score = None
+        if result.ok and cand is not None:
+            if self._hash_only(fn):
+                matched_now = cand.fingerprint() == fn["fingerprint"]
+                score = 0 if matched_now else None
+            else:
+                matched_now = d.bytes_match
+                score = d.score
+        ok, why = snapshots.check_current(self, proj, fn, snap)
+        if matched_now and ok:
+            self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap)
+        else:
+            self._record(fn, agent, score, source, ctx["version"], matched=False,
+                         compiled=result.ok and cand is not None, via="room", snapshot=snap,
+                         stale_reason=why or "remote match failed local verification")
 
     def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
         """A git project's room: who matched a function (the code itself arrives with the host's commits)."""
