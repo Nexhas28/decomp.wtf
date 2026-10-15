@@ -105,3 +105,32 @@ def test_export_rebuilds_the_rom(gba):
                                      text=True).stdout
     assert subprocess.run([sys.executable, "build.py", "check", "lerp"], cwd=fresh, capture_output=True,
                           text=True).returncode == 0
+
+
+def test_luvdis_survives_code_that_pops_more_than_it_pushed(tmp_path):
+    """luvdis's stack model indexed outside its list after pops past the start (Spyro: Attack of the Rhynocs ended
+    with "IndexError: list assignment index out of range"): such code is disassembled now."""
+    from decompnet.rom import gba
+
+    rom = bytearray(ROM.read_bytes())
+    at = gba.BASE + len(rom)
+    rom += bytes.fromhex("ffbc ffbc ffbc 00b5 00bd 0000")  # pop {r0-r7} x3; push {lr}; pop {pc}
+    (tmp_path / "rom.gba").write_bytes(rom)
+    (tmp_path / "in.cfg").write_text(f"thumb_func 0x{at:X}\n")
+    asm, found = gba._luvdis(tmp_path / "rom.gba", tmp_path, tmp_path / "in.cfg")
+    assert at in found and "func_start" in asm
+
+
+def test_a_helper_linked_twice_gets_two_names(tmp_path, monkeypatch):
+    """Two copies of libgcc's _call_via_r3 (Spyro Orange) broke the import on the functions' unique names."""
+    from decompnet.rom import gba
+
+    thunk = bytes.fromhex("1847c046")  # bx r3; nop
+    fns = [gba.GbaFunction(f"sub_{a:08X}", a, a - gba.BASE, thunk, f"\tthumb_func_start sub_{a:08X}\n", 2, True, [],
+                           gba.call_via(thunk)) for a in (0x08000200, 0x08000300)]
+    monkeypatch.setattr(gba, "split", lambda *a, **k: fns)
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    slug = net.import_rom(ROM, confirmed=True, log=lambda *_: None)
+    names = [r["name"] for r in net.store.all("SELECT name FROM functions WHERE project_id=? ORDER BY vram",
+                                              net.project_row(slug)["id"])]
+    assert names == ["_call_via_r3", "_call_via_r3_08000300"]

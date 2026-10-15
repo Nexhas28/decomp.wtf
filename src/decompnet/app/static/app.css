@@ -331,11 +331,12 @@ a.ghost, a.primary { text-decoration: none; }
 .tip b { font-family: var(--mono); font-weight: 500; }
 .now { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; padding: 0 16px 16px; }
 .now:empty { display: none; }
-.job { display: grid; gap: 8px; padding: 12px 13px; border-radius: 10px; background: var(--raise); border: 1px solid var(--line-soft); cursor: pointer; }
+.job { display: grid; gap: 8px; padding: 12px 13px; border-radius: 10px; background: var(--raise); border: 1px solid var(--line-soft); cursor: pointer; min-width: 0; }
 .job:hover { border-color: var(--line); }
-.job-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.job-name { font: 500 13px/1.2 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.job-who { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.job-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.job-name { font: 500 13px/1.2 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
+.job-name small { font-size: 11px; color: var(--faint); }
+.job-who { font-size: 11.5px; color: var(--muted); white-space: nowrap; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
 .job svg { width: 100%; height: 34px; display: block; }
 .job-foot { display: flex; justify-content: space-between; font: 11.5px/1 var(--mono); color: var(--muted); }
 .job-foot b { color: var(--work); font-weight: 500; }
@@ -399,6 +400,8 @@ a.ghost, a.primary { text-decoration: none; }
 .lz-body { display: grid; gap: 12px; }
 .lz-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .lz-fields .wide { grid-column: 1 / -1; }
+.ep-pick { display: grid; gap: 8px; }
+.ep-card { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--raise); margin: 0 0 12px; }
 .lz-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .lz-row .field { width: auto; }
 .lz-row .field input { width: 110px; }
@@ -417,7 +420,7 @@ a.ghost, a.primary { text-decoration: none; }
 .facts-line { font: 12px/1.45 var(--mono); color: var(--muted); }
 .facts-line b { font-weight: 500; }
 .session .last { font: 12px/1.45 var(--mono); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session .last .fn { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.session .last .fn { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; overflow-wrap: anywhere; }
 .session.ext .tag { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--muted); }
 .empty { padding: 18px 16px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
@@ -441,7 +444,7 @@ a.ghost, a.primary { text-decoration: none; }
 @keyframes fresh { from { background: color-mix(in srgb, var(--match-bg) 70%, transparent); } }
 .feed time { font: 11.5px/1 var(--mono); color: var(--faint); }
 .feed .who { font-weight: 600; }
-.feed .fn { font-family: var(--mono); font-size: 12.5px; background: var(--bg-alt); padding: 1px 5px; border-radius: 5px; cursor: pointer; }
+.feed .fn { font-family: var(--mono); font-size: 12.5px; background: var(--bg-alt); padding: 1px 5px; border-radius: 5px; cursor: pointer; overflow-wrap: anywhere; }
 .feed .ok { color: var(--match); font-weight: 600; }
 .feed .score { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
 .feed li.placeholder { padding: 18px 16px; }
@@ -543,7 +546,7 @@ a.ghost, a.primary { text-decoration: none; }
 .xref { font-size: 13px; color: var(--ink-2); display: grid; gap: 6px; }
 .xref:empty { display: none; }
 .xref b { font-weight: 500; color: var(--muted); margin-right: 6px; }
-.xref .fn { font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; margin-right: 8px; }
+.xref .fn { font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; margin-right: 8px; overflow-wrap: anywhere; }
 .note { padding: 10px 12px; border-left: 2px solid var(--line); font-size: 13.5px; color: var(--ink-2); }
 .note small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
 .note-box { display: grid; gap: 8px; }

@@ -856,7 +856,8 @@ function renderNext(ov) {
     ${a && (a.installed || a.id === "api") ? `<button class="primary" id="nextGo" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button>` : ""}
     <button class="ghost" id="nextPick" type="button">Choose agent &amp; model</button>`;
   const go = $("nextGo");
-  if (go) go.onclick = () => startAgents(a, LZ.model, LZ.count, go);
+  if (go) go.onclick = () => a.id !== "api" ? startAgents(a, LZ.model, LZ.count, go)
+    : (LZ.eps || []).length ? startAgents(a, "", LZ.count, go, { endpoints: LZ.eps }) : showLaunch();
   $("nextPick").onclick = () => showLaunch();
 }
 
@@ -1398,7 +1399,8 @@ function renderNow(claims) {
   box.innerHTML = claims.map((c) => {
     const sc = S.scores.get(c.name) || [];
     const p = pctOf(c.best_score, c.n_insns);
-    return `<div class="job" data-fn="${esc(c.name)}"><div class="job-top"><span class="job-name">${esc(c.name)}</span><span class="job-who">${esc(c.agent)}</span></div>
+    const [sym, unit] = c.name.split(/@(.*)/s);  // a fork's symbol@file: the symbol first, the file after it
+    return `<div class="job" data-fn="${esc(c.name)}"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(sym)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span><span class="job-who" title="${esc(c.agent)}">${esc(c.agent)}</span></div>
       ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? "starting" : pctText(p)}</b></div></div>`;
   }).join("");
   box.querySelectorAll(".job").forEach((j) => { j.onclick = () => openFn(j.dataset.fn); });
@@ -1455,6 +1457,9 @@ function launcherInit() {
   LZ.kind = known ? known.id : (ready[0] ? ready[0].id : "api");
   LZ.model = known ? (l.model || "") : "";
   LZ.count = l.count || 1;
+  const eps = S.st.settings.endpoints || [];
+  LZ.eps = (l.endpoints || []).filter((id) => eps.some((e) => e.id === id));
+  if (!LZ.eps.length && eps.length) LZ.eps = [eps[0].id];
 }
 function modelOptions(a) {
   const recent = (S.st.settings.recent_models || {})[a.id] || [];
@@ -1469,7 +1474,11 @@ function modelName(a, model) {
   return m ? m.name : model;
 }
 function launchLabel(a, model, count) {
-  if (a.id === "api") return `Start ${S.st.settings.api?.model || "API model"}${count > 1 ? ` × ${count}` : ""}`;
+  if (a.id === "api") {
+    const picked = (S.st.settings.endpoints || []).filter((e) => (LZ.eps || []).includes(e.id));
+    if (picked.length > 1) return `Start ${count} across ${picked.length} endpoints`;
+    return `Start ${picked[0] ? picked[0].name : "API model"}${count > 1 ? ` × ${count}` : ""}`;
+  }
   return `Start ${a.name}${model ? ` · ${modelName(a, model)}` : ""}${count > 1 ? ` × ${count}` : ""}`;
 }
 
@@ -1507,12 +1516,13 @@ function renderLauncher(box, compact = false) {
       <div class="row"><button class="primary" data-act="install" type="button" ${a.needs ? "disabled" : ""}>Install it for me</button><a class="link small" href="${esc(a.docs)}" target="_blank" rel="noopener">About ${esc(a.name)}</a></div>
       <p class="muted small">${esc(a.signin)}</p><pre class="joblog" data-log hidden></pre>`;
   } else if (a.id === "api") {
-    const set = S.st.settings.api || {}, presets = S.st.api_presets, prov = set.provider || "deepseek";
-    body = `<div class="lz-fields">
-      <label class="field"><span>Provider</span><select data-f="prov">${Object.entries(presets).map(([k, p]) => `<option value="${k}" ${k === prov ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-      <label class="field"><span>Model</span><input data-f="model" class="mono" value="${esc(set.model || presets[prov].model)}"></label>
-      ${compact ? "" : `<label class="field wide"><span>API address</span><input data-f="base" class="mono" value="${esc(set.base_url || presets[prov].base_url)}"></label>`}
-      <label class="field wide"><span>API key (stored only on this computer)</span><input data-f="key" type="password" placeholder="${set.has_key ? esc(set.api_key) : "paste your key"}" autocomplete="off"></label></div>`;
+    const eps = S.st.settings.endpoints || [];
+    LZ.eps = (LZ.eps || []).filter((id) => eps.some((e) => e.id === id));
+    if (!LZ.eps.length && eps.length) LZ.eps = [eps[0].id];
+    body = eps.length && !LZ.adding ? `<div class="ep-pick">${eps.map((e) => `<label class="check inline"><input type="checkbox" data-ep="${esc(e.id)}" ${LZ.eps.includes(e.id) ? "checked" : ""}>
+        <span><b>${esc(e.name)}</b> <span class="mono small">${esc(e.model)}</span><br><span class="muted small mono">${esc(hostOf(e.base_url))}${e.max_sessions ? ` · at most ${e.max_sessions} at once` : ""}</span></span></label>`).join("")}</div>
+      <p class="muted small">${eps.length > 1 ? "Tick several to spread the sessions across them. " : ""}<a class="link" href="#/agents">Manage endpoints</a> · <button type="button" class="link-btn" data-act="add-ep">Add one</button></p>`
+      : `<div class="lz-fields">${endpointFields({ provider: "deepseek" }, compact)}</div>${eps.length ? `<p class="muted small"><button type="button" class="link-btn" data-act="pick-ep">Back to your endpoints</button></p>` : ""}`;
   } else {
     const opts = modelOptions(a);
     const known = opts.some((o) => o.id === LZ.model);
@@ -1540,8 +1550,11 @@ function renderLauncher(box, compact = false) {
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(8, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(20, Number(per.value) || 4)); };
-  const prov = box.querySelector('[data-f="prov"]');
-  if (prov) prov.onchange = () => { const p = S.st.api_presets[prov.value]; box.querySelector('[data-f="model"]').value = p.model; const base = box.querySelector('[data-f="base"]'); if (base) base.value = p.base_url; };
+  wireEndpointFields(box);
+  box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); label(); }; });
+  const addEp = box.querySelector('[data-act="add-ep"]'), pickEp = box.querySelector('[data-act="pick-ep"]');
+  if (addEp) addEp.onclick = () => { LZ.adding = true; rerender(); };
+  if (pickEp) pickEp.onclick = () => { LZ.adding = false; rerender(); };
   const inst = box.querySelector('[data-act="install"]');
   if (inst) inst.onclick = async () => {
     const log = box.querySelector("[data-log]");
@@ -1557,14 +1570,48 @@ function renderLauncher(box, compact = false) {
   const go = box.querySelector('[data-act="start"]');
   if (go) go.onclick = async () => {
     if (a.id === "api") {
-      const f = (k) => box.querySelector(`[data-f="${k}"]`);
-      const p = S.st.api_presets[f("prov").value];
-      const payload = { provider: f("prov").value, base_url: f("base") ? f("base").value : (S.st.settings.api?.base_url || p.base_url), model: f("model").value, api_key: f("key").value };
-      try { S.st.settings = await api("/api/settings", { method: "POST", body: { api: payload } }); } catch (e) { return toast(esc(e.message), "err"); }
-      return startAgents(a, "", LZ.count, go, { provider: payload.provider, base_url: payload.base_url, model: payload.model });
+      if (box.querySelector('[data-f="prov"]')) {  // a new endpoint, typed in here: saved, then started on
+        const before = new Set((S.st.settings.endpoints || []).map((e) => e.id));
+        try { S.st.settings = await api("/api/settings", { method: "POST", body: { endpoint: endpointData(box) } }); } catch (e) { return toast(esc(e.message), "err"); }
+        const added = (S.st.settings.endpoints || []).find((e) => !before.has(e.id));
+        LZ.eps = added ? [added.id] : LZ.eps;
+        LZ.adding = false;
+      }
+      if (!(LZ.eps || []).length) return toast("Tick an endpoint to start on.", "err");
+      return startAgents(a, "", LZ.count, go, { endpoints: LZ.eps });
     }
     startAgents(a, LZ.model, LZ.count, go);
   };
+}
+
+/* API endpoints: OpenAI-compatible servers (DeepSeek, a llama.cpp box on the network...), each with its own address,
+   model and key. The same fields in the launcher and on the Agents & models page. */
+function hostOf(url) { return String(url || "").replace(/^\w+:\/\//, "").split("/")[0]; }
+function endpointFields(e, compact = false) {
+  const presets = S.st.api_presets, prov = presets[e.provider] ? e.provider : "custom";
+  return `<label class="field"><span>Provider</span><select data-f="prov">${Object.entries(presets).map(([k, p]) => `<option value="${k}" ${k === prov ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+    <label class="field"><span>Model</span><input data-f="model" class="mono" value="${esc(e.model || presets[prov].model)}"></label>
+    <label class="field wide"><span>API address</span><input data-f="base" class="mono" value="${esc(e.base_url || presets[prov].base_url)}" placeholder="http://gpu-box:8080/v1"></label>
+    <label class="field wide"><span>API key (stored only on this computer, sent only to this address)</span><input data-f="key" type="password" placeholder="${e.has_key ? esc(e.api_key) : "paste your key (none for local models)"}" autocomplete="off"></label>
+    ${compact ? "" : `<label class="field"><span>Name</span><input data-f="name" value="${esc(e.id ? e.name : "")}" placeholder="${esc(e.id ? e.name : "e.g. gpu-box")}"></label>
+    <label class="field"><span>Context size (tokens)</span><input data-f="ctx" class="mono" inputmode="numeric" placeholder="automatic" value="${esc(String(e.context_tokens || ""))}"></label>
+    <label class="field"><span>Sessions at once</span><input data-f="max" class="mono" inputmode="numeric" placeholder="no limit" value="${esc(String(e.max_sessions || ""))}"></label>`}`;
+}
+function wireEndpointFields(box) {
+  box.querySelectorAll('[data-f="prov"]').forEach((sel) => {
+    sel.onchange = () => {
+      const p = S.st.api_presets[sel.value], scope = sel.closest(".ep-card, .lz-fields") || box;
+      scope.querySelector('[data-f="model"]').value = p.model;
+      scope.querySelector('[data-f="base"]').value = p.base_url;
+    };
+  });
+}
+function endpointData(scope, id = "") {
+  const f = (k) => scope.querySelector(`[data-f="${k}"]`);
+  const out = { provider: f("prov").value, base_url: f("base").value, model: f("model").value, api_key: f("key").value };
+  if (id) out.id = id;
+  if (f("name")) Object.assign(out, { name: f("name").value, context_tokens: f("ctx").value, max_sessions: f("max").value });
+  return out;
 }
 
 function showLaunch() {
@@ -1574,7 +1621,10 @@ function showLaunch() {
 }
 function hideLaunch() { $("launchPop").hidden = true; }
 $("phStart").onclick = (e) => { e.stopPropagation(); if ($("launchPop").hidden) showLaunch(); else hideLaunch(); };
-document.addEventListener("click", (e) => { if (!$("launchPop").hidden && !e.target.closest(".pop-wrap")) hideLaunch(); });
+// (the path as clicked: choosing an agent re-renders the popover, so the clicked tile isn't in the page any more)
+document.addEventListener("click", (e) => {
+  if (!$("launchPop").hidden && !e.composedPath().some((el) => el.classList && el.classList.contains("pop-wrap"))) hideLaunch();
+});
 
 /* ------------------------------------------------------------------ feeds */
 function fnLink(name) { return `<span class="fn" data-fn="${esc(name)}">${esc(name)}</span>`; }
@@ -2122,7 +2172,7 @@ async function openConnect() {
   if (r) body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
 }
 
-/* decomp.wtf in WSL (Windows) or Docker (macOS): the agents you talk to run on the computer itself, so they're
+/* decomp.wtf in WSL (Windows) or in Docker: the agents you talk to run on the computer itself, so they're
    connected from there, by the `decomp` command the installer put on it. */
 async function openHostConnect() {
   const host = HOST_NAMES[S.st.host_os] || "your computer";
@@ -2172,27 +2222,44 @@ function renderPrio() {
   box.querySelectorAll("[data-unpin]").forEach((b) => { b.onclick = () => togglePrio(b.dataset.unpin, false); });
 }
 
-/* Autopilot: every function's machine draft, tried through the judge before any agent spends a token. */
+/* Autopilot: free matches before any agent spends a token: identical code (twins) of what's matched, then every
+   function's machine draft through the judge; the permuter works on near misses meanwhile. */
 function renderAutopilot(ov) {
-  const box = $("autopilot"), ap = ov.autopilot;
-  const canRun = (ov.kind !== "fork" || (ov.origin === "scratch" && ov.ready)) && ov.functions - ov.matched > 0;
-  box.hidden = !ap && !canRun;
+  const box = $("autopilot"), ap = ov.autopilot, tw = ov.twins, pm = ov.permuter;
+  const canRun = (ov.kind !== "fork" || ov.ready) && ov.functions - ov.matched > 0;
+  box.hidden = !ap && !canRun && !tw && !pm;
   if (box.hidden) return;
   const running = ap && ap.state === "running";
-  box.classList.toggle("on", !!running);
-  $("apBar").hidden = !running;
-  if (running) {
+  const twinsRunning = tw && tw.state === "running";
+  box.classList.toggle("on", !!(running || twinsRunning));
+  $("apBar").hidden = !running || ap.phase === "twins";
+  const perm = pm && (pm.tried || pm.state === "running")
+    ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.` : "";
+  const twinsDone = (ap && ap.twins) || (tw && tw.matched) || 0;
+  if (running && ap.phase === "twins") {
+    $("apTitle").textContent = "Autopilot: matching code the game has more than once (twins of matched functions)";
+    $("apSub").textContent = `Each match's code is tried on its identical copies, names swapped; the judge decides.${perm}`;
+    $("apBtn").textContent = "Stop";
+  } else if (running) {
     $("apTitle").textContent = `Autopilot: trying each function's machine draft · ${ap.matched.toLocaleString()} matched for free`;
-    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}. Agents work alongside it.`;
+    $("apSub").textContent = `${ap.tried.toLocaleString()} of ${ap.total.toLocaleString()} tried${ap.near ? ` · ${ap.near} more are 90%+ there` : ""}${ap.twins ? ` · ${ap.twins.toLocaleString()} from identical code` : ""}. Agents work alongside it.${perm}`;
     $("apBar").firstElementChild.style.width = `${(100 * ap.tried) / Math.max(1, ap.total)}%`;
     $("apBtn").textContent = "Stop";
-  } else if (ap) {
-    $("apTitle").textContent = ap.matched ? `Autopilot matched ${ap.matched.toLocaleString()} function${ap.matched === 1 ? "" : "s"} for free` : "Autopilot found no free matches this time";
-    $("apSub").textContent = `${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `; ${ap.near} more are 90%+ there, a head start for your agents` : ""}. Run it again after agents add types and names: drafts get better.`;
+  } else if (ap || tw) {
+    const total = (ap ? ap.matched : 0) + (ap ? 0 : twinsDone);
+    $("apTitle").textContent = twinsRunning ? `Matching identical code: ${tw.matched.toLocaleString()} so far`
+      : total ? `Autopilot matched ${total.toLocaleString()} function${total === 1 ? "" : "s"} for free` : "Autopilot found no free matches this time";
+    const parts = [];
+    if (twinsDone) parts.push(`${twinsDone.toLocaleString()} from identical code`);
+    if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
+    if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
+    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
     $("apBtn").textContent = "Run again";
   } else {
     $("apTitle").textContent = "Free matches first";
-    $("apSub").textContent = "Autopilot tries every function's machine draft (m2c) through the judge; whatever already matches costs no agent time.";
+    $("apSub").textContent = (ov.kind === "fork" && ov.origin !== "scratch"
+      ? "Autopilot matches the code this game has more than once from its matched copies (names swapped, judged like any attempt)"
+      : "Autopilot matches identical copies of matched code and tries every function's machine draft (m2c) through the judge") + `; whatever matches costs no agent time.${perm}`;
     $("apBtn").textContent = "Run autopilot";
   }
   $("apBtn").onclick = async () => {
@@ -2341,28 +2408,51 @@ function renderAgentsPage() {
       } catch (e) { toast(esc(e.message), "err"); b.disabled = false; }
     };
   });
-  const set = S.st.settings.api || {}, presets = S.st.api_presets, prov = set.provider || "deepseek";
-  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.wtf's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or a model on this computer with llama.cpp, Ollama or LM Studio. The key stays on this computer.</p>
-    <label class="field"><span>Provider</span><select id="apProv">${Object.entries(presets).map(([k, p]) => `<option value="${k}" ${k === prov ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-    <label class="field"><span>API address</span><input id="apBase" class="mono" value="${esc(set.base_url || presets[prov].base_url)}"></label>
-    <label class="field"><span>Model</span><input id="apModel" class="mono" value="${esc(set.model || presets[prov].model)}"></label>
-    <label class="field"><span>API key</span><input id="apKey" type="password" placeholder="${set.has_key ? esc(set.api_key) : "paste your key (none for local models)"}" autocomplete="off"></label>
-    <label class="field"><span>Context size (tokens)</span><input id="apCtx" class="mono" inputmode="numeric" placeholder="automatic" value="${esc(String(set.context_tokens || ""))}"></label>
-    <p class="muted small">For a local model: what you started it with. The agent keeps its conversation within it. Give it at least 16384 (llama.cpp: <code>-c 16384</code>; Ollama: <code>OLLAMA_CONTEXT_LENGTH=16384</code>, or it quietly cuts the start off).</p>
-    <div class="row"><button class="primary small-btn" id="apSave" type="button">Save</button>${set.has_key ? `<button class="ghost small-btn" id="apClear" type="button">Forget the key</button>` : ""}</div>`;
-  $("apProv").onchange = () => { const p = presets[$("apProv").value]; $("apBase").value = p.base_url; $("apModel").value = p.model; };
-  $("apSave").onclick = async () => {
+  const eps = S.st.settings.endpoints || [];
+  const card = (e) => `<div class="ep-card" data-id="${esc(e.id || "")}">
+      ${e.id ? `<div class="ar-head"><b>${esc(e.name)}</b><span class="muted small mono">${esc(e.model)} · ${esc(hostOf(e.base_url))}</span></div>` : `<div class="ar-head"><b>A new endpoint</b></div>`}
+      <div class="lz-fields">${endpointFields(e)}</div>
+      <div class="row"><button class="primary small-btn" data-save type="button">${e.id ? "Save" : "Add"}</button>
+        ${e.has_key ? `<button class="ghost small-btn" data-forget type="button">Forget the key</button>` : ""}
+        ${e.id ? `<button class="ghost small-btn danger" data-remove type="button">Remove</button>` : eps.length ? `<button class="ghost small-btn" data-cancel type="button">Cancel</button>` : ""}</div></div>`;
+  $("apiBox").innerHTML = `<p class="muted small">Any OpenAI-compatible API runs through decomp.wtf's built-in agent loop: DeepSeek, OpenRouter, OpenAI, or models on your own machines with llama.cpp, Ollama or LM Studio. Save one endpoint per machine or provider: when you start agents you tick the ones to use, and the sessions are spread across them. Each key stays on this computer and is only sent to its own endpoint.</p>
+    ${eps.map(card).join("")}
+    <div id="epNew" ${eps.length && !S.addingEndpoint ? "hidden" : ""}>${card({ provider: "custom" })}</div>
+    ${eps.length && !S.addingEndpoint ? `<div class="row"><button class="ghost small-btn" id="epAdd" type="button">Add an endpoint</button></div>` : ""}
+    <p class="muted small">Context size, for a local model: what you started it with (found by itself from llama.cpp). The agent keeps its conversation within it. Give it at least 16384 (llama.cpp: <code>-c 16384</code>; Ollama: <code>OLLAMA_CONTEXT_LENGTH=16384</code>, or it quietly cuts the start off). Sessions at once: for a machine that serves one request at a time, 1.</p>`;
+  wireEndpointFields($("apiBox"));
+  const post = async (body, said) => {
     try {
-      S.st.settings = await api("/api/settings", { method: "POST", body: { api: { provider: $("apProv").value, base_url: $("apBase").value, model: $("apModel").value, api_key: $("apKey").value, context_tokens: $("apCtx").value } } });
-      toast("Saved. Choose “API key” when you start agents.");
+      S.st.settings = await api("/api/settings", { method: "POST", body });
+      S.addingEndpoint = false;
+      if (said) toast(said);
       renderAgentsPage();
     } catch (e) { toast(esc(e.message), "err"); }
   };
-  if ($("apClear")) $("apClear").onclick = async () => { S.st.settings = await api("/api/settings", { method: "POST", body: { api: { clear_key: true } } }); renderAgentsPage(); };
+  $("apiBox").querySelectorAll(".ep-card").forEach((c) => {
+    const id = c.dataset.id;
+    c.querySelector("[data-save]").onclick = () => post({ endpoint: endpointData(c, id) }, id ? "Saved." : "Added. Tick it when you start agents (“API key”).");
+    const forget = c.querySelector("[data-forget]"), remove = c.querySelector("[data-remove]"), cancel = c.querySelector("[data-cancel]");
+    if (forget) forget.onclick = () => post({ endpoint: { id, clear_key: true } }, "The key is gone from this computer.");
+    if (remove) remove.onclick = () => post({ remove_endpoint: id }, "Removed.");
+    if (cancel) cancel.onclick = () => { S.addingEndpoint = false; renderAgentsPage(); };
+  });
+  if ($("epAdd")) $("epAdd").onclick = () => { S.addingEndpoint = true; renderAgentsPage(); };
   $("mcpBox").innerHTML = `<p class="muted small">Connect the agent you talk to, once. Then ask it in your terminal: <i>“decompile my game at ~/roms/game.z64”</i>. It imports it, opens this view and works with every tool here.</p>
     <div class="setup-group" id="mcpRows"><p class="muted small">Looking…</p></div>
-    <p class="col-title">Any other MCP client (Cursor, Claude Desktop, Windsurf…)</p><pre class="code" id="mcpJson"></pre>`;
+    <p class="col-title">Any other MCP client (Cursor, Claude Desktop, Windsurf…)</p><pre class="code" id="mcpJson"></pre>
+    <p class="col-title">A client that connects by URL (HTTP MCP)</p>
+    <p class="muted small">It needs a token: a password for this app's tools, so keep it to yourself. Making a new one for the same name replaces the old one.</p>
+    <div class="lz-row"><label class="field"><span>Name it goes by</span><input id="mcpName" class="mono" value="http-client"></label><button class="ghost small-btn" id="mcpToken" type="button">Make a token</button></div>
+    <pre class="code" id="mcpHttp" hidden></pre>`;
   connectRows($("mcpRows")).then((r) => { if (r) $("mcpJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2); });
+  $("mcpToken").onclick = async () => {
+    try {
+      const t = await api("/api/agents/token", { method: "POST", body: { name: $("mcpName").value.trim() || "http-client" } });
+      $("mcpHttp").hidden = false;
+      $("mcpHttp").textContent = JSON.stringify({ mcpServers: { decomp: { type: "http", url: t.url, headers: { Authorization: `Bearer ${t.token}` } } } }, null, 2);
+    } catch (e) { toast(esc(e.message), "err"); }
+  };
 }
 $("agRefresh").onclick = showAgentsPage;
 

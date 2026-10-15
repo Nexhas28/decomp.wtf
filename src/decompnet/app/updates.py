@@ -78,15 +78,20 @@ def _first_line(message: str) -> str:
 
 
 def _check_release(cur: dict) -> dict:
-    text = _get(f"{SITE}/install.sh").decode("utf-8", "replace")
+    try:
+        text, site = _get(f"{SITE}/install.sh").decode("utf-8", "replace"), True
+    except OSError:  # decomp.wtf can't be reached from here (a filter, an outage): the release on GitHub
+        text, site = _get(f"https://raw.githubusercontent.com/{cur['repo']}/main/site/public/install.sh").decode(
+            "utf-8", "replace"), False
     m = re.search(r'^VERSION="([^"]+)"', text, re.M)
     if not m:
         raise ValueError("decomp.wtf didn't say which version is current")
     latest = m.group(1)
     newer = version_key(latest) > version_key(cur["version"])
+    spec = (f"decompnet @ {SITE}/dl/decompnet-{latest}-py3-none-any.whl" if site else
+            f"decompnet @ https://github.com/{cur['repo']}/archive/refs/tags/v{latest}.tar.gz")
     return {"available": newer, "latest": {"version": latest, "commit": "", "date": None},
-            "notes": [], "link": f"https://github.com/{cur['repo']}/commits/main",
-            "spec": f"decompnet @ {SITE}/dl/decompnet-{latest}-py3-none-any.whl"}
+            "notes": [], "link": f"https://github.com/{cur['repo']}/commits/main", "spec": spec}
 
 
 def _branch_version(repo: str, sha: str) -> str:

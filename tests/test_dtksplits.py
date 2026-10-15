@@ -146,3 +146,34 @@ def test_hand_written_code_cut_in_two_becomes_one_function(tmp_path):
         "fn_800E9414 = .text:0x800E9414; // type:function size:0x8",
         "fn_800E941C = .text:0x800E941C; // type:function size:0x984",
         "fn_800E9DA0 = .text:0x800E9DA0; // type:function size:0x48"]
+
+
+def test_a_function_dtk_stops_short_of_is_declared_from_the_exception_table(tmp_path, monkeypatch):
+    """RoadKill has zeroed words inside a real function at 0x8004C13C: dtk's analysis ends it there, then finds no
+    function for the exception table's entry ("Failed to find function symbol"). The function is declared with the
+    table's size, and the analysis runs again."""
+    import struct
+
+    from decompnet.forks import scratch_dtk
+
+    text, index = 0x80004000, 0x80008000
+    entries = struct.pack(">6I", 0x8004C000, 0x13C, 0x80007000, 0x8004C13C, 0x128, 0x80007008)
+    dol = bytearray(0x100)
+    struct.pack_into(">II", dol, 0, 0x100, 0x100 + 0x10)  # offsets: text section 0, data section 0 (index 7)
+    struct.pack_into(">I", dol, 7 * 4, 0x110)
+    struct.pack_into(">I", dol, 72, text)
+    struct.pack_into(">I", dol, 72 + 7 * 4, index)
+    struct.pack_into(">I", dol, 144, 0x10)
+    struct.pack_into(">I", dol, 144 + 7 * 4, len(entries))
+    dol += bytes(0x10) + entries
+    monkeypatch.setattr(scratch_dtk, "_dtk_sections", lambda _: [(".text", 0x80004000, 0x50000),
+                                                                  ("extabindex", index, len(entries))])
+    (tmp_path / "config" / "GOCE5D").mkdir(parents=True)
+    path = tmp_path / "config" / "GOCE5D" / "symbols.txt"
+    path.write_text("lbl_8004C13C = .text:0x8004C13C; // type:label\n", encoding="utf-8")
+    tail = ("Failed: While processing object 'main.dol' (module ID 0)\n\nCaused by:\n"
+            "    Failed to find function symbol @ 3:0x8004C13C\nninja: error: rebuilding 'build.ninja': subcommand failed")
+    assert scratch_dtk._declare_function(tmp_path, "GOCE5D", bytes(dol), tail) == ("0x8004C13C", 0x128)
+    assert path.read_text(encoding="utf-8") == "fn_8004C13C = .text:0x8004C13C; // type:function size:0x128\n"
+    assert scratch_dtk._declare_function(tmp_path, "GOCE5D", bytes(dol), tail) is None  # said once: no loop
+    assert scratch_dtk._declare_function(tmp_path, "GOCE5D", bytes(dol), tail.replace("13C", "200")) is None  # not in the table

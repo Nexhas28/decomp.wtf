@@ -3,6 +3,7 @@ built-in API agent. Every tool works on the project the agent was started on."""
 
 from __future__ import annotations
 
+import re
 from importlib import resources
 from typing import Callable
 
@@ -59,19 +60,21 @@ You are a decompilation agent in decomp.wtf, working on {title}. Other agents ma
 functions of the same game at the same time; the tools keep you from colliding.
 
 Your job: turn functions of this game into C that compiles to *exactly* the original machine code.
-Use only the decomp tools. Repeat for up to {count} functions, then stop:
+Use only the decomp tools. Repeat for up to {count} claims (a batch is one), then stop:
 
-1. claim_function() gives you the next function: assembly, location, calls, data it uses, the best
-   previous attempt and notes (start from those!), and a machine-generated draft.
+1. claim_function(count=4) gives you the next function, and when it's small, its neighbours with it (small
+   functions mostly match on the first try): assembly, location, calls, data it uses, the best previous
+   attempt and notes (start from those!), a machine-generated draft, and identical matched code if any.
 2. get_context() shows the shared header every compile includes.
-3. Write the C function (same name as the assembly) and call compile_and_diff after every change.
-   Read the diff: '<' '>' missing/extra instructions, 'i' operands, 'o' order, 'r' registers, 's' stack.
-   Fix structure first, registers last. The workflow and {compiler_guide} guides are below.
-   find_similar(function) shows look-alike functions; a matched one is the best starting point.
+3. Write the C functions (same names as the assembly) and judge them: compile_and_diff(function="a, b, c",
+   source=all the definitions) for a batch, one name for one. Read the diff: '<' '>' missing/extra
+   instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure first, registers last.
+   The workflow and {compiler_guide} guides are below. find_similar(function) shows look-alike functions;
+   a matched one is the best starting point.
 4. Score 0 = matched and saved. Before moving on, share what you learned: edit_context for prototypes and
    structs you worked out, rename_symbol for functions/data whose purpose is now clear.
-5. Stuck after ~20 compiles with no progress? release_function with precise notes (what you tried, what
-   is left) and claim the next one. Don't spend forever on one function.
+5. No better after 4 compiles in a row? release_function with precise notes (what you tried, what is
+   left) and claim the next one: most functions that match do so in the first few tries.
 
 Write plausible original code, pure C (no inline asm). Be brief in your messages: work, don't narrate.
 """
@@ -82,23 +85,27 @@ for {platform}. Other agents may be working on other functions of the same proje
 tools keep you from colliding.
 
 Your job: write functions in the project's own source files so they compile to *exactly* the original
-machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {count} functions, then stop:
+machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {count} claims (a batch is one), then stop:
 
-1. claim_function() gives you the next function: target assembly, the current diff, its source file,
-   the best previous attempt and notes (start from those!) and functions already matched in that file.
-2. Learn the codebase: read_file on the source file and its headers, search_code for the types, structs
-   and helpers it uses. Reuse what exists; never redefine it. find_similar(function) finds look-alike
-   functions: start from a matched one.
-3. compile_and_diff(function, source) with exactly one complete function definition. It goes into the
-   source file in place of the old one, the file is built with the project's compiler and diffed.
-   Fix structure first (control flow, calls), then types and expressions, registers last.
+1. claim_function(count=4) gives you the next function, and when it's small, its neighbours in the same
+   file (small functions mostly match on the first try): target assembly, the current diff, its source
+   file, the best previous attempt and notes (start from those!), functions already matched in that file,
+   and identical matched code elsewhere if there is any.
+2. The brief usually has what you need. When it doesn't: read_file on the source file and its headers,
+   search_code for the types, structs and helpers it uses. Reuse what exists; never redefine it.
+   find_similar(function) finds look-alike functions: start from a matched one.
+3. compile_and_diff(function, source) with the complete definition (plus any #include "...", prototypes
+   or #pragma lines it needs); several at once: function="a, b, c" with all definitions in source. Each
+   goes into the source file in place of the old one, the file is built with the project's compiler and
+   diffed. Fix structure first (control flow, calls), then types and expressions, registers last.
 4. 100% = matched, committed to git. Structs, prototypes, globals or helpers you need go in with
    edit_file (a header or the top of the source file); an edit that breaks any match is undone.
 5. The goal is linked files: the game built from the C, byte for byte. When a match finishes a file's
    functions, you're shown its data next to the original's: fix what differs (order, const, statics,
    values) with edit_file until file_status says it matches; decomp.wtf then links the file.
-6. Stuck after ~25 compiles without progress? release_function with precise notes (what you tried,
-   what is left) and claim the next. Very large functions: get the structure right and release with notes.
+6. No better after 4 compiles in a row? release_function with precise notes (what you tried, what is
+   left) and claim the next: most functions that match do so in the first few tries. Very large
+   functions: get the structure right and release with notes.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Write code a human would have written: match the file's style and names.
@@ -139,12 +146,34 @@ def _project_info(net: RomNetwork, slug: str) -> str:
 
 
 # name -> handler(net, agent, slug, **args); every handler returns text for the model
+def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: str, count: int = 1) -> str:
+    """A claim; one asked for that's matched or someone else's is the next free function instead (an agent asking
+    for those has nothing better to do than the next one, and is told why). count > 1: a batch of small ones."""
+    strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
+    if not function and int(count or 1) > 1:
+        return net.claim_many(agent, slug, int(count), strategy)
+    try:
+        return net.claim(agent, slug, function or None, strategy)
+    except NetworkError as e:
+        if not function or not re.search(r"already matched|is claimed by", str(e)):
+            raise
+        return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
+
+
+def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: str) -> str:
+    """compile_and_diff; several names ("a, b, c") judge several definitions sent together."""
+    names = [n.strip() for n in function.split(",") if n.strip()]
+    if len(names) <= 1:
+        return net.compile_and_diff(agent, names[0] if names else function, source, slug)
+    return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
+
+
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
-    "claim_function": lambda net, agent, slug, function="", strategy="":
-        net.claim(agent, slug, function or None, strategy or ("finish" if net.fork_slug(slug) else "easiest")),
+    "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
+        _claim(net, agent, slug, function, strategy, count),
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
-    "compile_and_diff": lambda net, agent, slug, function, source: net.compile_and_diff(agent, function, source, slug),
+    "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -152,7 +181,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
-    "read_data": lambda net, agent, slug, what, length=64: net.read_data(slug, what, length),
+    "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
+                                                            if net.fork_slug(slug) else net.read_data(slug, what, length)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
     "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
@@ -168,7 +198,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "read_data"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -181,7 +211,7 @@ def tool_names(fork: bool) -> list[str]:
 def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
     """Function names as agents write them (a plain symbol that repeats across files, symbol@unit, Class::method)
     turned into the stored name, preferring the function the agent holds."""
-    if args.get("function"):
+    if args.get("function") and "," not in args["function"]:  # (several are resolved one by one, see _compile)
         args = {**args, "function": net.resolve_function(agent, slug, args["function"])}
     return args
 
@@ -223,19 +253,21 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "project_info")
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def claim_function(ctx: Context, function: str = "", strategy: str = "") -> str:
+    async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1) -> str:
         """Claim the next function to decompile (or a specific one by name or address).
 
         Returns its assembly, the best previous attempt and notes from earlier agents, plus (ROM projects)
-        calls, data and a machine-made draft or (forks) the current diff and its source file. You hold one
-        claim at a time; each compile renews it.
+        calls, data and a machine-made draft or (forks) the current diff and its source file. Each compile
+        renews the claim.
 
         Args:
             function: optional name or address (0x80001234) of a specific function
             strategy: finish (forks' default: the files closest to being linked first), easiest (fewest
                 instructions; ROM projects' default), closest (nearly matched already), hardest, random
+            count: up to 6: small functions come as a batch (neighbours in one file) to write together and
+                judge in one compile_and_diff; a big one comes alone
         """
-        return await run(ctx, "claim_function", function=function, strategy=strategy)
+        return await run(ctx, "claim_function", function=function, strategy=strategy, count=count)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def get_function(ctx: Context, function: str) -> str:
@@ -248,8 +280,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Compile your code for `function` and diff it against the original; score 0 = byte-identical.
 
         ROM projects: compiled with the game's compiler (context.h included), linked at the function's
-        address and compared with the ROM. Forks: send one complete definition; it replaces the function in
-        its source file, which is built with the project's build system and diffed with objdiff."""
+        address and compared with the ROM. Forks: send the complete definition (plus any #include "...",
+        prototypes, externs or #pragma lines it needs); it replaces the function in its source file, which is
+        built with the project's build system and diffed with objdiff. Several functions ("a, b, c"): send all
+        their definitions in one source; each is judged on its own."""
         return await run(ctx, "compile_and_diff", function=function, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -283,7 +317,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64) -> str:
-        """Hex dump of ROM data at an address or symbol, with text, pointers and floats decoded."""
+        """Hex dump of the original's data: an address or symbol (ROM projects), a data symbol such as
+        lbl_1_data_10 (forks); text, pointers and floats decoded."""
         return await run(ctx, "read_data", what=what, length=length)
 
     @mcp.tool(meta=ALWAYS_LOAD)

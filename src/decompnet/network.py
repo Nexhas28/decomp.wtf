@@ -23,13 +23,18 @@ from .project import compiler_config
 from .store import Store
 
 CLAIM_TTL = 30 * 60
+# Twins first (see app/twins.py): a function whose code the game has more than once (boost: how many more times)
+# and isn't too big or given up on, best value per instruction first; its twins (boost -1) last, as they match for
+# free once it does.
+_TWINS = ("(f.boost > 0 AND f.n_insns <= 400 AND f.abandons < 2) DESC, "
+          "CASE WHEN f.boost > 0 THEN (f.boost + 1) * 64 / (f.n_insns + 16) ELSE 0 END DESC, f.boost < 0, ")
 STRATEGIES = {
-    "easiest": "f.abandons > 0, f.n_insns ASC",
+    "easiest": _TWINS + "f.abandons > 0, f.n_insns ASC",
     # what nobody gave up on, small first; among functions of about the same size, the files closest to done (a
     # file is linked into the game once all of it matches). Leftovers agents released again and again come last,
     # or a crowd of agents spends its time passing the hardest functions around.
-    "finish": "f.abandons ASC, (f.n_insns + 31) / 32 ASC, (SELECT COUNT(*) FROM functions g WHERE "
-              "g.project_id=f.project_id AND g.unit=f.unit AND g.status='open') ASC, f.n_insns ASC",
+    "finish": _TWINS + "f.abandons ASC, (f.n_insns + 31) / 32 ASC, (SELECT COUNT(*) FROM functions g WHERE "
+                       "g.project_id=f.project_id AND g.unit=f.unit AND g.status='open') ASC, f.n_insns ASC",
     "closest": "f.best_score IS NULL, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
@@ -417,7 +422,24 @@ class Network:
         warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
-        return {"text": f"{head}\n{d.render()}{warn}", "score": d.score, "matched": False}
+        return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
+
+    def stall_note(self, function_id: int, agent_id: int, after: int = 4) -> str:
+        """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
+        mostly do in the first few tries, and the agent's time is better spent on the next one."""
+        rows = self.store.all("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 16",
+                              function_id, agent_id)
+        best, since = None, 0
+        for r in reversed(rows):
+            if r["score"] is not None and (best is None or r["score"] < best):
+                best, since = r["score"], 0
+            else:
+                since += 1
+        if since < after:
+            return ""
+        return (f"\n\n⏭ No better in your last {since} compiles. release_function with notes (what you tried, what's "
+                "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
+                "keeps your best attempt for whoever comes next.")
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent"):
@@ -437,6 +459,11 @@ class Network:
                            (source, agent.id, now, source, fn["id"]))
                 db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
+        if matched:
+            self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"])
+
+    def on_match(self, proj, function_id: int) -> None:
+        """A function just matched (subclasses try its code on its twins)."""
 
     # -------------------------------------------------------- shared context
 

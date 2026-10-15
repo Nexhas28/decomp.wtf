@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-157a49?style=flat-square"></a>
-  <img alt="Linux, Windows and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS%20(beta)-15140f?style=flat-square">
+  <img alt="Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20(unstable)-15140f?style=flat-square">
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-3.12%2B-15140f?style=flat-square">
   <img alt="Works with any MCP agent" src="https://img.shields.io/badge/agents-any%20MCP%20client-157a49?style=flat-square">
 </p>
@@ -57,9 +57,9 @@ Everything runs on your computer. No account, no telemetry, nothing uploaded.
 
 ## Install
 
-decomp.wtf runs on **Linux**, **Windows** and **macOS**. The compilers it runs are Linux programs, so it runs on
-Linux everywhere: on Linux itself, on Windows in its own small Linux (a WSL 2 distribution called `decomp-wtf`),
-on macOS in Docker. The same Linux, set up by the same script, on every computer.
+decomp.wtf runs on **Linux**, and on **Windows** (supported, still unstable). The compilers it runs are Linux
+programs, so on Windows it runs in its own small Linux (a WSL 2 distribution called `decomp-wtf`), set up by the
+same script as on Linux. macOS isn't supported.
 
 **Linux**
 
@@ -67,7 +67,14 @@ on macOS in Docker. The same Linux, set up by the same script, on every computer
 curl -fsSL https://decomp.wtf/install.sh | bash
 ```
 
-**Windows** (PowerShell)
+Can't reach decomp.wtf from your network? The same installer from GitHub (it then installs the release from GitHub
+too):
+
+```
+curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh | bash
+```
+
+**Windows** (PowerShell; new and still unstable: problems are worth an [issue](https://github.com/i12bp8/decomp.wtf/issues))
 
 ```
 irm https://decomp.wtf/install.ps1 | iex
@@ -76,16 +83,6 @@ irm https://decomp.wtf/install.ps1 | iex
 It turns on WSL 2 if it isn't yet (Windows asks for permission once, and may want a restart), makes decomp.wtf's
 Linux from Debian's official WSL image and installs everything in it. You get a `decomp` command, a Start menu entry
 and a desktop shortcut. Your projects are at `\\wsl.localhost\decomp-wtf\home\decomp\Decomp`.
-
-**macOS** (needs [Docker Desktop](https://www.docker.com/products/docker-desktop/), [OrbStack](https://orbstack.dev)
-or [Colima](https://github.com/abiosoft/colima))
-
-```
-curl -fsSL https://decomp.wtf/install.sh | bash
-```
-
-decomp.wtf runs in a Docker container (`decomp-wtf`) with your projects in the volume `decomp-wtf-home`; you get a
-`decomp` command and a decomp.wtf app in ~/Applications. `decomp shell` opens a terminal inside.
 
 One line sets up everything: [uv](https://docs.astral.sh/uv/), the app, the period compilers (pinned and
 checksum-verified) and the m2c draft decompiler. It then opens decomp.wtf in your browser. After that, start it any
@@ -216,11 +213,13 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | Feature | What you get |
 | :-- | :-- |
 | **Live view** | A map of every function in the game, each agent's tool calls, scores falling to zero, all in real time. |
-| **Autopilot** | Every function's machine draft goes through the judge first: whatever already matches costs no agent time (a fifth of the demo games in seconds). |
+| **Autopilot** | Free matches before agents spend a token: code the game has more than once is matched from its matched twin (names swapped, judged like any attempt: in Mario Party 6, 762 functions in 12 minutes, and 678 copies of hand-written assembly set aside), then every function's machine draft goes through the judge. |
+| **Permuter** | Near misses agents leave (95% and up) get rewritten in the background, the way decomp-permuter does it: statement and declaration order, casts, temporaries. Improvements become the function's best attempt; a match is a match. |
+| **Fast agents** | Small functions come in batches (one turn writes several, one call judges them all), identical code is shown in the brief, agents are told to move on after four tries without progress, and functions whose code repeats are handed out first (one match, many free). |
 | **Your agent, your terminal** | `decomp connect`, then ask Claude Code, Codex or Antigravity CLI to decompile your game: it imports, opens the live view and works. |
 | **Edit it yourself** | Every function has an editor: write C, press Ctrl+Enter, see the judge's diff. You count as an agent. |
 | **Byte-for-byte check** | Candidates are linked at the real address, so calls, globals, strings and jump tables are verified too. |
-| **Any agent** | Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key, several at once. |
+| **Any agent** | Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key, several at once: save one endpoint per machine or provider (llama.cpp, Ollama, LM Studio, DeepSeek...) and spread sessions across them. |
 | **Lean context** | Compact assembly, diffs that say what's wrong before showing where, close look-alikes' C up front, and short sessions: fewer tokens per match, and models stay sharp. |
 | **Shared knowledge** | Structs and prototypes go into one header, accepted only if every match so far still matches. |
 | **Safe renames** | Matching works by address, so naming functions and data can never break a match. |
@@ -342,10 +341,9 @@ now; C++ there (mostly PS2 games) is coming. Public decomps use whatever languag
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
 tools run with a memory cap, so a runaway analysis can't take your computer down.
 
-**Windows and macOS.** Several of the compilers (KMC GCC, the PlayStation GCCs, EE-GCC, agbcc) only exist as Linux
-programs, so decomp.wtf runs in Linux everywhere: its own WSL 2 distribution on Windows, Docker on macOS. The
-installer sets that up; you use the app in your browser as usual, and the results are byte-identical on every
-computer.
+**Windows.** Several of the compilers (KMC GCC, the PlayStation GCCs, EE-GCC, agbcc) only exist as Linux programs,
+so on Windows decomp.wtf runs in its own WSL 2 distribution. The installer sets that up; you use the app in your
+browser as usual, and the results are byte-identical to Linux. macOS isn't supported.
 
 **When something goes wrong.** A failed import stays on screen with the reason and what happened, and **Copy for a
 bug report** puts the version, the error and the log on your clipboard for an
@@ -371,8 +369,9 @@ uv run pytest
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
 | `src/decompnet/toolchains.py` | The pinned compilers: verified downloads and installs. |
-| `src/decompnet/hostenv.py`, `app/updates.py` | Where decomp.wtf runs (Linux itself, its WSL 2 distribution on Windows, Docker on macOS) and what crosses to the computer around it; updates. |
-| `site/public/install.sh`, `install.ps1`, `linux-base.sh`, `Dockerfile` | The installers: decomp.wtf's own Linux (WSL on Windows, Docker on macOS) is made by `linux-base.sh` on Debian. |
+| `src/decompnet/hostenv.py`, `app/updates.py` | Where decomp.wtf runs (Linux itself, its WSL 2 distribution on Windows, Docker on a server) and what crosses to the computer around it; updates. |
+| `src/decompnet/app/twins.py`, `app/permute.py` | Free matches: identical code from its matched twin, and the background permuter for near misses. |
+| `site/public/install.sh`, `install.ps1`, `linux-base.sh`, `Dockerfile` | The installers: decomp.wtf's own Linux (WSL on Windows, Docker on a server) is made by `linux-base.sh` on Debian. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it: every function of the original source matches. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
 | `projects/demo-fork/` | A small decomp project in the community's shape (objdiff.json, ninja), for `tests/test_forks.py`. |
@@ -380,19 +379,19 @@ uv run pytest
 
 Rebuild the demo ROM with `uv run python projects/demo-rom/build.py` (needs `gcc-2.7.2-kmc` and `ld.lld`).
 
-**Testing a branch on Windows or macOS.** Run the installer from a checkout of the branch: it installs that checkout,
+**Testing a branch.** Run the installer from a checkout of the branch: it installs that checkout,
 and the installed app then follows the branch on GitHub (every new commit pushed there shows up as an update in the
 app: one click installs it).
 
 ```
 git clone -b <branch> https://github.com/i12bp8/decomp.wtf && cd decomp.wtf
 powershell -ExecutionPolicy Bypass -File site\public\install.ps1      # Windows
-bash site/public/install.sh                                           # macOS (or Linux; --docker to use Docker)
+bash site/public/install.sh                                           # Linux
 ```
 
 Without a checkout: `$env:DECOMP_BRANCH = "<branch>"; irm https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.ps1 | iex`
 on Windows, `curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.sh | DECOMP_BRANCH=<branch> bash`
-on macOS. `decomp update` (or the app's Settings) installs the newest commit by hand.
+on Linux. `decomp update` (or the app's Settings) installs the newest commit by hand.
 
 </details>
 

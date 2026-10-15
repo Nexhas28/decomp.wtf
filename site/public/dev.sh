@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# decomp.wtf's dev branch, for testing what isn't released yet (Linux and macOS):
+# decomp.wtf's dev branch, for testing what isn't released yet (Linux):
 #
 #   curl -fsSL https://decomp.wtf/dev.sh | bash
 #

@@ -131,6 +131,9 @@ class Settings:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.data = {}
+        if not isinstance(self.data.get("endpoints"), list):  # one saved "api" before 0.10.1: the first endpoint
+            old = self.data.get("api") if isinstance(self.data.get("api"), dict) else {}
+            self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
 
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
@@ -139,15 +142,103 @@ class Settings:
         except OSError:
             pass
 
+    # -- API endpoints: OpenAI-compatible servers for the built-in agent, each with its own address, model and key
+
+    def endpoints(self) -> list[dict]:
+        return [e for e in self.data.get("endpoints") or [] if isinstance(e, dict) and e.get("id")]
+
+    def endpoint(self, eid: str) -> dict | None:
+        return next((e for e in self.endpoints() if e["id"] == eid), None)
+
+    def save_endpoint(self, data: dict) -> dict:
+        """Add an endpoint (no id) or change one. A key is only replaced by a new one typed in (the masked one the
+        GUI shows comes back unchanged)."""
+        numbers = {}
+        for k in ("context_tokens", "max_sessions"):  # the model's context in tokens (empty = find out); a box's limit
+            if k in data:
+                try:
+                    numbers[k] = int(str(data[k] or "").strip() or 0)
+                except ValueError:
+                    raise ValueError("the context size is a number of tokens, like 16384" if k == "context_tokens"
+                                     else "the session limit is a number, like 1") from None
+        current = self.endpoint(str(data.get("id") or ""))
+        if current is None:  # ids are never reused: a session resumed later can't end up on another machine
+            ids = {e["id"] for e in self.endpoints()}
+            n = max(int(self.data.get("endpoint_seq") or 0), len(ids)) + 1
+            while f"e{n}" in ids:
+                n += 1
+            self.data["endpoint_seq"] = n
+            current = {"id": f"e{n}"}
+            self.data.setdefault("endpoints", []).append(current)
+        for k in ("name", "provider", "base_url", "model"):
+            if k in data:
+                current[k] = str(data[k] or "").strip()
+        for k, n in numbers.items():
+            if n:
+                current[k] = max(2048, n) if k == "context_tokens" else max(1, min(n, 32))
+            else:
+                current.pop(k, None)
+        if data.get("api_key") and "•" not in str(data["api_key"]):
+            current["api_key"] = str(data["api_key"]).strip()
+        if data.get("clear_key"):
+            current.pop("api_key", None)
+        current.update(agents.endpoint_entry(current))
+        return current
+
+    def remove_endpoint(self, eid: str) -> None:
+        self.data["endpoints"] = [e for e in self.endpoints() if e["id"] != eid]
+
     def public(self) -> dict:
-        api = dict(self.data.get("api", {}))
-        if api.get("api_key"):
-            api["api_key"] = "•" * 8 + api["api_key"][-4:]
-            api["has_key"] = True
-        return {"api": api, "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
+        def masked(e: dict) -> dict:
+            out = {k: v for k, v in e.items() if k != "api_key"}
+            if e.get("api_key"):
+                out["api_key"], out["has_key"] = "•" * 8 + e["api_key"][-4:], True
+            return out
+
+        eps = [masked(e) for e in self.endpoints()]
+        return {"endpoints": eps, "api": eps[0] if eps else {},
+                "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
+
+
+def _session_options(entry: dict) -> dict:
+    """What a built-in agent session needs from its endpoint."""
+    out = {"endpoint": entry.get("id") or "", "provider": entry["provider"], "base_url": entry["base_url"],
+           "model": entry["model"], "provider_name": entry["name"]}
+    return out | {k: entry[k] for k in ("api_key", "context_tokens") if entry.get(k)}
+
+
+def _spread(settings: Settings, manager, picked: list[str], count: int, given: dict) -> list[tuple[dict, int]]:
+    """(endpoint, sessions) for a start of `count` built-in agent sessions: spread over the endpoints picked, one
+    at a time in turn, each up to its own limit of sessions at once (a small box serves one request at a time).
+    A start without endpoints (an older GUI, or an address typed in) uses the first saved one, with what it
+    changes; a saved key only ever goes to its own endpoint's address."""
+    if not picked:
+        first = settings.endpoints()[0] if settings.endpoints() else {}
+        typed = {k: v for k, v in given.items() if k in ("provider", "base_url", "model", "context_tokens") and v}
+        entry = agents.endpoint_entry(first | typed)
+        if first and entry["base_url"].rstrip("/") != first["base_url"].rstrip("/"):
+            entry.pop("api_key", None)
+        if not entry.get("base_url") or not entry.get("model"):
+            raise ValueError("add an API endpoint first (Agents & models): its address and model")
+        return [(entry, count)]
+    eps = [settings.endpoint(e) for e in picked]
+    if any(e is None for e in eps):
+        raise ValueError("an endpoint you picked isn't saved any more: pick again")
+    busy = {e["id"]: sum(1 for x in manager.sessions.values() if x.kind == "api" and x.options.get("endpoint") == e["id"]
+                         and x.state in ("starting", "working", "waiting") and not x.stop.is_set()) for e in eps}
+    plan = {e["id"]: 0 for e in eps}
+    for _ in range(count):
+        room = [e for e in eps if not e.get("max_sessions") or busy[e["id"]] + plan[e["id"]] < int(e["max_sessions"])]
+        if not room:
+            break
+        pick = min(room, key=lambda e: (busy[e["id"]] + plan[e["id"]], eps.index(e)))
+        plan[pick["id"]] += 1
+    if not any(plan.values()):
+        raise ValueError("every endpoint you picked already runs as many sessions as you allowed it")
+    return [(e, plan[e["id"]]) for e in eps if plan[e["id"]]]
 
 
 def _launcher(saved: dict) -> dict:
@@ -200,7 +291,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             net.project_row(r["slug"])
             options = dict(r.get("options") or {})
             if r["kind"] == "api":
-                options.update({k: v for k, v in settings.data.get("api", {}).items() if k == "api_key"})
+                saved = settings.endpoint(str(options.get("endpoint") or "")) if options.get("endpoint") else (
+                    next((e for e in settings.endpoints() if e["base_url"] == options.get("base_url")), None))
+                if saved is None and options.get("endpoint"):
+                    continue  # its endpoint was removed since
+                if saved is not None:  # as the endpoint is now, with its key
+                    options.update(_session_options(saved))
             manager.start(r["kind"], r["slug"], 1, options)
         except (NetworkError, ValueError, KeyError):
             continue
@@ -740,24 +836,24 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         data = await body(request)
         kind, slug = str(data.get("kind", "")), str(data.get("slug", ""))
-        options = {k: v for k, v in (data.get("options") or {}).items() if k in ("model", "per_session")}
-        if kind == "api":
-            api = dict(settings.data.get("api", {}))
-            api.update({k: v for k, v in (data.get("options") or {}).items()
-                        if k in ("provider", "base_url", "model", "context_tokens") and v})
-            if not api.get("base_url") or not api.get("model"):
-                return fail(ValueError("choose a provider and model first"))
-            options.update(api)
-            options["provider_name"] = agents.API_PRESETS.get(api.get("provider", ""), {}).get("name", "API")
+        given = data.get("options") or {}
+        options = {k: v for k, v in given.items() if k in ("model", "per_session")}
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
+        count = max(1, min(int(data.get("count", 1)), 8))
+        picked: list[str] = []
         try:
             net.project_row(slug)
-            ids = manager.start(kind, slug, int(data.get("count", 1)), options)
+            if kind == "api":
+                picked = [str(e) for e in (given.get("endpoints") or ([given["endpoint"]] if given.get("endpoint") else []))]
+                plan = _spread(settings, manager, picked, count, given)
+                ids = [sid for entry, n in plan for sid in manager.start(kind, slug, n, options | _session_options(entry))]
+            else:
+                ids = manager.start(kind, slug, count, options)
         except (NetworkError, ValueError) as e:
             return fail(e)
         # remembered, so the next start is one click; models typed in come back as suggestions
         model = str(options.get("model") or "")
-        settings.data["launcher"] = {"kind": kind, "model": model, "count": max(1, min(int(data.get("count", 1)), 8))}
+        settings.data["launcher"] = {"kind": kind, "model": model, "count": count} | ({"endpoints": picked} if picked else {})
         if model and kind != "api":
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
@@ -821,24 +917,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)
-        if isinstance(data.get("api"), dict):
-            api = settings.data.setdefault("api", {})
-            for k in ("provider", "base_url", "model"):
-                if k in data["api"]:
-                    api[k] = str(data["api"][k]).strip()
-            if "context_tokens" in data["api"]:  # the model's context, in tokens: empty = find out
-                try:
-                    n = int(str(data["api"]["context_tokens"]).strip() or 0)
-                except ValueError:
-                    raise ValueError("the context size is a number of tokens, like 16384") from None
-                if n:
-                    api["context_tokens"] = max(2048, n)
-                else:
-                    api.pop("context_tokens", None)
-            if data["api"].get("api_key") and "•" not in data["api"]["api_key"]:
-                api["api_key"] = str(data["api"]["api_key"]).strip()
-            if data["api"].get("clear_key"):
-                api.pop("api_key", None)
+        if isinstance(data.get("api"), dict):  # (before 0.10.1: the one endpoint there was) the first one
+            first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
+            settings.save_endpoint(data["api"] | {"id": first})
+        if isinstance(data.get("endpoint"), dict):
+            settings.save_endpoint(data["endpoint"])
+        if data.get("remove_endpoint"):
+            settings.remove_endpoint(str(data["remove_endpoint"]))
+            for sid, sess in list(manager.sessions.items()):  # its sessions stop with it
+                if sess.kind == "api" and sess.options.get("endpoint") == str(data["remove_endpoint"]):
+                    manager.stop(sid)
         if "per_session" in data:
             settings.data["per_session"] = max(1, min(int(data["per_session"]), 20))
         if "autopilot" in data:

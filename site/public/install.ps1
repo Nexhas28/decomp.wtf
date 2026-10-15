@@ -3,7 +3,7 @@
 #   irm https://decomp.wtf/install.ps1 | iex
 #
 # decomp.wtf is a Linux program (the old compilers it runs are), so on Windows it gets its own small Linux: a WSL 2
-# distribution called decomp-wtf, the same Linux it has on macOS (there in Docker). What this does, and nothing else:
+# distribution called decomp-wtf, the same Linux as its Docker image for servers. What this does, and nothing else:
 #   1. makes sure WSL 2 is there (the first time Windows asks for permission, and may want a restart)
 #   2. makes the decomp-wtf distribution from Debian's official WSL image (checksum-verified) and prepares it
 #   3. installs decomp.wtf in it (open source, MIT) with uv, with the free compilers and tools
@@ -21,7 +21,7 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # Windows PowerShell downloads many times slower while drawing a progress bar
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-$Version = "0.10.0"
+$Version = "0.10.1"
 $Repo = "i12bp8/decomp.wtf"
 $Distro = "decomp-wtf"
 $Wsl = Join-Path $env:SystemRoot "System32\wsl.exe"
@@ -87,7 +87,16 @@ foreach ($f in @("linux-base.sh", "install.sh", "decomp.ico")) {
     $local = if ($PSScriptRoot) { Join-Path $PSScriptRoot $f } else { $null }
     $dest = Join-Path $tmp $f
     if ($local -and (Test-Path $local)) { Copy-Item $local $dest }
-    else { Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest }
+    else {
+        try { Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest }
+        catch {
+            if ($web -ne "https://decomp.wtf") { throw }
+            # decomp.wtf can't be reached from here (a filter, an outage): the same files from GitHub
+            $web = "https://raw.githubusercontent.com/$Repo/main/site/public"
+            Step "decomp.wtf can't be reached from here: using GitHub instead"
+            Invoke-WebRequest -UseBasicParsing -UserAgent $UA -Uri "$web/$f" -OutFile $dest
+        }
+    }
     if ($f.EndsWith(".sh")) { Save-Lf ([IO.File]::ReadAllText($dest)) $dest }
 }
 Save-Lf ("#!/bin/sh`nexport DECOMP_SOURCE=`"`$(cat ./source.txt)`"`nexec bash ./install.sh --no-start`n") (Join-Path $tmp "run-install.sh")

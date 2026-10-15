@@ -162,6 +162,22 @@ def _units(module: Path) -> list[tuple[int, int, int]]:
     return [(a, b, u[2]) for a, b, u in zip(starts, ends, units)]
 
 
+def _init(dsd: str, root: Path, version: str, log) -> None:
+    init = [dsd, "init", "--rom-config", f"extract/{version}/config.yaml", "--output-path", f"config/{version}",
+            "--build-path", f"build/{version}"]
+    try:
+        _run(init, root, "analysing the game")
+    except ForkError as e:
+        # a call into code dsd's analysis didn't take for a function (Sonic & SEGA All-Stars Racing calls 0x0206135C):
+        # dsd's own option gives each such target a function symbol of unknown size, and the analysis goes on
+        if "leads to no function" not in str(e):
+            raise
+        log("the game calls code ds-decomp didn't find as a function: analysing again, with each such call's "
+            "target as a function of its own")
+        shutil.rmtree(root / "config" / version, ignore_errors=True)
+        _run([*init, "--allow-unknown-function-calls"], root, "analysing the game")
+
+
 def create(root: Path, game: Path, *, compiler: str | None = None, log=print) -> dict:
     """Make the project in `root` (which must not exist yet) and build it once. Returns facts about the game."""
     info = game_info(game)
@@ -187,8 +203,7 @@ def create(root: Path, game: Path, *, compiler: str | None = None, log=print) ->
     _run([dsd, "rom", "extract", "--rom", "extract/baserom.nds", "--output-path", f"extract/{version}"], root,
          "extracting the ROM")
     log("analysing the ARM9 program, its autoloads and overlays (dsd init)")
-    _run([dsd, "init", "--rom-config", f"extract/{version}/config.yaml", "--output-path", f"config/{version}",
-          "--build-path", f"build/{version}"], root, "analysing the game")
+    _init(dsd, root, version, log)
 
     sources = []
     for prefix, module in _modules(root / "config" / version):

@@ -9,9 +9,8 @@
     document.querySelectorAll(".install [data-os]:not(button)").forEach((el) => { el.hidden = el.dataset.os !== os; });
   };
   document.querySelectorAll(".os button").forEach((b) => b.addEventListener("click", () => choose(b.dataset.os)));
-  // A phone says "like Mac OS X" too: it gets the commands for the computer it will install on, not macOS's note
-  const ua = navigator.userAgent;
-  choose(/Windows/i.test(ua) ? "win" : /iPhone|iPad|iPod|Android/i.test(ua) ? "unix" : /Macintosh|Mac OS X/i.test(ua) ? "mac" : "unix");
+  // Windows gets PowerShell's command; everything else Linux's (macOS isn't supported)
+  choose(/Windows/i.test(navigator.userAgent) ? "win" : "unix");
   const said = (b, text) => {
     b.textContent = text;
     setTimeout(() => { b.textContent = "Copy"; }, 1800);

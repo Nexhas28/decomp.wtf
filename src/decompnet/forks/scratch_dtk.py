@@ -225,7 +225,7 @@ def tool_args() -> list[str]:
     args = ["--dtk", str(toolchains.binary("dtk")), "--binutils", str(toolchains.path("gc-wii-binutils")),
             "--compilers", str(toolchains.path("mwcc")), "--objdiff", str(toolchains.binary("objdiff-cli")),
             "--sjiswrap", str(toolchains.binary("sjiswrap"))]
-    if toolchains.get("wibo").supported:
+    if toolchains.get("wibo").supported and os.name != "nt":  # configure.py has --wrapper only off Windows
         args += ["--wrapper", str(toolchains.binary("wibo"))]
     return args
 
@@ -443,6 +443,66 @@ def _overlap_hint(root: Path, game_id: str, log_tail: str) -> str | None:
     return f"0x{start:08X}"
 
 
+_MISSING_FUNCTION = re.compile(r"Failed to find function symbol @ \d+:0x([0-9A-Fa-f]{8})")
+
+
+def _dol_read(dol: bytes, address: int, size: int) -> bytes:
+    """`size` bytes of the program at `address` (empty when no section of the file holds them)."""
+    offs, addrs, sizes = (struct.unpack(">18I", dol[k:k + 72]) for k in (0, 72, 144))
+    for o, a, n in zip(offs, addrs, sizes):
+        if n and a <= address and address + size <= a + n:
+            return dol[o + address - a:o + address - a + size]
+    return b""
+
+
+def _exception_table_size(dol: bytes, address: int, sections: list[tuple[str, int, int]]) -> int | None:
+    """The size the game's exception table gives the function at `address`: extabindex is a list of 12-byte entries
+    (function, size, its extab entry), in the section dtk names extabindex."""
+    for name, start, size in sections:
+        if name != "extabindex":
+            continue
+        table = _dol_read(dol, start, size)
+        for at in range(0, len(table) - 11, 12):
+            fn, length, _ = struct.unpack(">III", table[at:at + 12])
+            if fn == address and 0 < length < 0x100000:
+                return length
+    return None
+
+
+def _declare_function(root: Path, game_id: str, dol: bytes, log_tail: str) -> tuple[str, int] | None:
+    """dtk's analysis ends a function at a zeroed word inside it (CodeWarrior leaves some in real functions: RoadKill
+    at 0x8004C13C), and then the function its exception table lists doesn't exist ("Failed to find function symbol").
+    Declare it in symbols.txt with the table's size (dtk keeps the symbols it's given). Returns (address, size)."""
+    m = _MISSING_FUNCTION.search(log_tail)
+    if not m or not re.search(r"While processing object '[^']*' \(module ID 0\)", log_tail):
+        return None  # (a module's table is relocated at load time: its addresses aren't in the file)
+    address = int(m.group(1), 16)
+    sections = _dtk_sections(dol)
+    size = _exception_table_size(dol, address, sections)
+    section = next((s for s in sections if s[1] <= address < s[1] + s[2]), None)
+    if size is None or section is None:
+        return None
+    path = root / "config" / game_id / "symbols.txt"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if re.search(rf"^\S+ = {re.escape(section[0])}:0x{address:08X}; // type:function size:0x{size:X}\b", text, re.M):
+        return None  # already declared, and dtk still fails: something else is wrong
+    lines = [ln for ln in text.splitlines() if not re.match(rf"^\S+ = \S+:0x{address:08X};", ln)]
+    lines.append(f"fn_{address:08X} = {section[0]}:0x{address:08X}; // type:function size:0x{size:X}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f"0x{address:08X}", size
+
+
+def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
+    """(name, address, size) of the program's sections, named as dtk names them."""
+    with tempfile.TemporaryDirectory(prefix="decompwtf-dol-") as tmp:
+        (Path(tmp) / "main.dol").write_bytes(dol)
+        res = subprocess.run(capped([_dtk(), "dol", "info", str(Path(tmp) / "main.dol")]), capture_output=True,
+                             text=True, timeout=600, encoding="utf-8", errors="replace")
+    table = res.stdout.split("Sections:", 1)[-1].split("\n\n", 1)[0]
+    return [(m.group(1), int(m.group(2), 16), int(m.group(3), 16))
+            for m in re.finditer(r"^[ \t]*(\S+) \| 0x([0-9A-Fa-f]+)\s*\| 0x([0-9A-Fa-f]+)\s*\|", table, re.M)]
+
+
 def _code_units(root: Path, game_id: str) -> list[tuple[str | None, int, int, str]]:
     """(module or None for the program, start, end, section) of the code regions dtk split out automatically (not
     .init: hand-written start-up). A module's addresses are offsets in its section, as its splits.txt has them."""
@@ -553,6 +613,9 @@ write_asm: true
         elif (named := _standard_module_sections(root, gid)):
             log(f"named module sections decomp-toolkit couldn't ({', '.join(named[:4])}{', ...' if len(named) > 4 else ''}): "
                 "analysing again")
+        elif (declared := _declare_function(root, gid, info["dol"], tail)):
+            log(f"the program's exception table has a function decomp-toolkit's analysis stopped short of (a zeroed "
+                f"word inside its code): declared {declared[0]} ({declared[1]} bytes), analysing again")
         elif (dropped := _drop_module(root, gid, tail)):
             log(f"left out the module {dropped}: decomp-toolkit can't analyse it (the community's decomps of games "
                 "like this leave such modules out too); the game keeps your copy's")

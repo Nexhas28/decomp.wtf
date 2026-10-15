@@ -1,7 +1,7 @@
 #!/bin/sh
 # decomp.wtf's own Linux: prepares a fresh Debian system for it, as root. Used for both
 #   - Windows: the "decomp-wtf" WSL 2 distribution install.ps1 makes   (sh linux-base.sh wsl)
-#   - macOS (and servers): the Docker image                            (sh linux-base.sh docker, see Dockerfile)
+#   - servers: the Docker image                                        (sh linux-base.sh docker, see Dockerfile)
 # so decomp.wtf runs on the same Linux everywhere. Running it again updates the system and changes nothing else.
 #
 # What it does: installs the few system programs decomp.wtf and the agent CLIs use (git, Node.js for npm-installed

@@ -45,11 +45,12 @@ def read_info(data: bytes) -> dict:
 
 
 def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None) -> tuple[str, list[int]]:
-    exe = toolchains.venv_bin(toolchains.ensure("luvdis", log=lambda *_: None) / "venv", "luvdis")
+    python = toolchains.venv_bin(toolchains.ensure("luvdis", log=lambda *_: None) / "venv", "python")
     out, cfg = workdir / "rom.s", workdir / "functions.cfg"
-    args = [str(exe), "disasm", str(rom), "--min-calls", "1", "--min-length", "2", "-o", str(out), "-co", str(cfg)]
+    args = [str(python), "-I", str(Path(__file__).with_name("luvdis_run.py")), "disasm", str(rom), "--min-calls", "1",
+            "--min-length", "2", "-o", str(out), "-co", str(cfg)]
     if cfg_in is not None:
-        args[3:3] = ["-c", str(cfg_in)]
+        args[5:5] = ["-c", str(cfg_in)]
     try:
         res = subprocess.run(capped(args), capture_output=True, text=True, timeout=3600, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:

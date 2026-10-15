@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -141,6 +142,145 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
     object, so nothing in them counts."""
     return {(u["name"], f["name"]) for u in rep.get("units", []) if u["name"] not in broken
             for f in u.get("functions", []) if (f.get("fuzzy_match_percent") or 0) >= 100}
+
+
+_INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
+_ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
+_PRAGMA = re.compile(r"^#\s*pragma\b")
+
+
+def _around(source: str, span: tuple[int, int], file_text: str, rel: str) -> tuple[list[str], list[str], list[str]]:
+    """What an agent sends around the one definition, as (includes, lines before it, lines after it): project
+    includes, prototypes and extern declarations, `#pragma` lines (push/pop wrappers). Lines the file has already
+    are left out (a wrapper's pragmas aren't: they belong to this function). Anything else (a struct, a global,
+    another function) isn't placed: edit_file is for that, and this says so."""
+    have = {ln.strip() for ln in file_text.splitlines()}
+    clean = csource._blank(source)
+
+    def lines(lo: int, hi: int) -> list[str]:
+        return [real.strip() for real, c in zip(source[lo:hi].splitlines(), clean[lo:hi].splitlines()) if c.strip()]
+
+    includes, before, after, other = [], [], [], []
+    for ln in lines(0, span[0]):
+        if _INCLUDE_LINE.match(ln):
+            if ln not in have:
+                includes.append(ln)
+        elif _PRAGMA.match(ln):
+            before.append(ln)
+        elif drafts._DECL.match(ln):
+            if ln not in have:
+                before.append(ln)
+        elif ln not in have:
+            other.append(ln)
+    for ln in lines(span[1], len(source)):
+        if _PRAGMA.match(ln):
+            after.append(ln)
+        elif ln not in have:
+            other.append(ln)
+    if other:
+        listing = "\n".join(other[:6]) + ("\n..." if len(other) > 6 else "")
+        raise NetworkError(f"send the function definition, plus any #include \"...\", prototypes, extern declarations "
+                           f"or #pragma lines it needs (those are placed for you). These lines aren't any of that and "
+                           f"aren't in {rel}:\n{listing}\nPut structs, globals and helper functions in with edit_file first")
+    return includes, before, after
+
+
+def _headers_defining(fp: ForkProject, rel: str, include_lines: list[str], names: set[str]) -> list[str]:
+    """Of a file's #include "..." lines, those whose header defines one of `names` (a type, macro or function),
+    looked up where the project's builds look: include/, the file's own folder, src/, the project root."""
+    out = []
+    for line in include_lines:
+        m = re.search(r'"([^"]+)"', line)
+        if not m:
+            continue
+        for base in (fp.root / "include", (fp.root / rel).parent, fp.root / "src", fp.root):
+            h = base / m.group(1)
+            if not h.is_file():
+                continue
+            try:
+                text = csource._blank(h.read_text(errors="replace", encoding="utf-8"))
+            except OSError:
+                break
+            if any(re.search(rf"(?:struct|union|enum)\s+{re.escape(n)}\b|\}}\s*{re.escape(n)}\s*;|#\s*define\s+{re.escape(n)}\b|"
+                             rf"\b{re.escape(n)}\s*\(", text) for n in names):
+                out.append(line)
+            break
+    return out
+
+
+def _type_blocks(text: str) -> list[tuple[set[str], str]]:
+    """The file-scope type definitions of a C file: (the names they define, their text)."""
+    clean = csource._blank(text)
+    out, i = [], 0
+    pattern = re.compile(r"^[ \t]*(typedef\b|struct\s+\w+\s*\{|union\s+\w+\s*\{|enum\s*\w*\s*\{)", re.M)
+    depth_at = []
+    depth = 0
+    for k, c in enumerate(clean):  # depth before each character
+        depth_at.append(depth)
+        depth += (c == "{") - (c == "}")
+    for m in pattern.finditer(clean):
+        if m.start() < i or depth_at[m.start()] != 0:
+            continue
+        j, d = m.start(), 0
+        while j < len(clean):  # to the `;` that ends it at depth 0
+            c = clean[j]
+            d += (c == "{") - (c == "}")
+            if c == ";" and d == 0:
+                break
+            j += 1
+        block = text[m.start():j + 1]
+        names = set(re.findall(r"(?:struct|union|enum)\s+(\w+)", block[:block.find("{")] if "{" in block else block))
+        tail = block[block.rfind("}") + 1:] if "}" in block else block
+        names |= {n for n in re.findall(r"\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*[;,)]", tail)
+                  if n not in ("typedef", "struct", "union", "enum", "const", "volatile")}
+        if names:
+            out.append((names, block.strip()))
+        i = j + 1
+    return out
+
+
+def _file_scope_lines(text: str) -> list[str]:
+    """The lines of a C file outside every function body and struct (brace depth 0), stripped."""
+    clean, depth, out = csource._blank(text), 0, []
+    for real, c in zip(text.splitlines(), clean.splitlines()):
+        if depth == 0 and c.strip() and "{" not in c and "}" not in c:
+            out.append(real.strip())
+        depth = max(0, depth + c.count("{") - c.count("}"))
+    return out
+
+
+def _pragmas_around(text: str, lo: int, hi: int) -> tuple[int, int]:
+    """Widen a definition's span over the #pragma lines right above and below it (its wrapper)."""
+    start = lo
+    while start > 0:
+        prev = text.rfind("\n", 0, start - 1) + 1
+        line = text[prev:start].strip()
+        if not _PRAGMA.match(line):
+            break
+        start = prev
+    end = hi
+    while end < len(text):
+        nl = text.find("\n", end)
+        nl = len(text) if nl < 0 else nl
+        line = text[end:nl].strip()
+        if line and not _PRAGMA.match(line):
+            break
+        if not line and end != hi:
+            break
+        end = nl + 1 if nl < len(text) else nl
+    return start, end
+
+
+def _with_includes(text: str, includes: list[str], prelude: str = "") -> str:
+    """The file with new #include lines after its last one (or at the top), and `prelude` (type definitions)
+    after those."""
+    if not includes and not prelude:
+        return text
+    last = None
+    for m in re.finditer(r"^[ \t]*#\s*include\b[^\n]*\n", text, re.M):
+        last = m
+    block = "".join(ln + "\n" for ln in includes) + (prelude.rstrip("\n") + "\n\n" if prelude else "")
+    return text[:last.end()] + block + text[last.end():] if last else block + text
 
 
 def _renamed_note(d) -> str:
@@ -464,7 +604,11 @@ class ForkEngine:
                     meta["held"] = self._meta(old)["held"]
                     if sym in held.get(uname, ()):
                         fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
+                if old is not None and self._meta(old).get("asm_twin"):
+                    meta["asm_twin"] = self._meta(old)["asm_twin"]
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
+                if status == "open" and meta.get("asm_twin"):
+                    status = "asm"  # the same code is hand-written assembly elsewhere: not for agents
                 score = None if fuzzy is None else scaled(fuzzy, n)
                 vram = md.get("virtual_address")
                 if old is None:
@@ -1126,6 +1270,102 @@ class ForkEngine:
         _, span = self._find(text, self._names(self._meta(fn), fn))
         return text[span[0]:span[1]] if span else None
 
+    def twin_source(self, proj, a, b, names: dict[str, str], includes: bool = False) -> str | None:
+        """a's matched definition, from its source file, written for its twin b: names swapped (see app/twins.py),
+        with the includes and declarations it relies on from a's file that b's file doesn't have (compile_and_diff
+        places those in b's file). None for a definition in assembly (then b is assembly too)."""
+        from . import twins
+
+        fp = ForkProject(Path(proj["root"]))
+        ua, ub = fp.unit(a["unit"]), fp.unit(b["unit"])
+        if not ua.source or not ub.source:
+            return None
+        try:
+            text_a = (fp.root / ua.source).read_text(errors="replace", encoding="utf-8")
+            text_b = (fp.root / ub.source).read_text(errors="replace", encoding="utf-8") if (fp.root / ub.source).exists() else ""
+        except OSError:
+            return None
+        _, span = self._find(text_a, self._names(self._meta(a), a))
+        if span is None or _ASM_DEF.match(text_a[span[0]:span[1]]):
+            return None
+        code = twins.apply(text_a[span[0]:span[1]], names)
+        used = set(re.findall(r"\b\w+\b", code))
+        lines_b = {ln.strip() for ln in text_b.splitlines()}
+        clean_b = csource._blank(text_b)
+        declared_b = {m.group(1) for ln in text_b.splitlines() if drafts._DECL.match(ln.strip())
+                      for m in [re.search(r"(\w+)\s*(?:\(|\[|;)", ln)] if m}
+        head, seen = [], set()
+        if includes:  # only the headers that define a name b's file doesn't know (more can clash with b's own)
+            wanted = {n for n in used if not re.search(rf"\b{re.escape(n)}\b", clean_b)}
+            head += _headers_defining(fp, ua.source, [ln for ln in _file_scope_lines(text_a)
+                                                      if _INCLUDE_LINE.match(ln) and ln not in lines_b], wanted)
+        for line in _file_scope_lines(text_a[:span[0]] + "\n" + text_a[span[1]:]):
+            if _INCLUDE_LINE.match(line):
+                continue
+            if not drafts._DECL.match(line) or line.startswith("#"):
+                continue
+            renamed = twins.apply(line, names)
+            name = re.search(r"(\w+)\s*(?:\(|\[|;)", renamed)
+            if name and name.group(1) in used and name.group(1) not in declared_b and name.group(1) not in seen \
+                    and renamed not in lines_b and not re.search(rf"\b{re.escape(name.group(1))}\b", clean_b):
+                seen.add(name.group(1))
+                head.append(renamed)
+        if self._find(code, self._names(self._meta(b), b))[1] is None:
+            return None  # a's definition isn't written under its symbol (a macro, another spelling): can't rename it
+        return "\n".join(head) + ("\n" if head else "") + code
+
+    def twin_types(self, proj, a, b, source: str) -> str:
+        """The file-scope type definitions (struct, union, enum, typedef) of a's file that `source` (a's code made
+        into b's) relies on and b's file doesn't have, in a's order: for code that uses a type a's file defines."""
+        fp = ForkProject(Path(proj["root"]))
+        ua, ub = fp.unit(a["unit"]), fp.unit(b["unit"])
+        try:
+            text_a = (fp.root / ua.source).read_text(errors="replace", encoding="utf-8")
+            text_b = (fp.root / ub.source).read_text(errors="replace", encoding="utf-8") if (fp.root / ub.source).exists() else ""
+        except (OSError, TypeError):
+            return ""
+        blocks = _type_blocks(text_a)
+        clean_b = csource._blank(text_b)
+        want, out = set(re.findall(r"\b\w+\b", source)), []
+        for _ in range(4):  # types used by the types taken
+            added = False
+            for names, block in blocks:
+                if block in out or not names & want or any(re.search(rf"\b{re.escape(n)}\b", clean_b) for n in names):
+                    continue
+                out.append(block)
+                want |= set(re.findall(r"\b\w+\b", block))
+                added = True
+            if not added:
+                break
+        return "\n".join(b for _, b in blocks if b in out)
+
+    def one_definition(self, slug: str, source: str, name: str, others: list[str]) -> str:
+        """A source holding several functions' definitions, with the definitions of `others` (and the #pragma lines
+        right around them) taken out: what compile_and_diff for `name` alone gets."""
+        for other in others:
+            try:
+                fn = self._fn(slug, other)
+            except NetworkError:
+                continue
+            _, span = self._find(source, self._names(self._meta(fn), fn))
+            if span:
+                lo, hi = _pragmas_around(source, *span)
+                source = source[:lo] + source[hi:]
+        return source
+
+    def is_asm(self, proj, fn) -> bool:
+        """Whether a matched function's definition in its file is hand-written assembly (an asm function)."""
+        src = self._current_source(ForkProject(Path(proj["root"])), fn)
+        return bool(src and _ASM_DEF.match(src))
+
+    def mark_asm(self, fn, twin_name: str) -> None:
+        """b's code is a matched assembly function's (runtime helpers each module links its own copy of): agents
+        can't write it in C, so it's out of their way."""
+        meta = self._meta(fn)
+        meta["asm_twin"] = twin_name
+        with self.net.store.tx() as db:
+            db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", (json.dumps(meta), fn["id"]))
+
     # ------------------------------------------------------------------ for agents
 
     def info(self, slug: str) -> str:
@@ -1237,6 +1477,7 @@ class ForkEngine:
                    (time.time(), agent.id if agent else None, source, r["id"]))
         db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
         self.net._event(db, proj["id"], agent.id if agent else None, "match", r["name"])
+        self.net.on_match(proj, r["id"])
 
     def brief(self, fn, agent: Agent | None, header: str) -> str:
         proj = self.net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -1282,8 +1523,10 @@ class ForkEngine:
             if seed:
                 lines += ["", "### Machine draft: a starting point, often wrong in types and details", "```c",
                           seed.strip(), "```"]
+        twin = self._twin_brief(proj, fn) if fn["status"] != "matched" else []
+        lines += twin
         try:
-            alike = [(r, sim) for r, sim in self.similar(proj, fp, fn, top=3) if r["status"] == "matched"]
+            alike = [] if twin else [(r, sim) for r, sim in self.similar(proj, fp, fn, top=3) if r["status"] == "matched"]
         except (ObjdiffError, ForkError):
             alike = []
         if alike:
@@ -1306,9 +1549,37 @@ class ForkEngine:
                                    "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
         if notes:
             lines += ["", "### Notes"] + [f"- ({n['name']}) {n['text']}" for n in notes]
-        lines += ["", "Send compile_and_diff exactly one complete function definition (same name and signature as the "
-                      "original). Structs, prototypes and file-level data go in with edit_file."]
+        lines += ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
+                      "with any #include \"...\", prototypes or #pragma lines it needs. Structs, globals and helper "
+                      "functions go in with edit_file."]
         return "\n".join(lines)
+
+    def _twin_brief(self, proj, fn) -> list[str]:
+        """For a brief: the matched function with the same code (relocations aside), and its code made into this
+        one's when the names can be swapped."""
+        try:
+            twin_id = self.net.twins.twin_of(proj, fn["id"])
+        except Exception:
+            return []
+        if twin_id is None:
+            return []
+        a = self.net.store.one("SELECT * FROM functions WHERE id=?", twin_id)
+        try:
+            source = self.net.twins.source_for(proj, a, fn, includes=True)
+        except (NetworkError, ForkError, OSError, ValueError):
+            source = None
+        out = ["", f"### Identical code: {a['name']} ({a['unit']}) is the same machine code and already matches"]
+        if source and len(source) < 6000:
+            out += ["Its code with this function's names: try it first. If it doesn't build or match as is, this file "
+                    "lacks something that one has (a type, a declaration, an include):", "```c", source.strip(), "```"]
+        elif self.is_asm(proj, a):
+            out.append("It's hand-written assembly there, so this one is too: release it with a note saying so.")
+        else:
+            src = self._current_source(ForkProject(Path(proj["root"])), a)
+            if src and len(src) < 4000:
+                out += ["Its source (its names differ from this one's: use the ones in this function's assembly):",
+                        "```c", src.strip(), "```"]
+        return out
 
     def _draft(self, proj, fp: ForkProject, cfg: dict, fn, unit) -> str | None:
         """m2c draft from the project's assembly for this function, cached in the database."""
@@ -1370,10 +1641,13 @@ class ForkEngine:
                for r in rows]
         return "\n".join(out) or "none"
 
-    def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True) -> dict:
+    def attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
+                quiet: int | None = None) -> dict:
         """`keep`: whether a version that doesn't match stays in the source file (an agent's work in progress) or
-        is undone and kept only as the function's best attempt (autopilot's drafts)."""
-        res = self._attempt(agent, slug, function, source, keep)
+        is undone and kept only as the function's best attempt (autopilot's drafts). `prelude`: (decomp.wtf's own
+        tries) type definitions the code needs, placed after the file's includes. `quiet`: (the permuter's
+        variants) recorded only when better than this score."""
+        res = self._attempt(agent, slug, function, source, keep, prelude, quiet)
         link = self.net.links.get(slug)
         if link is None or res["score"] is None:
             return res
@@ -1410,7 +1684,8 @@ class ForkEngine:
         except NetworkError:
             pass
 
-    def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True) -> dict:
+    def _attempt(self, agent: Agent, slug: str, function: str, source: str, keep: bool = True, prelude: str = "",
+                 quiet: int | None = None) -> dict:
         proj, fp, cfg = self.get(slug)
         fn = self._fn(slug, function)
         meta = self._meta(fn)
@@ -1426,19 +1701,11 @@ class ForkEngine:
         unit = fp.unit(fn["unit"])
         if not unit.source:
             raise NetworkError(f"unit {unit.name} has no source file, so there's nowhere to write it")
-        extra = source[:span[0]] + source[span[1]:]
-        if csource._blank(extra).strip():  # includes and prototypes the file already has are fine to resend
-            try:
-                have = {ln.strip() for ln in (fp.root / unit.source).read_text(errors="replace",
-                                                                               encoding="utf-8").splitlines()}
-            except OSError:
-                have = set()
-            new = [ln.strip() for ln in _strip_comments(extra).splitlines() if ln.strip() and ln.strip() not in have]
-            if new:
-                listing = "\n".join(new[:6]) + ("\n..." if len(new) > 6 else "")
-                raise NetworkError(f"send only the one function definition. These lines aren't in {unit.source}:\n"
-                                   f"{listing}\nPut structs, prototypes, globals and helper functions in with "
-                                   "edit_file first")
+        try:
+            have = (fp.root / unit.source).read_text(errors="replace", encoding="utf-8")
+        except OSError:
+            have = ""
+        includes, before_lines, after_lines = _around(source, span, have, unit.source)
         with self.net.store.tx() as db:  # claim bookkeeping, as for ROM projects
             self.net._expire_claims(db)
             claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
@@ -1468,10 +1735,15 @@ class ForkEngine:
                              if n != symbol and n not in held and pct is not None and pct >= 100}
                 was_matched = fn["status"] == "matched"
             hit, old_span = self._find(before, names)
+            pre, post = "".join(ln + "\n" for ln in before_lines), "".join(ln + "\n" for ln in after_lines)
             if old_span:
-                after = before[:old_span[0]] + code.rstrip("\n") + "\n" + before[old_span[1]:]
+                lo, hi = old_span
+                if any(_PRAGMA.match(ln) for ln in before_lines + after_lines):  # a new wrapper replaces the old one
+                    lo, hi = _pragmas_around(before, lo, hi)
+                after = before[:lo] + pre + code.rstrip("\n") + "\n" + post + before[hi:]
             else:
-                after = self._insert_in_order(proj, fp, unit, fn, before, code)
+                after = self._insert_in_order(proj, fp, unit, fn, before, pre + code.rstrip("\n") + "\n" + post)
+            after = _with_includes(after, includes, prelude)
             path.write_text(after, encoding="utf-8")
 
             def undo() -> None:
@@ -1482,7 +1754,8 @@ class ForkEngine:
             ok, log = self._build_unit(proj, fp, unit)
             if not ok:
                 undo()
-                self.net._record(fn, agent, None, code, 0)
+                if quiet is None:
+                    self.net._record(fn, agent, None, code, 0)
                 why = "" if builds else ("\n(The file didn't build before your change either, so the error may be in "
                                          "other code of the file: fix that with edit_file.)")
                 return {"text": f"❌ BUILD ERROR (your change was undone){why}\n{log[-3000:]}", "score": None,
@@ -1495,13 +1768,15 @@ class ForkEngine:
             broken = sorted(n for n in protected if n and (d.unit_scores.get(n) or 0) < 100)
             if broken:
                 undo()
-                self.net._record(fn, agent, None, code, 0, compiled=True)
+                if quiet is None:
+                    self.net._record(fn, agent, None, code, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: your change breaks matched function(s) {', '.join(broken[:8])}. "
                                 "Check you replaced the right definition (overloads?) and didn't change shared code.",
                         "score": None, "matched": False}
             if linked and d.matched and not (ok := self._verify(proj, fp))[0]:
                 undo()
-                self.net._record(fn, agent, None, code, 0, compiled=True)
+                if quiet is None:
+                    self.net._record(fn, agent, None, code, 0, compiled=True)
                 return {"text": f"❌ REJECTED and undone: {unit.source} is linked into the game, and with your change "
                                 f"the game no longer builds byte for byte:\n{_tail(ok[1])}", "score": None,
                         "matched": False}
@@ -1510,7 +1785,8 @@ class ForkEngine:
             matched = d.matched
             if not matched and not keep and not was_matched:  # tried, not kept: the file stays as it was
                 undo()
-                self.net._record(fn, agent, score, code, 0, compiled=True)
+                if quiet is None or score < quiet:
+                    self.net._record(fn, agent, score, code, 0, compiled=True)
                 return {"text": f"{percent_text(pct)} match (score {score}); not kept in {unit.source}", "score": score,
                         "matched": False, "percent": pct}
             self._keep_scores(proj, unit, after, d.unit_scores)
@@ -1536,9 +1812,10 @@ class ForkEngine:
                                 f"project. Call claim_function for the next one.{_renamed_note(d)}"
                                 f"{self._file_done(slug, proj, fp, unit, d.unit_scores, agent)}", "score": 0,
                         "matched": True}
+        stall = self.net.stall_note(fn["id"], agent.id)
         if d.literals:
-            return {"text": f"score {score} (0 = identical). {d.literals_note()}", "score": score, "matched": False}
-        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}", "score": score,
+            return {"text": f"score {score} (0 = identical). {d.literals_note()}{stall}", "score": score, "matched": False}
+        return {"text": f"{percent_text(pct)} match (score {score}; 0 = identical).\n{d.render()}{stall}", "score": score,
                 "matched": False}
 
     # ------------------------------------------------------------------ autopilot
@@ -1640,7 +1917,14 @@ class ForkEngine:
 
     def read_file(self, slug: str, path: str, start: int = 1, count: int = 200) -> str:
         _, fp, _ = self.get(slug)
-        p = fp.safe_path(path)
+        p = fp.root if path.strip().strip("/") in ("", ".") else fp.safe_path(path)
+        if p.is_dir():  # a folder: what's in it (agents look around this way)
+            hidden = {".git", "build", STATE, "orig", "__pycache__", "node_modules"}
+            items = sorted((x for x in p.iterdir() if x.name not in hidden and not x.name.startswith(".")),
+                           key=lambda x: (not x.is_dir(), x.name.lower()))
+            listing = [f"  {x.name}/" if x.is_dir() else f"  {x.name}" for x in items[:300]]
+            more = f"\n  ... and {len(items) - 300} more" if len(items) > 300 else ""
+            return f"{path.strip() or '.'} is a folder ({len(items)} entries):\n" + "\n".join(listing) + more
         if not p.is_file():
             raise NetworkError(f"{path} isn't a file{self._did_you_mean(fp, path)}")
         with open(p, "rb") as f:
@@ -1653,6 +1937,92 @@ class ForkEngine:
         out = [f"{path} (lines {start}-{start + len(chunk) - 1} of {len(lines)})"]
         out += [f"{start + i:5d}  {line}" for i, line in enumerate(chunk)]
         return "\n".join(out)
+
+    def read_data(self, agent: Agent | None, slug: str, what: str, length: int = 64) -> str:
+        """A data symbol's bytes in the original game (from the target objects): a string, a table, a constant,
+        with the symbols its words point to."""
+        from elftools.elf.elffile import ELFFile
+        from elftools.elf.relocation import RelocationSection
+
+        proj, fp, _ = self.get(slug)
+        name = what.strip().strip("`'\"")
+        held = agent and self.net.store.one("SELECT f.unit FROM claims c JOIN functions f ON f.id=c.function_id "
+                                            "WHERE c.agent_id=?", agent.id)
+        units = [held["unit"]] if held else []
+        units += [u for u in self._data_index(proj, fp).get(name, []) if u not in units]
+        for uname in units:
+            try:
+                unit = fp.unit(uname)
+            except ForkError:
+                continue
+            if unit.target is None or not unit.target.exists():
+                continue
+            with open(unit.target, "rb") as f:
+                elf = ELFFile(f)
+                symtab = elf.get_section_by_name(".symtab")
+                sym = next((x for x in symtab.iter_symbols() if x.name == name and isinstance(x["st_shndx"], int)
+                            and x["st_info"]["type"] != "STT_FUNC"), None) if symtab else None
+                if sym is None:
+                    continue
+                sec = elf.get_section(sym["st_shndx"])
+                head = f"{name} ({uname}, {sec.name}+0x{sym['st_value']:X}, {sym['st_size'] or '?'} bytes)"
+                if sec["sh_type"] == "SHT_NOBITS":
+                    return f"{head}: uninitialized data ({sec.name}), zeros at boot."
+                n = max(4, min(sym["st_size"] or 512, int(length or 64), 512))
+                data = sec.data()[sym["st_value"]:sym["st_value"] + n]
+                if n < (sym["st_size"] or 0):
+                    head += f"; the first {n} (length up to 512 shows more)"
+                ptrs = []
+                for rs in elf.iter_sections():
+                    if isinstance(rs, RelocationSection) and rs["sh_info"] == sym["st_shndx"]:
+                        table = elf.get_section(rs["sh_link"])
+                        for r in rs.iter_relocations():
+                            at = r["r_offset"] - sym["st_value"]
+                            if 0 <= at < n:
+                                t = table.get_symbol(r["r_info_sym"])
+                                tname = elf.get_section(t["st_shndx"]).name if t["st_info"]["type"] == "STT_SECTION" else t.name
+                                addend = r["r_addend"] if r.is_RELA() else 0
+                                ptrs.append((at, tname + (f"+0x{addend:X}" if addend else "")))
+                out = [head]
+                for i in range(0, len(data), 16):
+                    chunk = data[i:i + 16]
+                    out.append(f"  +0x{i:03X}: {chunk.hex(' '):<47}  {''.join(chr(c) if 32 <= c < 127 else '.' for c in chunk)}")
+                if ptrs:
+                    out.append("pointers in it: " + ", ".join(f"+0x{at:X} -> {t}" for at, t in sorted(ptrs)[:24]))
+                e = ">" if not elf.little_endian else "<"
+                words = [w for (w,) in struct.iter_unpack(e + "I", data[:len(data) // 4 * 4])]
+                floats = [struct.unpack(e + "f", struct.pack(e + "I", w))[0] for w in words[:8]]
+                if words and any(1e-6 < abs(x) < 1e7 for x in floats):
+                    out.append("as f32: " + ", ".join(f"{x:g}" for x in floats))
+                text = data.split(b"\0", 1)[0]
+                if len(text) >= 3 and all(32 <= c < 127 or c in (9, 10) for c in text):
+                    out.append(f"as a string: {json.dumps(text.decode('ascii'))}")
+                return "\n".join(out)
+        raise NetworkError(f"no data symbol `{name}` in the game's objects (read_file and search_code find it in "
+                           "the source; a function is shown by get_function)")
+
+    def _data_index(self, proj, fp: ForkProject) -> dict[str, list[str]]:
+        """Data symbol -> units whose target object defines it (built once per objdiff.json)."""
+        from elftools.elf.elffile import ELFFile
+
+        key = (proj["id"], (fp.root / "objdiff.json").stat().st_mtime_ns if (fp.root / "objdiff.json").exists() else 0)
+        cached = getattr(self, "_data_idx", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        index: dict[str, list[str]] = defaultdict(list)
+        for unit in fp.units():
+            if unit.target is None or not unit.target.exists():
+                continue
+            try:
+                with open(unit.target, "rb") as f:
+                    symtab = ELFFile(f).get_section_by_name(".symtab")
+                    for x in symtab.iter_symbols() if symtab else ():
+                        if x.name and x["st_info"]["type"] in ("STT_OBJECT", "STT_NOTYPE") and isinstance(x["st_shndx"], int):
+                            index[x.name].append(unit.name)
+            except Exception:
+                continue
+        self._data_idx = (key, dict(index))
+        return self._data_idx[1]
 
     @staticmethod
     def _did_you_mean(fp: ForkProject, path: str) -> str:

@@ -1,4 +1,4 @@
-# decomp.wtf in Docker: how it runs on macOS (install.sh does all of this for you), and on servers if you like.
+# decomp.wtf in Docker, for servers (docker-compose.yml in the repository does this for you).
 # The same Linux as decomp.wtf's WSL system on Windows (linux-base.sh). decomp.wtf itself installs into the
 # decomp user's home on the first start: keep /home/decomp on a volume, and updates it installs itself stay.
 #

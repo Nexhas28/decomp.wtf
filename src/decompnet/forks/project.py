@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -372,7 +373,18 @@ class ForkProject:
         with _CONFIG_LOCK:
             hit = _CONFIG_CACHE.get(str(p))
             if hit is None or hit[0] != key:
-                cfg = json.loads(p.read_text(encoding="utf-8"))
+                for wait in range(40):  # configure.py rewrites it when a file is linked: read it whole
+                    try:
+                        cfg = json.loads(p.read_text(encoding="utf-8"))
+                        break
+                    except (ValueError, OSError):
+                        if wait == 39:
+                            if hit is not None:
+                                return hit  # the last whole one: units rarely change between two writes
+                            raise ForkError("objdiff.json can't be read (it's being rewritten): try again") from None
+                        time.sleep(0.15)
+                st = p.stat()
+                key = (st.st_mtime_ns, st.st_size)
                 by_name: dict[str, Unit] = {}
                 for u in self._units_of(cfg):
                     by_name.setdefault(u.name, u)

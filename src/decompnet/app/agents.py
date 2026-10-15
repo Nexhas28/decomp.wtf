@@ -97,6 +97,57 @@ def agy_settings() -> Path:
     return Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
 
 
+def endpoint_entry(e: dict) -> dict:
+    """A saved API endpoint, with what's left out filled in from its provider (a name: the provider's, or for a
+    custom server the address's host, so sessions say which machine they run on)."""
+    provider = e.get("provider") if e.get("provider") in API_PRESETS else "custom"
+    preset = API_PRESETS[provider]
+    base = (e.get("base_url") or preset["base_url"]).strip()
+    host = re.sub(r"^\w+://", "", base).split("/", 1)[0]
+    moved = provider == "custom" or base.rstrip("/") != preset["base_url"].rstrip("/")  # Ollama on another box...
+    out = {"id": str(e.get("id") or ""), "provider": provider, "base_url": base,
+           "model": (e.get("model") or preset["model"]).strip(),
+           "name": (e.get("name") or "").strip() or (host if moved and host else preset["name"]) or "API"}
+    for k in ("api_key", "context_tokens", "max_sessions"):
+        if e.get(k):
+            out[k] = e[k]
+    return out
+
+
+def is_local(base: str, resolve: bool = True) -> bool:
+    """An address on this computer or the local network (a llama.cpp box, Ollama on another machine): a private,
+    loopback, link-local or Tailscale address, a name without dots or under .local/.lan/.internal/.home.arpa, or
+    (`resolve`) a name that resolves to such addresses only."""
+    import ipaddress
+    import socket
+
+    host = re.sub(r"^\w+://", "", base.strip()).split("/", 1)[0].rsplit("@", 1)[-1]
+    host = host[1:].split("]", 1)[0] if host.startswith("[") else host.split(":", 1)[0] if host.count(":") == 1 else host
+    if not host:
+        return False
+
+    def private(ip: str) -> bool:
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        tailscale = a.version == 4 and a in ipaddress.ip_network("100.64.0.0/10")
+        return a.is_private or a.is_loopback or a.is_link_local or tailscale or a.is_unspecified
+
+    if private(host):
+        return True
+    if "." not in host or re.search(r"\.(local|lan|home|internal|localdomain|home\.arpa)$", host, re.I) \
+            or host.lower() == "localhost":
+        return True
+    if not resolve or re.fullmatch(r"[\d.]+|[0-9a-fA-F:]+", host):
+        return False
+    try:
+        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+    except (OSError, UnicodeError):
+        return False
+    return bool(addrs) and all(private(a) for a in addrs)
+
+
 # what an agent CLI says when nobody signed in to it (Claude Code: "Not logged in · Please run /login")
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
                          r"auth(?:entication)? method", re.I)
@@ -490,7 +541,13 @@ class Manager:
                 while sid in self.sessions:
                     n += 1
                     sid = f"{kind}-{n}"
-                label = f"{KINDS[kind].name} #{n}" if kind != "api" else f"{options.get('provider_name') or 'API'} #{n}"
+                if kind == "api":  # numbered per endpoint: "gpu-box #2" says which machine it runs on
+                    name = options.get("provider_name") or "API"
+                    k = 1 + max((int(s.label.rsplit(" #", 1)[1]) for s in self.sessions.values() if s.kind == "api"
+                                 and s.label.rsplit(" #", 1)[0] == name and s.label.rsplit(" #", 1)[-1].isdigit()), default=0)
+                    label = f"{name} #{k}"
+                else:
+                    label = f"{KINDS[kind].name} #{n}"
                 s = Session(sid, kind, label, slug, sid, dict(options))
                 self.sessions[sid] = s
                 threading.Thread(target=self._run, args=(s,), daemon=True, name=f"agent-{sid}").start()
@@ -499,8 +556,14 @@ class Manager:
         return ids
 
     def _prepare(self, slug: str) -> None:
-        """Agents on a GameCube/Wii decomp where code has no source file yet: give it files first (start_files,
-        checked against the game's checksum), or they'd all share the few hard functions that are left."""
+        """Before agents claim: free matches from identical code (twins, in the background: what they'd match is
+        left for last meanwhile), and on a GameCube/Wii decomp where code has no source file yet, files for it
+        (start_files, checked against the game's checksum), or they'd all share the few hard functions left."""
+        try:
+            self.net.twins.refresh(slug)
+            self.net.permuter.start(slug)  # near misses agents leave, on spare CPU
+        except Exception:  # agents work without them
+            pass
         with self._lock:
             if slug in self._prep:
                 return
@@ -740,8 +803,9 @@ class Manager:
                                    "headers": {"Authorization": f"Bearer {token}"}}},
                 "permission": {"edit": never, "bash": never, "webfetch": never},
             }), encoding="utf-8")
-            # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed
-            cmd = [exe, "run", "--format", "json", "--dir", str(workdir), "--print-logs", "--log-level", "ERROR"]
+            # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
+            # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag.)
+            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", "ERROR"]
             if model:
                 cmd += ["-m", model]
         else:
@@ -914,8 +978,7 @@ def context_window(client, base: str, options: dict) -> int:
             return int(options["context_tokens"])
     except (TypeError, ValueError):
         pass
-    local = bool(re.match(r"https?://(127\.|localhost|\[::1\]|0\.0\.0\.0|192\.168\.|10\.)", base))
-    if local:
+    if is_local(base):
         try:
             r = client.get(re.sub(r"/v1$", "", base) + "/props", timeout=5)
             n = (r.json().get("default_generation_settings") or {}).get("n_ctx") if r.status_code == 200 else None
@@ -935,11 +998,13 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
     defs = {
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
-                           "notes and a draft.", s(function=st("optional name or address"),
-                                                     strategy=st("finish | easiest | closest | hardest | random"))),
+                           "notes and a draft. count > 1: a batch of small functions to judge together.",
+                           s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
+                             count=it("up to 6 small functions at once"))),
         "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
-                             "Score 0 = matched.", s(function=st("function name", True), source=st("C source", True))),
+                             "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
+                             s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
         "release_function": ("Give up a function with notes for the next agent.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True))),
         "get_context": ("The shared header included in every compile.", s()),
@@ -950,8 +1015,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                           s(old=st("current name", True), new=st("new name", True), message=st("why"))),
         "split_function": ("Split a merged function at an address.",
                            s(function=st("function", True), at=st("address like 0x80001234", True), new_name=st("name"))),
-        "read_data": ("Hex dump of ROM data at an address or symbol.", s(what=st("address or symbol", True),
-                                                                         length=it("bytes, up to 512"))),
+        "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
+                                                                                    length=it("bytes, up to 512"))),
         "list_functions": ("List functions by status.", s(status=st("open | matched | all"), limit=it("max rows"))),
         "add_note": ("Leave a note for other agents.", s(text=st("note", True), function=st("function"))),
         "search_notes": ("Search notes.", s(query=st("text", True))),

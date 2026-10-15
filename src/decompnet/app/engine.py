@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import secrets
 import struct
@@ -69,6 +70,8 @@ TOOLS = {
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
 }
+# Functions this small are handed out in batches (claim_function count): agents match most on the first try.
+BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"]}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
@@ -136,7 +139,11 @@ class RomNetwork(Network):
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
+        from .permute import Permuter
+        from .twins import Twins
         self.forks = ForkEngine(self)
+        self.twins = Twins(self)
+        self.permuter = Permuter(self)
 
     # ------------------------------------------------------------------ basics
 
@@ -204,13 +211,32 @@ class RomNetwork(Network):
                 return row
         try:
             return super()._function(name, project)
-        except NetworkError:
+        except NetworkError as e:
             rows = self._loose_functions(name, project) if name else []
             if len(rows) == 1:
                 return rows[0]
             if rows:
                 raise NetworkError(self._ambiguous(name, rows)) from None
+            near = self._near_names(name, project) if name else []
+            if near:
+                raise NetworkError(f"{e}. Did you mean: {', '.join(near)}?") from None
             raise
+
+    def _near_names(self, name: str, project: str | None, n: int = 5) -> list[str]:
+        """Function names close to one that doesn't exist (a typo, another spelling of the symbol)."""
+        import difflib
+
+        try:
+            proj = self._project(project)
+        except NetworkError:
+            return []
+        sym = name.strip().strip("`'\"").split("@", 1)[0].split("(", 1)[0].strip()
+        if len(sym) < 3:
+            return []
+        rows = self.store.all("SELECT name FROM functions WHERE project_id=? AND (name LIKE ? OR name LIKE ?) LIMIT 4000",
+                              proj["id"], f"%{sym[-6:]}%", f"{sym[:4]}%")
+        names = [r["name"] for r in rows]
+        return difflib.get_close_matches(sym, names, n=n, cutoff=0.6) or [x for x in names if sym in x][:n]
 
     def _loose_functions(self, name: str, project: str | None) -> list:
         """Functions an agent may mean by a name that isn't stored as such: the plain symbol of a function whose
@@ -231,7 +257,8 @@ class RomNetwork(Network):
             "OR json_extract(meta,'$.symbol')=? OR substr(json_extract(meta,'$.demangled'),1,?)=?) ORDER BY name",
             proj["id"], sym, len(sym) + 1, sym + "@", sym, len(sym) + 1, sym + "(")
         if unit:
-            rows = [r for r in rows if r["unit"] == unit] or [r for r in rows if r["unit"].endswith(unit)]
+            rows = ([r for r in rows if r["unit"] == unit] or [r for r in rows if r["unit"].endswith(unit)]
+                    or [r for r in rows if r["unit"].startswith(unit)] or [r for r in rows if unit in r["unit"]])
         if nth.isdigit() and len(rows) > 1:
             rows = [r for r in rows if (json.loads(r["meta"] or "{}").get("nth", 0) + 1) == int(nth)] or rows
         return [r for r in rows if r["status"] != "nosource"] or rows  # ones in files without source can't be worked on
@@ -250,10 +277,13 @@ class RomNetwork(Network):
             return self._function(name, project)["name"]
         except NetworkError:
             rows = self._loose_functions(name, project) if name else []
-            held = agent and self.store.one("SELECT f.id, f.unit FROM claims c JOIN functions f ON f.id=c.function_id "
-                                            "WHERE c.agent_id=?", agent.id)
-            if held and len(rows) > 1:  # the one it holds, else the one in the file it works in
-                for pick in ([r for r in rows if r["id"] == held["id"]], [r for r in rows if r["unit"] == held["unit"]]):
+            held = self.store.all("SELECT f.id, f.unit FROM claims c JOIN functions f ON f.id=c.function_id "
+                                  "WHERE c.agent_id=?", agent.id) if agent else []
+            if held and len(rows) > 1:  # one it holds, else the one in the file (or module) it works in
+                ids, units = {h["id"] for h in held}, {h["unit"] for h in held}
+                modules = {u.split("/", 1)[0] for u in units}
+                for pick in ([r for r in rows if r["id"] in ids], [r for r in rows if r["unit"] in units],
+                             [r for r in rows if r["unit"].split("/", 1)[0] in modules]):
                     if len(pick) == 1:
                         return pick[0]["name"]
             raise
@@ -286,6 +316,21 @@ class RomNetwork(Network):
             return res.candidate, res.exact if res.candidate is not None else None, res.problems
         res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"]), self.reader(proj))
         return res.candidate, res.exact if res.candidate is not None else None, res.problems
+
+    def _twin_lines(self, proj, fn) -> list[str]:
+        """For a brief: the matched function with the same code, and its C with this one's names."""
+        try:
+            twin_id = self.twins.twin_of(proj, fn["id"])
+        except Exception:
+            return []
+        if twin_id is None:
+            return []
+        a = self.store.one("SELECT * FROM functions WHERE id=?", twin_id)
+        source = self.twins.source_for(proj, a, fn)
+        out = ["", f"### Identical code: {a['name']} is the same machine code and already matches"]
+        if source and len(source) < 6000:
+            out += ["Its C with this function's names (try it first):", "```c", source.strip(), "```"]
+        return out
 
     def rename_tokens(self, proj, text: str) -> str:
         """Show automatic names under their current names (func_80001234 -> deflate)."""
@@ -417,8 +462,12 @@ class RomNetwork(Network):
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"], f"{info['game_code']} · {info['region']} · {len(fns)} functions",
                               "arm", 0, str(workdir), json.dumps(cfg))).lastrowid
+            names: set[str] = set()
             for f in fns:
                 name = f.asm_only or f.name  # known hand-written helpers keep their real name and stay assembly
+                if name in names:  # a game can link a helper twice (Spyro Orange has two of _call_via_r3)
+                    name = f"{name}_{f.vram:08X}"
+                names.add(name)
                 db.execute(
                     "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -570,7 +619,9 @@ class RomNetwork(Network):
                 if r and r["preview"]:
                     desc += f": {r['preview']}"
                 lines.append(f"- {syms.label(a)} (0x{a:08X}; {desc})")
-        alike = [(r, sim) for r, sim in self.similar(proj, fn, top=3) if r["status"] == "matched"]
+        twin = self._twin_lines(proj, fn) if fn["status"] != "matched" else []
+        lines += twin
+        alike = [] if twin else [(r, sim) for r, sim in self.similar(proj, fn, top=3) if r["status"] == "matched"]
         if alike:
             lines += ["", "### Looks like (already matched; read with get_function)",
                       ", ".join(f"{r['name']} ({sim * 100:.0f}% similar)" for r, sim in alike)]
@@ -923,6 +974,67 @@ class RomNetwork(Network):
         fn = self.claim_row(agent, project, name, strategy)
         return self._brief(fn, agent, header="CLAIMED")
 
+    def claim_many(self, agent: Agent, project: str | None, count: int, strategy: str = "easiest") -> str:
+        """Several small functions at once (count 2-6): the next one by `strategy` and, when it's small, its
+        neighbours in the same file. Most small functions match on the first try, so an agent writes them all and
+        judges them in one compile_and_diff: a fraction of the turns. Big functions come alone."""
+        count = max(1, min(int(count or 1), 6))
+        if count == 1 or self._link(project) is not None:
+            return self.claim(agent, project, None, strategy)
+        proj = self._project(project)
+        held = self.store.all("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=? "
+                              "AND f.project_id=? ORDER BY f.vram, f.id", agent.id, proj["id"])
+        if not held:
+            text = self.claim(agent, project, None, strategy)  # the first, the usual way (with its "nothing left")
+            held = self.store.all("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=? "
+                                  "AND f.project_id=?", agent.id, proj["id"])
+            if not held or held[0]["n_insns"] > BATCH_INSNS:
+                return text
+        first = held[0]
+        rows = list(held)
+        if first["n_insns"] <= BATCH_INSNS and len(rows) < count:
+            rows += self._batch_more(agent, proj, first, count - len(rows))
+        if len(rows) == 1:
+            return self.claim(agent, project, None, strategy)
+        names = [r["name"] for r in rows]
+        fork = self.fork_slug(project)
+        head = (f"## CLAIMED {len(rows)} small functions: {', '.join(names)}\n"
+                f"Write all of them, then judge them in one call: compile_and_diff(function=\"{', '.join(names)}\", "
+                f"source=<all {len(rows)} definitions>). Each is judged on its own and saved as soon as it matches; "
+                "then fix what's left (one at a time is fine). release_function any you can't do.")
+        briefs = [self.forks.brief(r, agent, "CLAIMED") if fork else self._brief(r, agent, "CLAIMED") for r in rows]
+        return "\n\n---\n\n".join([head, *briefs])
+
+    def _batch_more(self, agent: Agent, proj, first, n: int) -> list:
+        """Up to n more small open functions next to `first` (same file, nearest address), claimed for the agent."""
+        now = time.time()
+        with self.store.tx() as db:
+            self._expire_claims(db)
+            rows = db.execute(
+                "SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open' AND f.boost >= 0 AND f.n_insns <= ? "
+                "AND f.abandons = 0 AND f.unit=? AND f.id NOT IN (SELECT function_id FROM claims) "
+                "ORDER BY ABS(COALESCE(f.vram, 0) - ?), f.id LIMIT ?",
+                (proj["id"], BATCH_INSNS, first["unit"], first["vram"] or 0, n)).fetchall()
+            for r in rows:
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (r["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, proj["id"], agent.id, "claim", r["name"])
+        return rows
+
+    def attempt_many(self, agent: Agent, names: list[str], source: str, project: str | None = None) -> str:
+        """compile_and_diff for several functions in one source: each judged on its own (a fork's, with the other
+        definitions taken out, as its file gets them one by one), in order."""
+        fork = self.fork_slug(project)
+        out, matched = [], 0
+        for name in names:
+            try:
+                one = self.forks.one_definition(fork, source, name, [n for n in names if n != name]) if fork else source
+                res = self.attempt(agent, name, one, project)
+            except NetworkError as e:
+                res = {"text": f"❌ {e}", "matched": False}
+            matched += bool(res.get("matched"))
+            out.append(f"### {name}\n{res['text']}")
+        return f"{matched} of {len(names)} matched.\n\n" + "\n\n".join(out)
+
     def _yield_autopilot(self, function: str | None, project: str | None) -> None:
         """The autopilot holds a function only while its draft compiles: an agent that wants it waits for that."""
         if not function:
@@ -1165,7 +1277,11 @@ class RomNetwork(Network):
         helpers = self.store.one(
             "SELECT COUNT(*) AS n FROM functions f JOIN agents a ON a.id=f.matched_agent_id WHERE f.project_id=? "
             "AND f.status='matched' AND a.origin='local' AND a.name NOT IN ('you','autopilot')", proj["id"])["n"]
+        twins = self.twins.jobs.get(proj["slug"])
         return self._overview(slug, proj) | {"last_activity": last, "autopilot": self.autopilot_status(slug),
+                                             "permuter": self.permuter.status(proj["slug"]),
+                                             "twins": None if twins is None else {
+                                                 k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                                              "priority": cfg.get("priority", [])}
@@ -1296,21 +1412,27 @@ class RomNetwork(Network):
         state = self.autopilots.get(slug)
         if state and state["state"] == "running":
             return state
-        if (fork := self.fork_slug(slug)):  # a GameCube, Wii or DS game started from scratch: its own build judges
-            ids = self.forks.autopilot_prepare(fork)
-            try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
-        else:
-            if not seeds.available():
-                raise NetworkError("autopilot needs m2c, the draft decompiler: install it in Setup")
-            proj = self._project(slug)
-            tc = self.cfg(proj)["compiler"]["toolchain"]
-            if not seeds.M2C_TARGETS.get(tc):
-                raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
-            ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
-                                                   "ORDER BY n_insns, vram", proj["id"])]
-            try_one = self._autopilot_one
-        state = {"state": "running", "total": len(ids), "tried": 0, "matched": 0, "near": 0, "started_at": time.time(),
-                 "stop": threading.Event()}
+        # first the twins (identical code to something matched: every project), then machine drafts where m2c reads
+        # the code and the project's headers are fit for them (ROM projects; games started from scratch)
+        try:
+            if (fork := self.fork_slug(slug)):  # a GameCube, Wii or DS game started from scratch: its own build judges
+                ids = self.forks.autopilot_prepare(fork)
+                try_one, workers = self.forks.autopilot_one, min(workers, 2)  # each try builds a file: fewer at once
+            else:
+                if not seeds.available():
+                    raise NetworkError("autopilot's drafts need m2c, the draft decompiler: install it in Setup")
+                proj = self._project(slug)
+                tc = self.cfg(proj)["compiler"]["toolchain"]
+                if not seeds.M2C_TARGETS.get(tc):
+                    raise NetworkError("m2c can't read this project's code (no draft decompiler for it yet)")
+                ids = [r["id"] for r in self.store.all("SELECT id FROM functions WHERE project_id=? AND status='open' "
+                                                       "ORDER BY n_insns, vram", proj["id"])]
+                try_one = self._autopilot_one
+            no_drafts = ""
+        except NetworkError as e:
+            ids, try_one, no_drafts = [], None, str(e)
+        state = {"state": "running", "total": len(ids), "tried": 0, "matched": 0, "near": 0, "twins": 0,
+                 "phase": "twins", "no_drafts": no_drafts, "started_at": time.time(), "stop": threading.Event()}
         self.autopilots[slug] = state
         threading.Thread(target=self._autopilot_run, args=(slug, ids, state, workers, try_one),
                          daemon=True, name=f"autopilot-{slug}").start()
@@ -1333,6 +1455,17 @@ class RomNetwork(Network):
         agent, _ = self.local_agent("autopilot")
         proj = self._project(slug)
         try_one = try_one or self._autopilot_one
+        try:  # identical code first: free, and it takes those functions off the drafts' list
+            if slug not in self.links:  # (a room member's matches come from the host)
+                job = self.twins.run(slug)
+                state["twins"] = job.matched
+                state["matched"] += job.matched
+                self.twins.update_boosts(proj)
+        except Exception as e:
+            logging.getLogger("decomp.wtf").info("autopilot twins: %s", e)
+        state["phase"] = "drafts"
+        ids = [fid for fid in ids if (r := self.store.one("SELECT status FROM functions WHERE id=?", fid)) and r["status"] == "open"]
+        state["total"] = len(ids)
 
         def one(fid: int) -> None:
             if state["stop"].is_set():
@@ -1353,12 +1486,44 @@ class RomNetwork(Network):
             state["finished_at"] = time.time()
             with self.store.tx() as db:
                 cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
-                cfg["autopilot"] = {k: state[k] for k in ("total", "tried", "matched", "near", "started_at", "finished_at")}
+                cfg["autopilot"] = {k: state.get(k) for k in ("total", "tried", "matched", "near", "twins", "started_at",
+                                                              "finished_at")}
                 db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            if state["matched"]:
+            drafts = state["matched"] - state.get("twins", 0)
+            if drafts:  # (twins announce their own)
                 with self.store.tx() as db:
                     self._event(db, proj["id"], agent.id, "autopilot",
-                                f"{state['matched']} of {state['tried']} functions matched from machine drafts")
+                                f"{drafts} of {state['tried']} functions matched from machine drafts")
+
+    def on_match(self, proj, function_id: int) -> None:
+        if proj is not None and not (proj["slug"] in self.twins.jobs and self.twins.jobs[proj["slug"]].state == "running"):
+            self.twins.after_match(proj, function_id)
+
+    def try_quietly(self, agent, proj, fn, source: str) -> dict:
+        """Judge one candidate for a function nobody holds (autopilot's tries): held only while it compiles,
+        recorded as an attempt like any other. {"matched", "score"}."""
+        now = time.time()
+        with self.store.tx() as db:
+            self._expire_claims(db)
+            if db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
+                raise NetworkError(f"{fn['name']} is claimed")
+            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
+        try:
+            ctx = self._context(proj["id"], fn["unit"])
+            result = self._compile(proj, ctx["header"], source)
+            if not result.ok:
+                return {"matched": False, "score": None}
+            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+            if cand is None:
+                return {"matched": False, "score": None}
+            d = scoring.diff(self._target_obj(fn, proj), cand)
+            if verdict is not None:
+                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
+            return {"matched": d.bytes_match, "score": d.score}
+        finally:
+            with self.store.tx() as db:
+                db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
     def _autopilot_one(self, agent, proj, fid: int) -> str:
         """match | near | far | fail | skip, for one function's draft."""
