@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS search_budgets(
   turns_used INTEGER NOT NULL DEFAULT 0, max_turns INTEGER NOT NULL DEFAULT 4,
   improvements INTEGER NOT NULL DEFAULT 0, cooldown_until REAL NOT NULL DEFAULT 0,
   reset_reason TEXT, last_at REAL);
+CREATE TABLE IF NOT EXISTS attempt_snapshots(
+  attempt_id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, function_id INTEGER NOT NULL,
+  function_revision INTEGER NOT NULL DEFAULT 1, context_version INTEGER NOT NULL,
+  context_digest TEXT NOT NULL, target_digest TEXT NOT NULL, compiler_digest TEXT NOT NULL,
+  scorer_version INTEGER NOT NULL DEFAULT 1, policy_version INTEGER NOT NULL DEFAULT 1,
+  stale_reason TEXT);
+CREATE TABLE IF NOT EXISTS verification_receipts(
+  function_id INTEGER PRIMARY KEY, attempt_id INTEGER, snapshot_id TEXT NOT NULL,
+  source_digest TEXT NOT NULL, candidate_object_digest TEXT, origin TEXT NOT NULL,
+  object_match TEXT, function_link_match TEXT NOT NULL,
+  unit_code_data_match TEXT NOT NULL DEFAULT 'unverified',
+  whole_image_checksum TEXT NOT NULL DEFAULT 'not_run',
+  acceptance_policy TEXT NOT NULL, verified_at_utc TEXT NOT NULL);
 """
 
 # Columns added after the first release; applied in place to existing databases.
@@ -67,6 +80,8 @@ MIGRATIONS = [
     ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
     ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
+    ("functions", "revision", "INTEGER NOT NULL DEFAULT 1"),   # split/merge/target change = new revision (Section 18.2)
+    ("projects", "matched_epoch", "INTEGER NOT NULL DEFAULT 0"),  # incremented on every acceptance (P1.4 epochs)
 ]
 
 

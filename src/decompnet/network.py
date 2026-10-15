@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scoring
+from . import policy, scoring, snapshots
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
@@ -390,20 +390,22 @@ class Network:
                     db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
+        snap = snapshots.capture(fn, proj, ctx)
         result = self._compile(proj, ctx["header"], source)
 
         if not result.ok:
-            self._record(fn, agent, None, source, ctx["version"])
+            self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}", "score": None, "matched": False}
 
         cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:
-            self._record(fn, agent, None, source, ctx["version"])
+            self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ Compiled, but the object has no function named `{fn['name']}`. "
                             f"Define it with exactly that name (non-static).", "score": None, "matched": False}
         if self._hash_only(fn):
             matched_now = cand.fingerprint() == fn["fingerprint"] and not scratch
-            self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now, compiled=True)
+            self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
+                         compiled=True, snapshot=snap)
             if matched_now:
                 return {"text": f"✅ MATCH! {fn['name']} matches the target fingerprint. Credited to {agent.name}; "
                                 f"your claim is released.", "score": 0, "matched": True}
@@ -414,7 +416,7 @@ class Network:
         if verdict is not None:
             d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
         matched_now = d.bytes_match and not scratch
-        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now)
+        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap)
 
         if scratch:
             head = f"(scratch — {fn['name']} was already matched) score {d.score}"
@@ -459,12 +461,21 @@ class Network:
                 "keeps your best attempt for whoever comes next.")
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
-                compiled: bool | None = None, via: str = "agent"):
+                compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None):
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         with self.store.tx() as db:
-            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
-                       "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
+            cur = db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
+                             "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
+            attempt_id = cur.lastrowid
+            if snapshot is not None:
+                db.execute(
+                    "INSERT INTO attempt_snapshots(attempt_id, project_id, function_id, function_revision, "
+                    "context_version, context_digest, target_digest, compiler_digest, scorer_version, policy_version) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (attempt_id, snapshot["project_id"], snapshot["function_id"], snapshot["function_revision"],
+                     snapshot["context_version"], snapshot["context_digest"], snapshot["target_digest"],
+                     snapshot["compiler_digest"], snapshot["scorer_version"], snapshot["policy_version"]))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if score is not None:
                 cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
@@ -484,6 +495,19 @@ class Network:
                            (source, agent.id, now, source, fn["id"]))
                 db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
                 db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
+                snap = snapshot if snapshot is not None else snapshots.capture(
+                    fn, db.execute("SELECT * FROM projects WHERE id=?", (fn["project_id"],)).fetchone(),
+                    self._context(fn["project_id"], fn["unit"]))
+                db.execute(
+                    "INSERT OR REPLACE INTO verification_receipts(function_id, attempt_id, snapshot_id, source_digest, "
+                    "candidate_object_digest, origin, object_match, function_link_match, unit_code_data_match, "
+                    "whole_image_checksum, acceptance_policy, verified_at_utc) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (fn["id"], attempt_id, snapshots.snapshot_id(snap), snapshots.sha(source.encode()), None,
+                     via, "fingerprint" if fn["target"] is None else "exact",
+                     "exact", "unverified", "not_run", f"rom-function-policy-v{snapshots.POLICY_VERSION}",
+                     snapshots.now_utc()))
+                db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (fn["project_id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
@@ -720,7 +744,7 @@ class Network:
         proj = self._project(slug)
         with self.store.tx() as db:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
-            for table in ("claims", "attempts"):
+            for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
@@ -734,10 +758,12 @@ class Network:
         with self.store.tx() as db:
             for table in ("claims", "attempts", "notes"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
+            for table in ("attempt_snapshots", "verification_receipts"):
+                db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
             db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "
-                       "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0 "
-                       "WHERE id=?", (fn["id"],))
+                       "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0, "
+                       "revision=revision+1 WHERE id=?", (fn["id"],))
 
     def revoke_agent(self, name: str, erase: bool = False) -> None:
         """Disable an agent's token. With erase=True also strip its identity (GDPR erasure):

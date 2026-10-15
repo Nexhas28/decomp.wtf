@@ -773,9 +773,9 @@ class RomNetwork(Network):
             old.size = head.size
         th, tt = self._make_target(proj, head, syms), self._make_target(proj, tail, syms)
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
-                       "WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
-                                      self._asm_source(head), fn["id"]))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?", (head.size, len(head.lines), th.code, json.dumps(th.to_json()),
+                                                          self._asm_source(head), fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, tail.size, len(tail.lines), tt.code,
                                                         json.dumps(tt.to_json()), self._asm_source(tail), None,
@@ -804,8 +804,9 @@ class RomNetwork(Network):
         refs_tail = [[r[0] - off, r[1], r[2]] for r in refs if r[0] >= off]
         syms.add(Symbol(new_name, addr, len(tail), "func"))
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL "
-                       "WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head), asm_head, fn["id"]))
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?", (len(head), max(1, len(head) // 2), head, json.dumps(refs_head),
+                                                          asm_head, fn["id"]))
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, len(tail), max(1, len(tail) // 2), tail,
                                                         json.dumps(refs_tail), asm_tail, None, fn["unit"], addr,
