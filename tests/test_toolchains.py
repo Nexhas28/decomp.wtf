@@ -32,6 +32,17 @@ def test_proprietary_toolchains_need_explicit_acceptance(tc_root):
     assert toolchains.installed("ido-7.1") is None
 
 
+def test_an_arm_computer_is_told_why_nothing_compiles(tc_root, monkeypatch):
+    """Issue #18: on an ARM Linux computer the games' compilers (x86 programs) don't install: the error says why."""
+    monkeypatch.setattr(toolchains._platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(toolchains.sys, "platform", "linux")
+    assert toolchains.current_platform() == "linux-aarch64" and not toolchains.get("ee-gcc-2.96").supported
+    with pytest.raises(toolchains.ToolchainError, match=r"linux-aarch64\): decomp.wtf needs a 64-bit Intel or AMD PC"):
+        toolchains.install("ee-gcc-2.96", log=lambda *_: None)
+    monkeypatch.setattr(toolchains._platform, "machine", lambda: "x86_64")
+    assert toolchains.unsupported_cpu() is None
+
+
 def _fake(monkeypatch, tc_root, sha):
     src = tc_root / "src"
     src.mkdir()

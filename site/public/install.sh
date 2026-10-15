@@ -23,7 +23,7 @@
 # On a server, decomp.wtf also runs in Docker: docker-compose.yml in the repository.
 set -euo pipefail
 
-VERSION="0.10.2"
+VERSION="0.10.3"
 REPO="i12bp8/decomp.wtf"
 START=1
 SOURCE="${DECOMP_SOURCE:-}"
@@ -71,6 +71,10 @@ case "$OS" in
   Linux) ;;
   Darwin) fail "macOS isn't supported: decomp.wtf runs on Linux and on Windows (in WSL 2), on x86-64 PCs (the games' compilers are x86 programs). On an Intel Mac, an x86-64 Linux virtual machine works too." ;;
   *) fail "this installer is for Linux; on Windows run in PowerShell: irm https://decomp.wtf/install.ps1 | iex" ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64) ;;
+  *) fail "decomp.wtf needs a 64-bit Intel or AMD PC for now: the games' compilers are x86 programs, and this computer's processor is $(uname -m)" ;;
 esac
 command -v curl >/dev/null || fail "curl is required"
 

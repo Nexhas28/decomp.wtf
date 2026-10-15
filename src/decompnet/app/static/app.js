@@ -787,7 +787,9 @@ function renderCompilerNotice(ov) {
   n.hidden = false;
   if (!ov.compiler.supported) {
     n.className = "notice bad";
-    n.innerHTML = `<span><b>${esc(ov.compiler.name)}</b> has no build for this computer yet. Pick another compiler in this project's Settings.</span>`;
+    n.innerHTML = ov.compiler.why
+      ? `<span><b>${esc(ov.compiler.name)}</b> has no build for this computer: ${esc(ov.compiler.why)}.</span>`
+      : `<span><b>${esc(ov.compiler.name)}</b> has no build for this computer yet. Pick another compiler in this project's Settings.</span>`;
     return;
   }
   n.className = "notice";

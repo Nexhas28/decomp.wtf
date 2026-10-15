@@ -49,6 +49,24 @@ def test_import(psx):
     assert "WITHOUT" in net.get_context(slug)  # the gp-relative globals advice
 
 
+def test_a_removed_game_can_be_imported_again(tmp_path):
+    """Issue #18: removing a project left its symbols behind, and importing the game again (the new project gets
+    the same id) failed on them. A database that has such leftovers loses them when decomp.wtf opens it."""
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
+    assert net.store.one("SELECT COUNT(*) AS n FROM symbols")["n"] > 60
+    net.remove_project(slug)
+    assert net.store.one("SELECT COUNT(*) AS n FROM symbols")["n"] == 0
+    slug = net.import_rom(EXE, confirmed=True, log=lambda *_: None)
+    pid = net.project_row(slug)["id"]
+    net.remove_project(slug)
+    with net.store.tx() as db:  # what 0.10.2 left behind
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, "main", 0x100000, 0, "func"))
+    again = RomNetwork(tmp_path / "app.db", tmp_path)
+    assert again.store.one("SELECT COUNT(*) AS n FROM symbols")["n"] == 0
+    again.import_rom(EXE, confirmed=True, log=lambda *_: None)
+
+
 def test_every_game_function_matches(psx):
     net, slug = psx
     agent, _ = net.local_agent("psx-agent")

@@ -88,6 +88,16 @@ def current_platform() -> str:
     return f"{os_name}-{machine}"
 
 
+def unsupported_cpu() -> str | None:
+    """Why this computer can't run the games' compilers, or None: they're x86 programs, which an ARM computer
+    (a Raspberry Pi, an ARM laptop or server) doesn't run."""
+    machine = current_platform().split("-", 1)[1]
+    if machine == "x86_64":
+        return None
+    return (f"decomp.wtf needs a 64-bit Intel or AMD PC for now (the games' compilers are x86 programs; this "
+            f"computer's processor is {machine})")
+
+
 @functools.cache
 def _registry_data() -> dict:
     return tomllib.loads(resources.files("decompnet").joinpath("toolchains.toml").read_text(encoding="utf-8"))
@@ -240,7 +250,9 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
         return path(tid, linux)
     parts = tc.linux_parts() if linux else tc.parts_for()
     if not parts and not tc.git:
-        raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})")
+        why = unsupported_cpu()
+        raise ToolchainError(f"{tid} ({tc.name}) has no build for this computer ({current_platform()})"
+                             + (f": {why}" if why else ""))
     if tc.requires_java and java_version() < tc.requires_java:
         raise ToolchainError(f"{tc.name} needs Java {tc.requires_java} or newer: install it from https://adoptium.net first")
     if tc.proprietary and not accept_license:

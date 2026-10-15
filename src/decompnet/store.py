@@ -81,6 +81,9 @@ class Store:
                           "attempts, best_score, matched_at)")
         # agents created before `origin` existed were all minted by the operator on the CLI
         self.conn.execute("UPDATE agents SET trusted = 1, origin = 'cli' WHERE origin IS NULL")
+        # removing a project left its symbols behind before 0.10.3, and the next import (which may get the same id)
+        # ran into them
+        self.conn.execute("DELETE FROM symbols WHERE project_id NOT IN (SELECT id FROM projects)")
         self.lock = threading.RLock()
 
     @contextmanager

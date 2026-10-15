@@ -23,6 +23,9 @@ from .project import compiler_config
 from .store import Store
 
 CLAIM_TTL = 30 * 60
+# A function an agent just released goes to the back of the queue for this long, for every agent: the next one
+# starts on something fresh instead of passing the same function back and forth. Asked for by name, it comes at once.
+RELEASE_COOLDOWN = 15 * 60
 # Twins first (see app/twins.py): a function whose code the game has more than once (boost: how many more times)
 # and isn't too big or given up on, best value per instruction first; its twins (boost -1) last, as they match for
 # free once it does.
@@ -35,7 +38,8 @@ STRATEGIES = {
     # or a crowd of agents spends its time passing the hardest functions around.
     "finish": _TWINS + "f.abandons ASC, (f.n_insns + 31) / 32 ASC, (SELECT COUNT(*) FROM functions g WHERE "
                        "g.project_id=f.project_id AND g.unit=f.unit AND g.status='open') ASC, f.n_insns ASC",
-    "closest": "f.best_score IS NULL, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
+    # near-misses, the ones given up on least first (else every agent resumes the same stuck one)
+    "closest": "f.best_score IS NULL, f.abandons ASC, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
 }
@@ -275,8 +279,9 @@ class Network:
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
-                        ORDER BY {STRATEGIES[strategy]} LIMIT 1""",
-                    (proj["id"], proj["id"], agent.id),
+                        ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                            AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
+                    (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                 ).fetchone()
                 if fn is None:
                     return None
@@ -685,7 +690,7 @@ class Network:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
             for table in ("claims", "attempts"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
-            for table in ("notes", "events", "context_versions", "functions"):
+            for table in ("notes", "events", "context_versions", "functions", "symbols"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
             db.execute("DELETE FROM projects WHERE id=?", (proj["id"],))
         return len(ids)
