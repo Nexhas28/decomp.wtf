@@ -1,19 +1,47 @@
 """Disassembly, instruction diffing and decomp.me/asm-differ style scoring.
 
 score == 0 means a byte-for-byte (relocation-normalized) match. Lower is better.
+
+Phase 3 additions (plan P3.1-P3.4, tests S-01..S-07):
+
+- `prepare()` builds a `PreparedTarget` once per target identity: decoded instructions
+  (offsets, bytes and operand structure), a relocation lookup indexed by instruction
+  interval (multiple relocations per instruction, variable-width instructions), the
+  normalised fingerprint kept distinct from the exact-byte digest, the mnemonic sequence
+  and the instruction count. The cache is keyed by target bytes, relocation metadata
+  (which carries the symbol-resolution data used in rendered operands), architecture,
+  endianness/processor mode, decoder version and normalisation policy, so any key change
+  is a new entry (invalidation by identity; entries are bounded and evictable).
+
+- `score_only()` runs the same comparison core as `diff()` — there is deliberately one
+  scorer, so the two paths cannot diverge — but skips building display rows and returns a
+  `Comparison` with compact mismatch counts and a structured mismatch summary.
+  `render_diff()` materialises the human-facing rows on demand.
+
+- Fast paths are safe: `bytes_match` is the normalised fingerprint only; it never performs
+  ROM linking or required literal/data checks. Callers that link the candidate (rom/match.py)
+  override the verdict, and the summary's `verification.function_link_match` stays
+  "unverified" until a caller supplies a link verdict. A cheap identity check may rule a
+  match out, but the candidate is still scored for search.
+
+- Alternative alignment algorithms are version-gated through `register_aligner()`: the
+  baseline version cannot be overwritten, and nothing changes ranking without an explicit
+  opt-in to a new, benchmarked version (S-07).
 """
 
 from __future__ import annotations
 
 import difflib
+import hashlib
 import math
 import re
-from collections import Counter
-from dataclasses import dataclass
+import threading
+from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
 
 import capstone
 
-from .elfobj import FunctionObj, mask_relocs
+from .elfobj import FunctionObj, Reloc, mask_relocs
 
 PENALTY_STACKDIFF = 1
 PENALTY_REGALLOC = 5
@@ -21,6 +49,17 @@ PENALTY_OPERAND = 10
 PENALTY_REORDER = 60
 PENALTY_INSERTION = 100
 PENALTY_DELETION = 100
+
+# Per-mismatch penalties, keyed by the structured mismatch summary's count names (P3.4), in the
+# canonical schema order: register, stack_offset, operand, insertion, deletion, reorder.
+COUNT_PENALTIES = {
+    "register": PENALTY_REGALLOC,
+    "stack_offset": PENALTY_STACKDIFF,
+    "operand": PENALTY_OPERAND,
+    "insertion": PENALTY_INSERTION,
+    "deletion": PENALTY_DELETION,
+    "reorder": PENALTY_REORDER,
+}
 
 _CS = {
     ("x86_64", False): (capstone.CS_ARCH_X86, capstone.CS_MODE_64),
@@ -42,6 +81,13 @@ _NUM = re.compile(r"^-?(0x[0-9a-f]+|\d+)$", re.I)
 _STACK = re.compile(r"\b(rsp|rbp|esp|ebp|\$?sp|\$?fp|r1)\b")
 _TOKEN = re.compile(r"[\w.$<>+@-]+|\S")
 
+# Versioned preparation components (P3.1 cache key; S-06).
+NORMALISATION_POLICY = "normalise-v1"  # reloc symbolization rules below
+DECODER_VERSION = f"capstone-{capstone.__version__}"
+ALIGNMENT_VERSION = "sequence-v1"  # baseline SequenceMatcher alignment (S-07 gate)
+SUMMARY_SCHEMA_VERSION = 1  # P3.4 structured mismatch summary
+_PREPARE_CACHE_LIMIT = 512
+
 
 @dataclass
 class Insn:
@@ -49,6 +95,9 @@ class Insn:
     mnemonic: str
     operands: str
     text: str  # normalized "mnemonic operands" with reloc targets symbolized
+    size: int = 0  # encoded width in bytes (variable-width ISAs)
+    raw: bytes = b""  # the decoded bytes (of the relocation-masked code)
+    relocs: tuple[Reloc, ...] = ()  # every relocation covering this instruction
 
 
 def percent_text(p: float | None) -> str:
@@ -60,30 +109,24 @@ def percent_text(p: float | None) -> str:
     return f"{math.floor(max(0.0, p) * 10) / 10:.1f}%"
 
 
-def disassemble(fn: FunctionObj) -> list[Insn]:
-    arch, mode = _CS[(fn.arch, fn.big_endian)]
-    md = capstone.Cs(arch, mode)
-    md.detail = True
-    md.skipdata = True
-    code = mask_relocs(fn.code, fn.relocs, fn.arch, fn.big_endian)
-    mips_names = _mips_reloc_names(fn.relocs) if fn.arch == "mips" else {}
-    out: list[Insn] = []
-    for ins in md.disasm(code, 0):
-        ops = ins.op_str
-        rel = next((r for r in fn.relocs if ins.address <= r.offset < ins.address + ins.size), None)
-        if rel is not None and rel.offset in mips_names:
-            ops = _mips_symbolize(ops, mips_names[rel.offset])
-        elif rel is not None:
-            off = rel.addend
-            if fn.arch == "x86_64" and rel.type in (2, 4):
-                # PC-relative: addend = field_offset - (bytes from reloc field to end of insn)
-                off += (ins.address + ins.size) - rel.offset
-            target = f"<{rel.symbol}{f'{off:+#x}' if off else ''}>"
-            ops = _symbolize(ins, ops, rel.offset - ins.address, target, fn.arch)
-        elif ins.id and ins.group(capstone.CS_GRP_JUMP) and _NUM.match(ops.strip()):
-            ops = f".L{int(ops, 16):x}"  # intra-function branch: keep it position-relative
-        out.append(Insn(ins.address, ins.mnemonic, ops, f"{ins.mnemonic} {ops}".strip()))
-    return out
+# ------------------------------------------------------------------ decoders
+# Capstone decoder objects are thread-confined: one per (arch, mode) per thread.
+# Sharing a decoder across threads is not attempted (P3.1).
+
+_decoder_local = threading.local()
+
+
+def _decoder(arch: int, mode: int) -> capstone.Cs:
+    cache = getattr(_decoder_local, "cache", None)
+    if cache is None:
+        cache = _decoder_local.cache = {}
+    md = cache.get((arch, mode))
+    if md is None:
+        md = capstone.Cs(arch, mode)
+        md.detail = True
+        md.skipdata = True
+        cache[(arch, mode)] = md
+    return md
 
 
 def _sext16(v: int) -> int:
@@ -138,6 +181,165 @@ def _symbolize(ins, ops: str, rel_at: int, target: str, arch: str) -> str:
     return ops[: nums[-1].start()] + target + ops[nums[-1].end() :] if nums else f"{ops} {target}".strip()
 
 
+def _normalise_v1(ins, ops: str, covering: list[Reloc], mips_names: dict[int, str], arch: str) -> str:
+    """Baseline operand normalization: the first relocation covering the instruction is symbolized into
+    its operand (MIPS %hi/%lo/name forms, x86 disp/imm forms); otherwise intra-function branches become
+    position-relative labels. `covering` preserves the relocation list order."""
+    rel = covering[0] if covering else None
+    if rel is not None and rel.offset in mips_names:
+        return _mips_symbolize(ops, mips_names[rel.offset])
+    if rel is not None:
+        off = rel.addend
+        if arch == "x86_64" and rel.type in (2, 4):
+            # PC-relative: addend = field_offset - (bytes from reloc field to end of insn)
+            off += (ins.address + ins.size) - rel.offset
+        target = f"<{rel.symbol}{f'{off:+#x}' if off else ''}>"
+        return _symbolize(ins, ops, rel.offset - ins.address, target, arch)
+    if ins.id and ins.group(capstone.CS_GRP_JUMP) and _NUM.match(ops.strip()):
+        return f".L{int(ops, 16):x}"  # intra-function branch: keep it position-relative
+    return ops
+
+
+_NORMALISERS = {NORMALISATION_POLICY: _normalise_v1}
+_VERSION_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def register_normalisation_policy(name: str, fn) -> None:
+    """Version-gated normalisation policy (S-06/S-07 pattern): the baseline cannot be overwritten,
+    and unknown policies are rejected rather than silently serving unversioned output."""
+    if not _VERSION_NAME.match(name):
+        raise ValueError(f"normalisation policy name must match {_VERSION_NAME.pattern}")
+    if name in _NORMALISERS:
+        raise ValueError(f"normalisation policy {name!r} is already registered")
+    _NORMALISERS[name] = fn
+
+
+# ------------------------------------------------------------- prepared targets
+
+@dataclass
+class PreparedTarget:
+    """Everything the scorer reads from the target side, decoded once (P3.1)."""
+    name: str
+    arch: str
+    big_endian: bool
+    code: bytes
+    relocs: tuple[Reloc, ...]
+    insns: tuple[Insn, ...]
+    reloc_index: dict[int, tuple[Reloc, ...]]  # instruction index -> relocations covering it
+    mnemonic_sequence: tuple[str, ...]
+    mnemonic_counts: Counter
+    normalised_fingerprint: str  # masked bytes + symbolic relocs: the match identity
+    exact_digest: str  # sha256 of the raw code bytes: exact-byte identity, kept distinct
+    policy: str
+    decoder_version: str
+
+    @property
+    def n_insns(self) -> int:
+        return len(self.insns)
+
+    def relocs_at(self, offset: int) -> tuple[Reloc, ...]:
+        """Relocations covering the instruction that contains `offset` (empty tuple if none)."""
+        lo, hi = 0, len(self.insns)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            ins = self.insns[mid]
+            if offset < ins.offset:
+                hi = mid
+            elif offset >= ins.offset + ins.size:
+                lo = mid + 1
+            else:
+                return self.reloc_index.get(mid, ())
+        return ()
+
+
+@dataclass(frozen=True)
+class _PrepareKey:
+    arch: str
+    big_endian: bool
+    code_digest: str
+    relocs: tuple  # every relocation's (offset, type, symbol, addend): symbol-resolution data
+    policy: str
+    decoder_version: str
+
+
+_prepare_cache: OrderedDict[_PrepareKey, PreparedTarget] = OrderedDict()
+_prepare_lock = threading.Lock()
+_prepare_stats = {"hits": 0, "misses": 0, "evictions": 0}
+
+
+def prepare(fn: FunctionObj, policy: str | None = None) -> PreparedTarget:
+    """Decode and normalise a function once, cached by content and every material input. A change in
+    bytes, relocations (symbol-resolution data), architecture, endianness/mode, decoder version or
+    normalisation policy is a different key, so changed inputs can never reuse a stale preparation."""
+    policy = NORMALISATION_POLICY if policy is None else policy
+    normaliser = _NORMALISERS.get(policy)
+    if normaliser is None:
+        raise ValueError(f"unknown normalisation policy {policy!r} "
+                         f"(registered: {', '.join(sorted(_NORMALISERS))})")
+    key = _PrepareKey(fn.arch, fn.big_endian, hashlib.sha256(fn.code).hexdigest(),
+                      tuple(r.key() for r in fn.relocs), policy, DECODER_VERSION)
+    with _prepare_lock:
+        cached = _prepare_cache.get(key)
+        if cached is not None:
+            _prepare_cache.move_to_end(key)
+            _prepare_stats["hits"] += 1
+            return cached
+    target = _prepare_uncached(fn, policy, normaliser)
+    with _prepare_lock:
+        existing = _prepare_cache.get(key)
+        if existing is not None:  # another thread finished the same key first
+            _prepare_stats["hits"] += 1
+            return existing
+        _prepare_cache[key] = target
+        _prepare_stats["misses"] += 1
+        while len(_prepare_cache) > _PREPARE_CACHE_LIMIT:
+            _prepare_cache.popitem(last=False)
+            _prepare_stats["evictions"] += 1
+    return target
+
+
+def _prepare_uncached(fn: FunctionObj, policy: str, normaliser) -> PreparedTarget:
+    arch, mode = _CS[(fn.arch, fn.big_endian)]
+    md = _decoder(arch, mode)
+    code = mask_relocs(fn.code, fn.relocs, fn.arch, fn.big_endian)
+    mips_names = _mips_reloc_names(fn.relocs) if fn.arch == "mips" else {}
+    insns: list[Insn] = []
+    reloc_index: dict[int, tuple[Reloc, ...]] = {}
+    for ins in md.disasm(code, 0):
+        # Every relocation covering this instruction, in relocation-list order (the first one wins
+        # symbolization, exactly as the baseline diff did; the rest stay available in the index).
+        covering = tuple(r for r in fn.relocs if ins.address <= r.offset < ins.address + ins.size)
+        ops = normaliser(ins, ins.op_str, list(covering), mips_names, fn.arch)
+        insns.append(Insn(ins.address, ins.mnemonic, ops, f"{ins.mnemonic} {ops}".strip(),
+                          ins.size, ins.bytes, covering))
+        if covering:
+            reloc_index[len(insns) - 1] = covering
+    return PreparedTarget(
+        name=fn.name, arch=fn.arch, big_endian=fn.big_endian, code=fn.code, relocs=tuple(fn.relocs),
+        insns=tuple(insns), reloc_index=reloc_index,
+        mnemonic_sequence=tuple(i.mnemonic for i in insns), mnemonic_counts=Counter(i.mnemonic for i in insns),
+        normalised_fingerprint=fn.fingerprint(), exact_digest=hashlib.sha256(fn.code).hexdigest(),
+        policy=policy, decoder_version=DECODER_VERSION,
+    )
+
+
+def prepare_cache_clear() -> None:
+    """Drop every prepared target (tests, and explicit invalidation after a decoder/profile swap)."""
+    with _prepare_lock:
+        _prepare_cache.clear()
+
+
+def prepare_cache_info() -> dict:
+    with _prepare_lock:
+        return {"entries": len(_prepare_cache), "limit": _PREPARE_CACHE_LIMIT, **_prepare_stats.copy()}
+
+
+def disassemble(fn: FunctionObj) -> list[Insn]:
+    """The function's normalized instructions (prepared and cached). The list is fresh; the Insn
+    objects are shared with the cache — treat them as read-only."""
+    return list(prepare(fn).insns)
+
+
 def asm_text(fn: FunctionObj) -> str:
     return "\n".join(f"{i.offset:5x}:  {i.text}" for i in disassemble(fn))
 
@@ -153,6 +355,101 @@ def _classify(a: Insn, b: Insn) -> tuple[int, str]:
         if all(_NUM.match(x) and _NUM.match(y) for x, y in diffs) and _STACK.search(a.operands):
             return PENALTY_STACKDIFF, "s"
     return PENALTY_OPERAND, "i"
+
+
+# -------------------------------------------------------------- alignment core
+# The comparison core is shared by diff() and score_only(): one scorer, two consumers (P3.2).
+
+
+def _sequence_opcodes_v1(t_ins, c_ins):
+    """Baseline alignment: difflib over mnemonic sequences. The versioned unit behind S-07."""
+    sm = difflib.SequenceMatcher(a=[i.mnemonic for i in t_ins], b=[i.mnemonic for i in c_ins], autojunk=False)
+    return sm.get_opcodes()
+
+
+_ALIGNERS = {ALIGNMENT_VERSION: _sequence_opcodes_v1}
+
+
+def register_aligner(version: str, fn) -> None:
+    """Version-gated alignment (S-07): an alternative alignment algorithm may only exist under a new
+    version name; the baseline is never overwritten, so ranking cannot change silently."""
+    if not _VERSION_NAME.match(version):
+        raise ValueError(f"alignment version name must match {_VERSION_NAME.pattern}")
+    if version in _ALIGNERS:
+        raise ValueError(f"alignment version {version!r} is already registered")
+    _ALIGNERS[version] = fn
+
+
+def _resolve_aligner(version: str | None):
+    version = ALIGNMENT_VERSION if version is None else version
+    fn = _ALIGNERS.get(version)
+    if fn is None:
+        raise ValueError(f"unknown alignment version {version!r} "
+                         f"(registered: {', '.join(sorted(_ALIGNERS))})")
+    return fn
+
+
+def _compare(t_ins, c_ins, *, want_rows: bool, opcodes) -> tuple[int, int, list | None, dict]:
+    """The single scoring core: (score, max_score, rows-or-None, counts). score is the pre-verdict
+    alignment penalty; callers apply `_finalise` for the bytes_match rule. `counts` uses the P3.4
+    summary keys and reconciles exactly with the penalties in COUNT_PENALTIES."""
+    max_score = max(1, len(t_ins)) * PENALTY_INSERTION
+    rows: list | None = [] if want_rows else None
+    score = 0
+    missing: Counter[str] = Counter()
+    extra: Counter[str] = Counter()
+    counts = {"register": 0, "stack_offset": 0, "operand": 0, "insertion": 0, "deletion": 0, "reorder": 0}
+    for op, a0, a1, b0, b1 in opcodes:
+        if op == "equal":
+            for a, b in zip(t_ins[a0:a1], c_ins[b0:b1]):
+                pen, mark = _classify(a, b)
+                score += pen
+                if mark == "r":
+                    counts["register"] += 1
+                elif mark == "s":
+                    counts["stack_offset"] += 1
+                elif mark == "i":
+                    counts["operand"] += 1
+                if rows is not None:
+                    rows.append((mark, a.text, b.text))
+            continue
+        ta, cb = t_ins[a0:a1], c_ins[b0:b1]
+        for k in range(max(len(ta), len(cb))):
+            a = ta[k] if k < len(ta) else None
+            b = cb[k] if k < len(cb) else None
+            if a and b:
+                if rows is not None:
+                    rows.append(("|", a.text, b.text))
+                missing[a.text] += 1
+                extra[b.text] += 1
+            elif a:
+                if rows is not None:
+                    rows.append(("<", a.text, ""))
+                missing[a.text] += 1
+            else:
+                if rows is not None:
+                    rows.append((">", "", b.text))
+                extra[b.text] += 1
+    # instructions that are merely in the wrong place are cheaper than real insert/delete
+    reordered = sum((missing & extra).values())
+    counts["reorder"] = reordered
+    counts["deletion"] = sum(missing.values()) - reordered
+    counts["insertion"] = sum(extra.values()) - reordered
+    score += reordered * PENALTY_REORDER
+    score += (sum(missing.values()) - reordered) * PENALTY_DELETION
+    score += (sum(extra.values()) - reordered) * PENALTY_INSERTION
+    if reordered and rows is not None:
+        moved = missing & extra
+        rows[:] = [("o" if m in "|<>" and ((t and moved[t]) or (c and moved[c])) else m, t, c) for m, t, c in rows]
+    return score, max_score, rows, counts
+
+
+def _finalise(score: int, bytes_match: bool) -> int:
+    """The baseline verdict rule: a bytes match is score 0; a textually identical but byte-different
+    comparison is never a clean 0."""
+    if bytes_match:
+        return 0
+    return 1 if score == 0 else score
 
 
 @dataclass
@@ -240,48 +537,109 @@ def compact_asm(text: str) -> str:
     return "\n".join(out)
 
 
-def diff(target: FunctionObj, candidate: FunctionObj) -> DiffResult:
-    t_ins, c_ins = disassemble(target), disassemble(candidate)
-    max_score = max(1, len(t_ins)) * PENALTY_INSERTION
-    bytes_match = target.fingerprint() == candidate.fingerprint()
+# --------------------------------------------------- structured mismatch summary
 
-    sm = difflib.SequenceMatcher(a=[i.mnemonic for i in t_ins], b=[i.mnemonic for i in c_ins], autojunk=False)
-    rows: list[tuple[str, str, str]] = []
-    score = 0
-    missing: Counter[str] = Counter()
-    extra: Counter[str] = Counter()
-    for op, a0, a1, b0, b1 in sm.get_opcodes():
-        if op == "equal":
-            for a, b in zip(t_ins[a0:a1], c_ins[b0:b1]):
-                pen, mark = _classify(a, b)
-                score += pen
-                rows.append((mark, a.text, b.text))
-            continue
-        ta, cb = t_ins[a0:a1], c_ins[b0:b1]
-        for k in range(max(len(ta), len(cb))):
-            a = ta[k] if k < len(ta) else None
-            b = cb[k] if k < len(cb) else None
-            if a and b:
-                rows.append(("|", a.text, b.text))
-                missing[a.text] += 1
-                extra[b.text] += 1
-            elif a:
-                rows.append(("<", a.text, ""))
-                missing[a.text] += 1
-            else:
-                rows.append((">", "", b.text))
-                extra[b.text] += 1
-    # instructions that are merely in the wrong place are cheaper than real insert/delete
-    reordered = sum((missing & extra).values())
-    score += reordered * PENALTY_REORDER
-    score += (sum(missing.values()) - reordered) * PENALTY_DELETION
-    score += (sum(extra.values()) - reordered) * PENALTY_INSERTION
-    if reordered:
-        moved = missing & extra
-        rows = [("o" if m in "|<>" and ((t and moved[t]) or (c and moved[c])) else m, t, c) for m, t, c in rows]
+_COVERAGE_STATUSES = ("complete", "prefix_limited", "unknown")
+_LINK_STATUSES = ("exact", "mismatch", "unverified")
 
-    if score == 0 and not bytes_match:
-        score = 1  # textually identical but encodings/relocs differ (e.g. branch form, addend)
+
+def mismatch_summary(counts: dict, *, bytes_match: bool, score: int,
+                     coverage: str = "complete", function_link_match: str = "unverified",
+                     observations: list[str] | None = None, hypotheses: list[str] | None = None) -> dict:
+    """The P3.4 structured mismatch summary. Only facts the comparison can derive are emitted:
+    observations are never "control flow is identical" — that requires analysis, not mnemonic
+    alignment. The link verdict is "unverified" unless a caller that actually linked the candidate
+    supplies it (scoring alone never links)."""
+    if coverage not in _COVERAGE_STATUSES:
+        raise ValueError(f"coverage status must be one of {_COVERAGE_STATUSES}")
+    if function_link_match not in _LINK_STATUSES:
+        raise ValueError(f"function_link_match must be one of {_LINK_STATUSES}")
+    obs: list[str] = []
     if bytes_match:
-        score = 0
-    return DiffResult(score=score, max_score=max_score, rows=rows, bytes_match=bytes_match)
+        obs.append("normalised bytes and relocation layout match exactly (relocation-normalised exact match)")
+    elif all(counts.get(k, 0) == 0 for k in COUNT_PENALTIES):
+        obs.append("all aligned instructions read identically, but the normalised bytes or relocation layout "
+                   "differ: the encodings, relocation fields or addends differ — not an exact match")
+    obs.extend(observations or [])
+    return {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "counts": {k: counts.get(k, 0) for k in COUNT_PENALTIES},
+        "observations": obs,
+        "hypotheses": list(hypotheses or []),
+        "coverage": {"status": coverage},
+        "verification": {"function_link_match": function_link_match},
+    }
+
+
+@dataclass
+class Comparison:
+    """The score_only result: numeric score, compact mismatch counts and verification metadata, with the
+    display rows deferred. Rendering re-runs the same core over the same prepared inputs, so it can never
+    disagree with the score (S-02)."""
+    score: int
+    max_score: int
+    bytes_match: bool
+    counts: dict
+    summary: dict
+    target: PreparedTarget
+    candidate: PreparedTarget
+    alignment_version: str
+    _rows: list | None = field(default=None, repr=False)
+
+    @property
+    def percent(self) -> float:
+        if self.bytes_match:
+            return 100.0
+        return max(0.0, 100.0 * (1 - self.score / self.max_score)) if self.max_score else 0.0
+
+    def rows(self) -> list[tuple[str, str, str]]:
+        """The display rows, built on first demand by re-running the shared core (same inputs, same
+        aligner: the result is the score's exact row form)."""
+        if self._rows is None:
+            opcodes = _resolve_aligner(self.alignment_version)(self.target.insns, self.candidate.insns)
+            score, max_score, rows, _ = _compare(self.target.insns, self.candidate.insns, want_rows=True,
+                                                 opcodes=opcodes)
+            if rows is None or _finalise(score, self.bytes_match) != self.score or max_score != self.max_score:
+                raise RuntimeError("comparison inputs changed after score_only; re-score instead of rendering")
+            self._rows = rows
+        return self._rows
+
+    def render(self, context: int = 2, max_rows: int = 60) -> str:
+        return render_rows(self.rows(), context, max_rows)
+
+    def to_diff_result(self) -> DiffResult:
+        return DiffResult(self.score, self.max_score, self.rows(), self.bytes_match)
+
+
+def render_diff(result: DiffResult | Comparison, context: int = 2, max_rows: int = 60) -> str:
+    """Render rows on demand from either a DiffResult or a score-only Comparison (P3.2)."""
+    return result.render(context, max_rows)
+
+
+def score_only(target: FunctionObj, candidate: FunctionObj, *, policy: str | None = None,
+               alignment_version: str | None = None) -> Comparison:
+    """Numeric score, compact mismatch counts and verification metadata — no display rows (P3.2/P3.4).
+    The scoring algorithm is exactly diff()'s; the target side comes from the prepared cache."""
+    t = prepare(target, policy)
+    c = prepare(candidate, policy)
+    version = ALIGNMENT_VERSION if alignment_version is None else alignment_version
+    opcodes = _resolve_aligner(version)(t.insns, c.insns)
+    score, max_score, _, counts = _compare(t.insns, c.insns, want_rows=False, opcodes=opcodes)
+    bytes_match = t.normalised_fingerprint == c.normalised_fingerprint
+    final = _finalise(score, bytes_match)
+    return Comparison(score=final, max_score=max_score, bytes_match=bytes_match,
+                      counts=counts, summary=mismatch_summary(counts, bytes_match=bytes_match, score=final),
+                      target=t, candidate=c, alignment_version=version)
+
+
+def diff(target: FunctionObj, candidate: FunctionObj, *, policy: str | None = None,
+         alignment_version: str | None = None) -> DiffResult:
+    """The public diff: identical behavior to the baseline (score, rows, bytes_match), now driven by
+    prepared targets and the shared comparison core. Golden parity: tests S-01/S-02."""
+    t = prepare(target, policy)
+    c = prepare(candidate, policy)
+    version = ALIGNMENT_VERSION if alignment_version is None else alignment_version
+    opcodes = _resolve_aligner(version)(t.insns, c.insns)
+    score, max_score, rows, _ = _compare(t.insns, c.insns, want_rows=True, opcodes=opcodes)
+    bytes_match = t.normalised_fingerprint == c.normalised_fingerprint
+    return DiffResult(score=_finalise(score, bytes_match), max_score=max_score, rows=rows, bytes_match=bytes_match)
