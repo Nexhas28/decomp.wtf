@@ -1,6 +1,7 @@
 """Check the ROM, extract the targets, write build.ninja and objdiff.json."""
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +24,10 @@ def main() -> int:
     for unit in UNITS:  # "extract" the targets
         subprocess.run([*cc, "-I", str(ROOT / "include"), str(ROOT / "tools" / "reference" / f"{unit}.c"),
                         "-o", str(ROOT / "build" / "expected" / f"{unit}.o")], check=True, capture_output=True)
-    ninja = ["rule cc", f"  command = {' '.join(cc)} -Iinclude $in -o $out", "  description = cc $in", ""]
+    # ninja runs "command" through the shell, so every argument needs quoting:
+    # the toolchain lives under a directory that can contain spaces.
+    cc_line = " ".join(shlex.quote(str(a)) for a in cc)
+    ninja = ["rule cc", f"  command = {cc_line} -Iinclude $in -o $out", "  description = cc $in", ""]
     for unit in UNITS:
         ninja.append(f"build build/src/{unit}.o: cc src/{unit}.c | include/game.h")
     ninja.append("")
