@@ -412,21 +412,30 @@ class Network:
 
         ctx = self._context(proj["id"], fn["unit"])
         snap = snapshots.capture(fn, proj, ctx)
-        result, cand, verdict, problems, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        result = self._compile(proj, ctx["header"], source)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}", "score": None, "matched": False}
 
+        return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
+
+    def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool) -> dict:
+        """Evaluate one compiled object against fn's target and record the result: the single evaluator +
+        acceptance path shared by attempt() (one compile, one function) and attempt_many() (one compile,
+        several functions) — plan P2.1/P2.2: the batch must not grow a second acceptance implementation."""
+        cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ Compiled, but the object has no function named `{fn['name']}`. "
                             f"Define it with exactly that name (non-static).", "score": None, "matched": False}
-
         if self._hash_only(fn):
             matched_now = cand.fingerprint() == fn["fingerprint"] and not scratch
             score = 0 if matched_now else None
         else:
+            d = scoring.diff(self._target_obj(fn, proj), cand)
+            if verdict is not None:
+                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
             matched_now = d.bytes_match and not scratch
             score = d.score
 

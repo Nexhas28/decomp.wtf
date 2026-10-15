@@ -1022,19 +1022,71 @@ class RomNetwork(Network):
         return rows
 
     def attempt_many(self, agent: Agent, names: list[str], source: str, project: str | None = None) -> str:
-        """compile_and_diff for several functions in one source: each judged on its own (a fork's, with the other
-        definitions taken out, as its file gets them one by one), in order."""
+        """compile_and_diff for several functions in one source: each judged on its own. A fork gets each
+        definition one by one, as its file gets them. A ROM project compiles the translation unit once per
+        compatible group (same project, same unit context) and evaluates every function against its own
+        target — one compile instead of one per function (plan P2.2)."""
         fork = self.fork_slug(project)
         out, matched = [], 0
+        if fork:
+            for name in names:
+                try:
+                    one = self.forks.one_definition(fork, source, name, [n for n in names if n != name])
+                    res = self.attempt(agent, name, one, project)
+                except NetworkError as e:
+                    res = {"text": f"❌ {e}", "matched": False}
+                matched += bool(res.get("matched"))
+                out.append(f"### {name}\n{res['text']}")
+            return f"{matched} of {len(names)} matched.\n\n" + "\n\n".join(out)
+
+        # ROM path: resolve, claim and snapshot every function first, then compile each compatible group once.
+        self._require_budget(agent)
+        groups: dict[tuple, list] = {}
         for name in names:
-            try:
-                one = self.forks.one_definition(fork, source, name, [n for n in names if n != name]) if fork else source
-                res = self.attempt(agent, name, one, project)
-            except NetworkError as e:
-                res = {"text": f"❌ {e}", "matched": False}
-            matched += bool(res.get("matched"))
-            out.append(f"### {name}\n{res['text']}")
-        return f"{matched} of {len(names)} matched.\n\n" + "\n\n".join(out)
+            fn = self._function(name, project)
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            now = time.time()
+            with self.store.tx() as db:  # the same claim bookkeeping as attempt(): renew yours, never another's
+                self._expire_claims(db)
+                claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                scratch = fn["status"] == "matched"
+                if not scratch:
+                    if claim is None:
+                        # claims held by this agent on OTHER functions of this batch are expected (claim_many
+                        # pre-claims the batch); a claim outside the batch is the usual single-function conflict
+                        held = db.execute("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id "
+                                          "WHERE c.agent_id=?", (agent.id,)).fetchall()
+                        if any(h["name"] not in names for h in held):
+                            raise NetworkError("you hold another claim; release it before working on a different function")
+                        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                        self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+                    elif claim["agent_id"] != agent.id:
+                        raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+                    else:
+                        db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+            ctx = self._context(proj["id"], fn["unit"])
+            snap = snapshots.capture(fn, proj, ctx)
+            # Complete compilation identity for grouping: project, context version and exact header content.
+            # Incompatible requests land in different groups instead of sharing a compile (plan C-02).
+            groups.setdefault((proj["id"], ctx["version"], ctx["header"]), []).append(
+                (fn, proj, ctx, snap, scratch))
+
+        compiles = 0
+        for _, items in groups.items():
+            fn0, proj0, ctx0, _, _ = items[0]
+            result = self._compile(proj0, ctx0["header"], source)
+            compiles += 1
+            if not result.ok:  # a shared compile error: report once per function, keep per-function records
+                for fn, proj, ctx, snap, scratch in items:
+                    self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
+                    out.append(f"### {fn['name']}\n❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}")
+                continue
+            for fn, proj, ctx, snap, scratch in items:
+                res = self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
+                matched += bool(res.get("matched"))
+                out.append(f"### {fn['name']}\n{res['text']}")
+        return (f"{matched} of {len(names)} matched ({compiles} compile"
+                f"{'s' if compiles != 1 else ''} for {len(names)} functions).\n\n" + "\n\n".join(out))
 
     def _yield_autopilot(self, function: str | None, project: str | None) -> None:
         """The autopilot holds a function only while its draft compiles: an agent that wants it waits for that."""
