@@ -7,6 +7,7 @@ acceptance; this package only steers proposals and reuse.
 """
 
 from .dedup import EvalCache, EvalOutcome
+from .external import ExternalRun, JobSpec, available, discover, reverify, run as run_external
 from .policy import SEARCH_POLICY, SearchPolicy, SearchPolicyError, parse_policy
 from .portfolio import Candidate, Portfolio, structure_key
 from .routing import ROUTING_TABLES, RoutingDecision, route
@@ -19,4 +20,5 @@ __all__ = [
     "EvalCache", "EvalOutcome",
     "Candidate", "Portfolio", "structure_key",
     "SearchRun", "StepResult", "SearchResumeError", "new_run", "step", "checkpoint_run", "resume_run",
+    "ExternalRun", "JobSpec", "available", "discover", "reverify", "run_external",
 ]
