@@ -39,6 +39,19 @@ def test_release_update(monkeypatch):
     assert not updates.check()["available"]
 
 
+def test_release_update_from_github_when_decomp_wtf_is_unreachable(monkeypatch):
+    """Issue #15: decomp.wtf blocked or down: the release's version from GitHub, installed from its tag's archive."""
+    def get(url, timeout=15):
+        if url.startswith(updates.SITE):
+            raise urllib.error.URLError("blocked")
+        assert url == "https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh"
+        return b'VERSION="99.0.0"\n'
+    monkeypatch.setattr(updates, "_get", get)
+    found = updates.check()
+    assert found["available"] and found["latest"]["version"] == "99.0.0" and found["error"] is None
+    assert found["spec"] == "decompnet @ https://github.com/i12bp8/decomp.wtf/archive/refs/tags/v99.0.0.tar.gz"
+
+
 def test_branch_update(monkeypatch):
     have, head = "1" * 40, "2" * 40
     updates.record("branch", "cross-platform", have)
