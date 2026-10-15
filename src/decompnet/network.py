@@ -702,6 +702,7 @@ class Network:
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
+            db.execute("DELETE FROM search_budgets WHERE function_id NOT IN (SELECT id FROM functions)")
             db.execute("DELETE FROM projects WHERE id=?", (proj["id"],))
         return len(ids)
 
@@ -711,6 +712,7 @@ class Network:
         with self.store.tx() as db:
             for table in ("claims", "attempts", "notes"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
+            db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "
                        "matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, attempts=0, abandons=0 "
                        "WHERE id=?", (fn["id"],))

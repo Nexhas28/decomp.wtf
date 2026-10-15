@@ -44,7 +44,6 @@ class Permuter:
     def __init__(self, net):
         self.net = net
         self.jobs: dict[str, State] = {}
-        self._turns: dict[int, int] = {}  # function id -> turns spent on it
 
     def status(self, slug: str) -> dict | None:
         st = self.jobs.get(slug)
@@ -66,11 +65,37 @@ class Permuter:
             st.stop.set()
 
     def candidates(self, proj, limit: int = 20) -> list:
-        return [r for r in self.net.store.all(
-            "SELECT * FROM functions WHERE project_id=? AND status='open' AND best_source IS NOT NULL "
-            "AND best_score > 0 AND best_score <= n_insns * 100 * ? AND n_insns <= 400 "
-            "AND id NOT IN (SELECT function_id FROM claims) ORDER BY CAST(best_score AS REAL) / (n_insns * 100) LIMIT ?",
-            proj["id"], NEAR, limit * 4) if self._turns.get(r["id"], 0) < MAX_TURNS][:limit]
+        """The near-misses with search budget left, closest first. Every material eligibility condition
+        (open, unclaimed, has a scored attempt, not too big, budget not exhausted) is evaluated in SQL
+        before LIMIT: functions whose budget is spent cannot hide eligible work behind them the way the
+        reviewed LIMIT-then-Python-filter query did. The ordering (score ratio, then id) is stable, so
+        repeated calls advance through the same window instead of re-reading its first page."""
+        return self.net.store.all(
+            "SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open' "
+            "AND f.best_source IS NOT NULL AND f.best_score > 0 AND f.best_score <= f.n_insns * 100 * ? "
+            "AND f.n_insns > 0 AND f.n_insns <= 400 "
+            "AND f.id NOT IN (SELECT function_id FROM claims) "
+            "AND NOT EXISTS (SELECT 1 FROM search_budgets b WHERE b.function_id=f.id "
+            "AND b.turns_used >= b.max_turns) "
+            "ORDER BY CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC, f.id ASC LIMIT ?",
+            proj["id"], NEAR, limit)
+
+    def _turns_used(self, fn) -> int:
+        """The function's persisted permuter search-budget state (PR-04 adds reset policy and
+        charge-after-claim semantics on the same table)."""
+        row = self.net.store.one("SELECT turns_used FROM search_budgets WHERE function_id=?", fn["id"])
+        return row["turns_used"] if row else 0
+
+    def _charge_turn(self, fn) -> int:
+        """Record one search turn against the function's persisted budget; returns the new count."""
+        now = time.time()
+        with self.net.store.tx() as db:
+            db.execute(
+                "INSERT INTO search_budgets(function_id, turns_used, max_turns, last_at) VALUES(?,1,?,?) "
+                "ON CONFLICT(function_id) DO UPDATE SET turns_used=search_budgets.turns_used+1, "
+                "last_at=excluded.last_at",
+                (fn["id"], MAX_TURNS, now))
+            return db.execute("SELECT turns_used FROM search_budgets WHERE function_id=?", (fn["id"],)).fetchone()[0]
 
     def _loop(self, slug: str, st: State) -> None:
         agent, _ = self.net.local_agent("permuter")
@@ -92,7 +117,7 @@ class Permuter:
                 for fn in todo:
                     if st.stop.is_set():
                         break
-                    self._turns[fn["id"]] = self._turns.get(fn["id"], 0) + 1
+                    self._charge_turn(fn)
                     try:
                         self._permute(agent, proj, fn, st)
                     except Exception as e:  # one odd function must not stop the rest
@@ -119,7 +144,7 @@ class Permuter:
             return
         st.current, st.tried = fn["name"], st.tried + 1
         fork = self.net.fork_slug(proj["slug"])
-        rng = random.Random(f"{fn['id']}-{self._turns.get(fn['id'])}")
+        rng = random.Random(f"{fn['id']}-{self._turns_used(fn)}")
         try:
             best_src = cur_src = fn["best_source"]
             best = cur = fn["best_score"]
