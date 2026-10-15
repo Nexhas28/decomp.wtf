@@ -80,6 +80,7 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
 .hero .os { justify-self: center; }
 .os button { font: 500 13px/1 var(--sans); color: var(--muted); padding: 7px 11px; border-radius: 7px; transition: background .15s, color .15s; }
 .os button.on { background: var(--ink); color: var(--btn-ink); }
+.os button .st { font-weight: 400; font-size: 11px; margin-left: 4px; }
 .cmd { display: flex; align-items: center; gap: 8px; padding: 5px 5px 5px 15px; border-radius: 12px; background: var(--term); color: var(--term-ink); font: 13px/1.4 var(--mono); box-shadow: var(--shadow); min-width: 0; border: 1px solid var(--term-line); }
 .cmd span { color: var(--term-muted); user-select: none; }
 .cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; padding: 10px 0; }
