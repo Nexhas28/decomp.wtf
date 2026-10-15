@@ -61,6 +61,7 @@ def test_manual_match_restarts_only_an_idle_autopilot_when_enabled():
 
     net = object.__new__(RomNetwork)
     net.autopilot_after_match = False
+    net.store = SimpleNamespace(one=lambda *args: None)  # on_match reads the matched function's name first
     net.links = {}
     net.autopilots = {"game": {"state": "done"}}
     net._autopilot_restart_lock = threading.Lock()
