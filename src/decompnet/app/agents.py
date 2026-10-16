@@ -505,10 +505,13 @@ def models(kind: str, path: str | None) -> list[dict]:
 
 
 def _which(cmd: str) -> str | None:
+    home = Path.home()
+    own = {"opencode": home / ".opencode" / "bin" / "opencode"}.get(cmd)  # its self-updating install beats a stale PATH copy
+    if own and own.exists():
+        return str(own)
     found = shutil.which(cmd)
     if found:
         return found
-    home = Path.home()
     dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
     for d in dirs:
         if (d / cmd).exists():
