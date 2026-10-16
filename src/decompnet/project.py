@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 import time
 import tomllib
@@ -99,6 +100,44 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
 #: modern binutils + the PSY-Q `move` expansion. Tried only when a base attempt is a near miss.
 ASM_VARIANT_PASS = "psyq-move-addu"
 ASM_VARIANT_TOOLCHAIN = "binutils-mips"
+#: The PSY-Q assembly preprocessor (mkst/maspsx, MIT): our pipeline ships it but, without this stage,
+#: gcc's jump tables and %hi/%lo of local labels cannot be encoded by the bare assembler ("Illegal
+#: operands lui/addiu"). Reference build recipe (celophi/lom-decomp, MIT): gcc -S | maspsx | as -G0.
+MASPSX_TOOLCHAIN = "maspsx"
+
+
+def maspsx_variant_config(root: Path, cfg: dict):
+    """Compile through maspsx: gcc -S, the maspsx preprocessor, then the toolchain's own assembler.
+
+    Returns None when maspsx or the project's compiler is unavailable."""
+    from dataclasses import replace
+
+    from . import toolchains
+
+    try:
+        base = compiler_config(root, cfg)
+    except toolchains.ToolchainError:
+        return None
+    if base.asm_cmd is not None or not base.cmd:
+        return None
+    try:
+        maspsx_dir = Path(toolchains.path(MASPSX_TOOLCHAIN))
+    except toolchains.ToolchainError:
+        return None
+    script = maspsx_dir / "maspsx.py"
+    if not script.exists():
+        return None
+    flags = list(cfg.get("compiler", {}).get("flags", []))
+    g_flag = next((f for f in flags if f.startswith("-G")), None)
+    pp = (sys.executable or "python3", str(script), *([g_flag] if g_flag else []))
+    tc_dir = Path(base.cmd[0]).parent  # the expanded {tc} directory of the project's compiler
+    asm = tc_dir / "as"
+    if not asm.exists():
+        return None
+    endian = "-EB" if cfg.get("big_endian") else "-EL"
+    # maspsx documents that GNU as wants -G0 for correct PSY-Q behaviour (its --dont-force-G0 opts out)
+    return replace(base, asm_pp_cmd=tuple(pp), asm_cmd=(str(asm), endian, "-G0", "-o", "{obj}", "{src}"),
+                   cache=False, ro_paths=tuple({*base.ro_paths, str(maspsx_dir)}))
 
 
 def variant_compiler_config(root: Path, cfg: dict, *, asm_pass: str = ASM_VARIANT_PASS):
