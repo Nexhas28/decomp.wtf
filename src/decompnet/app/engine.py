@@ -265,6 +265,9 @@ class RomNetwork(Network):
         self.rescan_busy = lambda slug: False  # server supplies its built-in agent/session guard
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
+        self.fixer_ids: set[int] = set()  # agent ids of auto-fixer sessions: the only ones its tools work for
+        # set by the server: a note was left on this copy's own project (slug, function name, text, agent)
+        self.on_note = lambda slug, function, text, agent: None
         self.role: dict[int, str] = {}  # helper agent id -> its job when it isn't matching ("researcher")
         self.role_model: dict[int, str] = {}  # researcher agent id -> the model it runs (for what it adds to .okf)
         # function id -> (researcher agent id, until): what next_to_research handed out, so two researchers don't
@@ -1308,6 +1311,8 @@ class RomNetwork(Network):
         success), true adjacency, the fragment shape, and that neither function is matched. Refused
         merges change nothing and leave the proposal row for review."""
         self._rom_only(project, "merge_function")
+        if self._link(project) is not None:
+            raise NetworkError("in a team room only the host's app merges functions")
         frag = self._function(fragment, project)
         cont = self._function(continues, project)
         if frag["project_id"] != cont["project_id"]:
@@ -2074,7 +2079,9 @@ class RomNetwork(Network):
             return self.forks.release(agent, fork, function, notes)
         link = self._link(project)
         if link is None:
-            return super().release(agent, function, notes, project)
+            out = super().release(agent, function, notes, project)
+            self._noted(project, function, notes, agent)
+            return out
         # always tell the host, even when this copy has no claim: the host's claim is the one that blocks
         name = self._function(function, project)["name"]
         try:
@@ -2105,9 +2112,54 @@ class RomNetwork(Network):
     def add_note(self, agent: Agent, project: str | None, text: str, function: str | None = None) -> str:
         link = self._link(project)
         if link is None:
-            return super().add_note(agent, project, text, function)
+            out = super().add_note(agent, project, text, function)
+            if function:
+                self._noted(project, function, text, agent)
+            return out
         name = self._function(function, project)["name"] if function else None
         return link.call("/collab/note", agent, text=text, function=name) or "Noted, and shared with the room."
+
+    def _noted(self, project: str | None, function: str, text: str, agent: Agent) -> None:
+        """Tell the auto-fixer about a note on this copy's own project (after it was saved; never in its way)."""
+        if not (text or "").strip():
+            return
+        try:
+            proj = self._project(project)
+            if self.is_rom(proj) and not self.fork_slug(proj["slug"]):
+                self.on_note(proj["slug"], self._function(function, proj["slug"])["name"], text, agent)
+        except Exception as e:  # the note is saved either way
+            logging.getLogger("decomp.wtf").info("auto-fixer on a note: %s", e)
+
+    def is_fixer(self, agent: Agent) -> bool:
+        return agent.id in self.fixer_ids
+
+    def require_fixer(self, agent: Agent) -> None:
+        if not self.is_fixer(agent):
+            raise NetworkError("only the auto-fixer can do this (decomp.wtf starts it when notes ask for it)")
+
+    def fix_boundary(self, agent: Agent, project: str | None, first: str, second: str, at: str, reason: str) -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        slug = self._project(project)["slug"]
+        with self.store.lock:
+            pid = self._project(slug)["id"]
+            self._require_not_rescanning(pid)
+            self._active_attempts[pid] = self._active_attempts.get(pid, 0) + 1
+        try:
+            return boundary.fix_boundary(self, agent, slug, first, second, at, reason)
+        finally:
+            with self.store.lock:
+                self._active_attempts[pid] -= 1
+
+    def set_aside_function(self, agent: Agent, project: str | None, function: str, reason: str) -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        return boundary.set_aside(self, agent, self._project(project)["slug"], function, reason)
+
+    def queue_for_permuter(self, agent: Agent, project: str | None, function: str, reason: str = "") -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        return boundary.queue_permuter(self, agent, self._project(project)["slug"], function, reason)
 
     def add_research_note(self, agent: Agent, project: str | None, function: str, text: str) -> str:
         fn = self._function(function, project)
@@ -2326,6 +2378,9 @@ class RomNetwork(Network):
         """Mirror the room's splits and names. The host already regression-tested them on the same ROM."""
         proj = self._project(slug)
         pid = proj["id"]
+        if functions:  # the host joined functions or moved a cut: join here first, the splits below cut again
+            from . import boundary
+            boundary.follow_layout(self, proj, functions)
         local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         for f in sorted(functions, key=lambda f: f["vram"]):
             if f["vram"] in local:
