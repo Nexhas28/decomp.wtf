@@ -16,6 +16,7 @@ import pytest
 from elftools.elf.elffile import ELFFile
 
 from decompnet import toolchains
+from decompnet.rom import detect
 from decompnet.app.engine import RomNetwork
 from decompnet.forks import csource
 
@@ -29,6 +30,13 @@ FUNCTIONS = ["clamp_s32", "abs_s32", "player_take_damage", "rng_next", "count_al
 
 pytestmark = pytest.mark.skipif(toolchains.installed("ee-gcc-2.96") is None or toolchains.installed("binutils-mips") is None,
                                 reason="needs ee-gcc-2.96 and binutils-mips to build the PS2 demo")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _ps2_on():  # PlayStation 2 is switched off in the app for now; these tests keep its code working
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(detect, "PS2", True)
+        yield
 
 
 @pytest.fixture(scope="module")

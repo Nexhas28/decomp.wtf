@@ -10,6 +10,9 @@ from pathlib import Path
 from . import chd, gba, n64, overlays, ps2, psx
 from .n64 import RomError
 
+# PlayStation 2 is switched off for now: its only free compiler (EE-GCC 2.96) runs only as a Linux program, and
+# decomp.wtf runs every compiler natively on the Mac. Set to True to bring it back.
+PS2 = False
 PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2", "gba": "Game Boy Advance"}
 SMALL = 64 * 1024 * 1024  # ROMs and programs are read whole; disc images are read from disk
 
@@ -34,6 +37,8 @@ def _program(data: bytes, name: str = "") -> Picked | None:
         exe, info = psx.read_exe(data, name)
         return Picked("psx", exe, "game.exe", info, False)
     if ps2.is_mips_elf(data):
+        if not PS2:
+            raise RomError("PlayStation 2 games aren't supported yet")
         elf, info = ps2.read_elf(data, name)
         return Picked("ps2", elf, "game.elf", info, False)
     return None

@@ -37,15 +37,13 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
-                   "psx": "beta", "ps2": "beta", "gba": "beta", "nds": "beta"}
+                   "psx": "beta", "gba": "beta", "nds": "beta"}  # PlayStation 2: switched off for now (rom/detect.py)
 COMPILERS = {
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
     "ido-5.3": "early N64 games (1996-97)",
     "gcc-2.7.2-psx": "PlayStation games (PSY-Q era GCC)",
     "gcc-2.8.1-psx": "later PlayStation games",
-    "ee-gcc-2.96": "PlayStation 2 games (Sony's EE GCC)",
-    "mwcc-ps2": "PlayStation 2 games built with CodeWarrior (proprietary)",
     "agbcc": "Game Boy Advance games (pret's agbcc, GCC 2.95)",
 }
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",

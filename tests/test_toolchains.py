@@ -176,3 +176,13 @@ def test_the_registry_pins_the_bundled_archives_in_this_checkout(monkeypatch):
         archive = toolchains.prebuilt_dir() / p["bundled"]
         assert archive.is_file(), archive
         assert hashlib.sha256(archive.read_bytes()).hexdigest() == p["sha256"], p["bundled"]
+
+
+def test_playstation_2_is_switched_off_for_now():
+    from decompnet.app import engine
+    from decompnet.rom import detect
+    from decompnet.rom.detect import RomError
+    elf = b"\x7fELF\x01\x01\x01" + b"\0" * 9 + (2).to_bytes(2, "little") + (8).to_bytes(2, "little") + b"\0" * 300
+    with pytest.raises(RomError, match="PlayStation 2 games aren't supported yet"):
+        detect.identify(elf, "game.elf")
+    assert "ps2" not in engine.PLATFORM_STATUS and "ee-gcc-2.96" not in engine.COMPILERS
