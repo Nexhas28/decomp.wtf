@@ -1189,6 +1189,30 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 return fail(e)
         return JSONResponse(out)
 
+    @mcp.custom_route("/api/function-help", methods=["GET", "POST"])
+    async def api_function_help(request: Request) -> Response:
+        """The function page's Research and Auto-fix buttons: GET ?slug=&function= what each is doing for it (and
+        why the auto-fixer can't run here); POST {slug, function, job: "research"|"fix"} starts it."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        data = dict(request.query_params) if request.method == "GET" else await body(request)
+        slug, function = str(data.get("slug", "")), str(data.get("function", ""))
+
+        def state() -> dict:
+            return {"fix": fixer.holds(slug, function), "fix_unavailable": fixer.why_not(slug),
+                    "research": manager.research_running(slug, function)}
+        try:
+            if request.method == "POST":
+                if data.get("job") == "research":
+                    await call(lambda: manager.start_research(slug, function))
+                elif data.get("job") == "fix":
+                    await call(lambda: fixer.run_for(slug, function))
+                else:
+                    return fail(ValueError("job is research or fix"))
+            return JSONResponse(state())
+        except (NetworkError, ValueError, RuntimeError) as e:
+            return fail(e)
+
     @mcp.custom_route("/api/notes/clear", methods=["POST"])
     async def api_notes_clear(request: Request) -> Response:
         """Settings: delete every note on a function, in every project (notes on a whole project stay)."""

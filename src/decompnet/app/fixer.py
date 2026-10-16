@@ -213,6 +213,40 @@ class Fixer:
                 n += 1
         return n
 
+    def run_for(self, slug: str, function: str) -> dict:
+        """The function page's Auto-fix button: this function, with its latest note (or a person's ask to look at
+        it), starts the auto-fixer now; while it is busy, it goes on the next list."""
+        if (why := self.why_not(slug)):
+            raise ValueError(why)
+        fn = self.net._function(function, slug)
+        if fn["status"] == "matched":
+            raise ValueError(f"{fn['name']} is matched: nothing to repair")
+        note = self.net.store.one("SELECT text FROM notes WHERE function_id=? ORDER BY id DESC LIMIT 1", fn["id"])
+        text = (note["text"] if note else "") or ""
+        mips = self.lane(slug) == "mips"
+        kinds = wanted(fn, flags(text), mips) or wanted(fn, {"boundary", "set_aside", "permuter"}, mips)
+        ask = "A person asked the auto-fixer to look at this function: check its cut, whether it is hand-written" \
+              + (", and whether only the permuter can finish it" if mips else "") + "."
+        with self._lock:
+            self.pending.setdefault(slug, {})[fn["name"]] = {"function": fn["name"], "id": fn["id"], "kinds": set(kinds),
+                                                             "note": f"{ask} Latest note: {text}" if text else ask}
+            if (t := self._timers.pop(slug, None)) is not None:
+                t.cancel()
+            running = slug in self.sessions
+        if not running:
+            self._start(slug)
+            with self._lock:
+                if slug not in self.sessions and fn["name"] in self.pending.get(slug, {}):
+                    raise ValueError(self.last_error.get(slug) or "the auto-fixer didn't start")
+        return self.status(slug)
+
+    def holds(self, slug: str, function: str) -> str:
+        """'fixing' while the auto-fixer's session has the function, 'waiting' while it is on the next list."""
+        with self._lock:
+            if function in [it["function"] for it in self.batches.get(slug, [])]:
+                return "fixing"
+            return "waiting" if function in self.pending.get(slug, {}) else ""
+
     def run_now(self, slug: str) -> dict:
         """A person's "Run it now": flag what the notes ask for and start the session straight away."""
         if (why := self.why_not(slug)):
