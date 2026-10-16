@@ -605,6 +605,67 @@ def test_record_without_a_link_verdict_is_unverified_only_when_told_so(net, alic
     assert r["candidate_object_digest"] == "abc" and r["function_link_match"] == "unverified"
 
 
+# ----------------------------------------------------------------------------- refused matches are reported
+
+def _refuse_by_guard(net, monkeypatch):
+    from decompnet import validity
+
+    monkeypatch.setattr(net, "_validity", lambda fn, source: validity.Validity(
+        ok=False, warnings=("'p' is used uninitialized in this function",), detail="'p' is used uninitialized"))
+
+
+def _still_open_and_claimed(net, agent) -> bool:
+    fn = net.store.one("SELECT status FROM functions WHERE id=1")
+    claim = net.store.one("SELECT agent_id FROM claims WHERE function_id=1")
+    return fn["status"] == "open" and claim is not None and claim["agent_id"] == agent.id
+
+
+def test_a_byte_identical_match_the_validity_guard_refuses_is_not_reported_as_a_match(net, alice, monkeypatch):
+    scored_fixture(net, monkeypatch, b"\x03\xe0\x00\x08")
+    _refuse_by_guard(net, monkeypatch)
+    out = net.attempt(alice, "f1", "int f(void) { int *p; return *p; }")
+    assert out["matched"] is False and "MATCH!" not in out["text"]
+    assert "byte-identical" in out["text"] and "refused" in out["text"] and "uninitialised use" in out["text"]
+    assert "claim is kept" in out["text"] and _still_open_and_claimed(net, alice)
+
+
+def test_a_hash_only_match_the_validity_guard_refuses_is_not_reported_as_a_match(net, alice, monkeypatch):
+    stub_compile_eval(net, monkeypatch)
+    _refuse_by_guard(net, monkeypatch)
+    out = net.attempt(alice, "f1", "int f(void) { int *p; return *p; }")
+    assert out["matched"] is False and "MATCH!" not in out["text"]
+    assert "fingerprint" in out["text"] and "uninitialised use" in out["text"]
+    assert _still_open_and_claimed(net, alice)
+
+
+def test_a_match_that_goes_stale_inside_the_acceptance_transaction_is_not_reported_as_a_match(net, alice, monkeypatch):
+    scored_fixture(net, monkeypatch, b"\x03\xe0\x00\x08")
+    calls = {"n": 0}
+    real = snapshots.check_current
+
+    def check_current(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real(*args, **kwargs)  # _judge's check passes...
+        return False, "context changed"  # ...and the recheck inside _record's transaction fails
+
+    monkeypatch.setattr(snapshots, "check_current", check_current)
+    out = net.attempt(alice, "f1", "int f(void) { return 1; }")
+    assert calls["n"] == 2
+    assert out["matched"] is False and "MATCH!" not in out["text"] and "context changed" in out["text"]
+    assert _still_open_and_claimed(net, alice)
+
+
+def test_record_says_why_a_requested_match_was_not_accepted(net, alice):
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    why = net._record(fn, alice, 0, "int f(void) { return 1; }", 1, matched=True, compiled=True)
+    assert why and "no snapshot" in why  # a ROM-project match needs its snapshot
+    assert net._record(fn, alice, 5, "int f(void) { return 2; }", 1, snapshot=snapshot_of(net, fn)) is None
+    assert net._record(fn, alice, 0, "int f(void) { return 3; }", 1, matched=True, compiled=True,
+                       snapshot=snapshot_of(net, fn)) is None  # accepted
+    assert net.store.one("SELECT status FROM functions WHERE id=1")["status"] == "matched"
+
+
 # ----------------------------------------------------------------------------- P4.1 calibration
 
 def test_calibrate_profile_reports_and_never_changes_the_project_profile(net):

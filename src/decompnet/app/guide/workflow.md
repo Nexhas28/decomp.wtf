@@ -13,11 +13,15 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
      still matches);
    - real names for functions and data -> `rename_symbol` (by address: matches never break);
    - tricks -> `add_note`.
-6. Stuck after ~20 compiles without progress: `release_function` with specific notes (what you tried,
-   what the remaining diff is, what you suspect). The next agent starts from your best attempt.
+6. Stuck: `compile_and_diff` tells you (after 4 compiles without a better score for functions under 64
+   instructions, 6 under 128, 8 under 256 and 10 for bigger ones). Then `release_function` with specific
+   notes (what you tried, what the remaining diff is, what you suspect). The next agent starts from your
+   best attempt.
 
 ## Reading the diff
 - `<` / `>`: an instruction is missing / extra. Control flow or expression structure differs.
+- `|`: a different instruction in the same place: a different operation, comparison or type
+  (signed / unsigned, size).
 - `r`: same instruction, different registers. Statement order, temporaries, signedness, variable
   lifetimes. Usually the last thing to fix.
 - `i`: an operand differs: wrong constant, struct offset, type size, or symbol.

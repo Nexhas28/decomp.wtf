@@ -66,6 +66,7 @@ DEFAULT_MAX_AGE = 14 * 86400.0
 DEFAULT_TRANSIENT_RETRY = 2.0
 REQUESTS_MAX = 4096  # remembered request identities, for miss-reason classification
 STALE_PUT_AGE = 3600.0  # publish temp files older than this belong to no live writer
+PUBLISH_GRACE = 5.0  # seconds a just-created entry dir may lack its manifest (a publish in progress)
 
 # Environment variables that can change what a toolchain produces or how it resolves
 # inputs. Kept short on purpose: everything else is covered by explicit manifest
@@ -115,16 +116,36 @@ class _TreeFacts:
 
 def tree_facts(root: Path) -> _TreeFacts | None:
     """Describe a directory tree for key building. None when the tree cannot be fully
-    described (unreadable entries, sockets/fifos, ...) -- the caller then bypasses."""
+    described (unreadable entries, sockets/fifos, ...) -- the caller then bypasses.
+
+    A cheap stat pass runs first; file contents are hashed only when that signature differs
+    from the memoised one. Symlinked directories are recorded (with their target) and walked,
+    so headers reached through them are part of the identity; a link back into one of its own
+    ancestors is recorded but not followed."""
     root = Path(root).resolve()
     if not root.is_dir():
         return None
-    walked = []
+    walked = []  # (rel, kind, size, mtime_ns, link_target, path-to-hash or None)
     try:
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
             dirnames.sort()
             filenames.sort()
             rel = Path(dirpath).relative_to(root)
+            here = os.path.realpath(dirpath)
+            for name in list(dirnames):
+                p = Path(dirpath) / name
+                if not p.is_symlink():
+                    continue
+                r = name if str(rel) == "." else str(rel / name)
+                try:
+                    st = os.lstat(p)
+                    target = os.readlink(p)
+                except OSError:
+                    return None
+                walked.append((r, "d", st.st_size, st.st_mtime_ns, target, None))
+                real = os.path.realpath(p)
+                if here == real or here.startswith(real + os.sep):  # a cycle: don't follow it
+                    dirnames.remove(name)
             for name in filenames:
                 p = Path(dirpath) / name
                 r = name if str(rel) == "." else str(rel / name)
@@ -138,36 +159,37 @@ def tree_facts(root: Path) -> _TreeFacts | None:
                         fst = os.stat(p)  # follows the link
                     except OSError:
                         return None
-                    if stat_module.S_ISREG(fst.st_mode):
-                        try:
-                            content = sha(p.read_bytes())
-                        except OSError:
-                            return None
-                    else:
-                        content = ""  # symlink to a directory: its contents are walked
-                    walked.append((r, "l", st.st_size, st.st_mtime_ns, target, content))
+                    if not stat_module.S_ISREG(fst.st_mode):
+                        return None  # a link to something that is neither a file nor a directory
+                    walked.append((r, "l", fst.st_size, fst.st_mtime_ns, target, p))
                 elif stat_module.S_ISREG(st.st_mode):
-                    try:
-                        content = sha(p.read_bytes())
-                    except OSError:
-                        return None
-                    walked.append((r, "f", st.st_size, st.st_mtime_ns, "", content))
+                    walked.append((r, "f", st.st_size, st.st_mtime_ns, "", p))
                 else:
                     return None  # sockets/fifos/devices cannot be described or copied
     except OSError:
         return None
-    sig = tuple((r, k, s, m, t) for r, k, s, m, t, _ in sorted(walked))
+    walked.sort(key=lambda w: (w[0], w[1]))
+    sig = tuple(w[:5] for w in walked)
     with _TREE_MEMO_LOCK:
         hit = _TREE_MEMO.get(root)
         if hit and hit[0] == sig:
             return _TreeFacts(hit[1], hit[2])
-        facts = tuple(sorted(walked))
-        files = tuple((r, k, c) for r, k, *_rest, t, c in sorted(walked))
-        # walk entries are (rel, kind, size, mtime, target, content) -- drop nothing
+    entries = []
+    for r, k, size, mtime, target, p in walked:
+        content = ""
+        if p is not None:
+            try:
+                content = sha(p.read_bytes())
+            except OSError:
+                return None
+        entries.append((r, k, size, mtime, target, content))
+    facts = tuple(entries)
+    files = tuple((r, k, (f"->{t}" if k == "d" else c)) for r, k, _s, _m, t, c in entries)
+    with _TREE_MEMO_LOCK:
         _TREE_MEMO[root] = (sig, facts, files)
         while len(_TREE_MEMO) > _TREE_MEMO_MAX:
             _TREE_MEMO.pop(next(iter(_TREE_MEMO)))
-        return _TreeFacts(facts, files)
+    return _TreeFacts(facts, files)
 
 
 def tree_digest(root: Path) -> str | None:
@@ -178,11 +200,27 @@ def tree_digest(root: Path) -> str | None:
     return file_sha(Path(root))
 
 
+_FILE_MEMO: dict[str, tuple[tuple, str]] = {}  # path -> ((size, mtime_ns, ino), sha)
+_FILE_MEMO_MAX = 256
+
+
 def file_sha(path: Path) -> str | None:
+    """sha256 of a file, memoised by its stat signature (compiler binaries are hashed on every key)."""
     try:
-        return sha(Path(path).read_bytes())
+        st = os.stat(path)
+        sig = (st.st_size, st.st_mtime_ns, st.st_ino)
+        with _TREE_MEMO_LOCK:
+            hit = _FILE_MEMO.get(str(path))
+        if hit and hit[0] == sig:
+            return hit[1]
+        digest = sha(Path(path).read_bytes())
     except OSError:
         return None
+    with _TREE_MEMO_LOCK:
+        _FILE_MEMO[str(path)] = (sig, digest)
+        while len(_FILE_MEMO) > _FILE_MEMO_MAX:
+            _FILE_MEMO.pop(next(iter(_FILE_MEMO)))
+    return digest
 
 
 # -----------------------------------------------------------------------------------
@@ -230,10 +268,8 @@ def _mini_mode(cfg) -> str:
 def _bin_component(path: str | None) -> dict | None:
     if path is None:
         return None
-    try:
-        return {"path": path, "sha": sha(Path(path).read_bytes())}
-    except OSError:
-        return None
+    digest = file_sha(Path(path))
+    return None if digest is None else {"path": path, "sha": digest}
 
 
 def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
@@ -242,9 +278,9 @@ def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
     inputs (the caller then bypasses the cache, plan P2.4)."""
     if mode is None:
         mode = _mini_mode(cfg)
-    if mode in ("wsl", "docker"):
-        # wsl: a fresh random stage dir per attempt (path semantics not describable);
-        # docker: image contents cannot be described from here.
+    if mode in ("wsl", "docker", "linux"):
+        # wsl/linux: a fresh random stage dir per attempt on the Linux side (path semantics not
+        # describable); docker: image contents cannot be described from here.
         return None
 
     # -- exact source / unit bytes (never whitespace-folded) -----------------------
@@ -535,6 +571,18 @@ class CompileCache:
                 return None
             try:
                 meta = json.loads((d / "entry.json").read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                # A fresh dir without a manifest is another process between creating it and committing
+                # (a miss: quarantining would move away the payload it just published); an old one is a
+                # crashed writer's leftover, cleared like any unreadable entry.
+                try:
+                    young = time.time() - d.stat().st_mtime < PUBLISH_GRACE
+                except OSError:
+                    young = False
+                if not young:
+                    self._quarantine(key, "missing entry manifest")
+                self._miss(key, request)
+                return None
             except (OSError, ValueError):
                 self._quarantine(key, "unreadable entry manifest")
                 self._miss(key, request)
@@ -556,6 +604,15 @@ class CompileCache:
                     self._miss(key, request)
                     return None
                 if sha(payload) != meta.get("payload_sha256"):
+                    # a cross-process republish replaces the payload just before its manifest: read
+                    # both once more before calling the entry corrupt
+                    time.sleep(0.05)
+                    try:
+                        meta = json.loads((d / "entry.json").read_text(encoding="utf-8"))
+                        payload = (d / "payload").read_bytes()
+                    except (OSError, ValueError):
+                        payload = None
+                if payload is None or sha(payload) != meta.get("payload_sha256"):
                     self._quarantine(key, "payload hash mismatch")
                     self._miss(key, request)
                     return None
@@ -604,11 +661,19 @@ class CompileCache:
             size = len(payload) + len(log.encode("utf-8", "replace")) + 512
             with self._lock:
                 d = self._entry_dir(key)
+                created = not d.exists()
                 d.mkdir(parents=True, exist_ok=True)
-                os.replace(pname, d / "payload")   # payload first: the manifest is the commit point
-                temps.remove(pname)
-                os.replace(mname, d / "entry.json")
-                temps.remove(mname)
+                try:
+                    os.replace(pname, d / "payload")   # payload first: the manifest is the commit point
+                    temps.remove(pname)
+                    os.replace(mname, d / "entry.json")
+                    temps.remove(mname)
+                except BaseException:
+                    if created and not (d / "entry.json").exists():  # never leave a manifest-less entry
+                        with contextlib.suppress(OSError):
+                            (d / "payload").unlink(missing_ok=True)
+                            d.rmdir()
+                    raise
                 self._approx_bytes = (self._approx_bytes or 0) + size
                 self.stats["puts"] += 1
         finally:
@@ -734,8 +799,15 @@ class CompileCache:
                 if base.is_dir():
                     for d in base.iterdir():
                         try:
-                            if now - d.stat().st_mtime > (self.max_age or DEFAULT_MAX_AGE):
-                                shutil.rmtree(d, ignore_errors=True)
+                            if sub == "tmp" and d.name.startswith("put-") and d.is_file():
+                                # orphaned publish temps: no live writer keeps one this long
+                                if now - d.stat().st_mtime > STALE_PUT_AGE:
+                                    d.unlink()
+                            elif now - d.stat().st_mtime > (self.max_age or DEFAULT_MAX_AGE):
+                                if d.is_dir():
+                                    shutil.rmtree(d, ignore_errors=True)
+                                else:
+                                    d.unlink()
                         except OSError:
                             pass
             # stale deterministic staging dirs (kept at least a day: a compile in flight

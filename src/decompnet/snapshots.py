@@ -38,18 +38,27 @@ def context_digest(ctx) -> str:
                           sort_keys=True).encode())
 
 
+COMPILE_KEYS = ("cmd", "include_dirs", "ro_paths", "sandbox", "image")
+
+
 def compiler_digest(proj) -> str:
     """Compiler profile identity. Delegates to toolchains.profile_identity (PR-14): toolchain, ordered
     flags, wrapper, language, mode, ABI settings, scope, timeout AND the installed toolchain binary
     manifests, so a flag change, a wrapper change or a reinstalled toolchain between capture and
     acceptance is visible to the acceptance gate (V-05). Falls back to the plain config-dict hash if
     the profile module is unavailable."""
+    raw = proj["config"]
+    compiler = (json.loads(raw) if isinstance(raw, str) else (raw or {})).get("compiler", {})
+    # keys the profile doesn't model but compiler_config compiles with: a changed command, include
+    # directory, read-only mount or sandbox changes the output just as a flag does
+    extra = {k: compiler.get(k) for k in COMPILE_KEYS if k in compiler} if isinstance(compiler, dict) else {}
     try:
         from . import toolchains
 
-        return toolchains.profile_identity(proj)
+        identity = toolchains.profile_identity(proj)
     except Exception:  # profile identity unavailable: the conservative config-dict hash still catches flag changes
-        return sha(json.dumps(json.loads(proj["config"]).get("compiler", {}), sort_keys=True).encode())
+        return sha(json.dumps(compiler, sort_keys=True).encode())
+    return identity if not extra else sha(json.dumps([identity, extra], sort_keys=True).encode())
 
 
 def symbol_table_digest(store, project_id: int) -> str:

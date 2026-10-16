@@ -26,6 +26,7 @@ from pathlib import Path
 
 import httpx
 
+from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
 
@@ -545,6 +546,16 @@ class Session:
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
+# The compiler guide a ROM project's agents read first, by platform (on N64, by its compiler).
+ROM_COMPILER_GUIDES = {"psx": "psx", "ps2": "ps2", "gba": "agbcc", "gb": "gb", "gbc": "gb"}
+
+
+def compiler_guide(ov: dict) -> str:
+    """The guide() topic for a ROM project's compiler (`ov` is its overview)."""
+    return ROM_COMPILER_GUIDES.get(ov.get("platform")) or (
+        "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
+
+
 def run_log(task_class: str, model: str) -> str:
     """The per-run routing log line: what task class ran with what model, under which prompt
     policy (P11.5: log model/version and prompt-policy version per run)."""
@@ -807,7 +818,14 @@ class Manager:
         return routing.model_for(config, s.task_class or DEFAULT_TASK_CLASS, explicit)
 
     def _run(self, s: Session) -> None:
-        agent, token = self.net.local_agent(s.agent_name)
+        try:
+            agent, token = self.net.local_agent(s.agent_name)
+        except NetworkError as e:  # the fleet lockdown refuses a new identity: say so, don't sit at "starting"
+            s.state, s.error = "error", str(e)
+            s.push("error", f"stopping: {e}")
+            s.stop.set()  # not resumed after a restart: it would be refused again
+            self.persist(self.running())
+            return
         self.assignments[agent.id] = s.slug
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
@@ -915,8 +933,7 @@ class Manager:
             # CodeWarrior's register and stack rules decide most of what's left on GameCube, Wii and DS
             topics = ["fork", "objdiff", *(["mwcc"] if ov.get("platform") in ("gc", "wii", "nds") else [])]
         else:
-            topics = ["workflow", {"psx": "psx", "ps2": "ps2", "gba": "agbcc", "gb": "gb", "gbc": "gb"}.get(ov.get("platform")) or (
-                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")]
+            topics = ["workflow", compiler_guide(ov)]
         text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
             tools._guide(t) for t in topics)
         if (learned := self.net.learnings(s.slug)):
@@ -933,9 +950,8 @@ class Manager:
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
                                             count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
-        guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
-            "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION), compiler_guide=guide)
+        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
+                                        compiler_guide=compiler_guide(ov))
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
         """The agent's command line, environment and what goes in on stdin (the prompt)."""

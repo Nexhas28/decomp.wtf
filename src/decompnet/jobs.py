@@ -90,8 +90,10 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str,
         return {"accepted": False, "reason": "did not compile on the coordinator"}
     d = scoring.diff(net._target_obj(fn, proj), cand)
     before = fn["best_score"]
-    net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter", snapshot=snap)
-    if d.bytes_match:
+    refused = net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter",
+                          snapshot=snap)
+    matched = d.bytes_match and not refused
+    if matched:
         net.add_note(agent, proj["slug"], "matched by donated compute (permuter)", fn["name"])
     return {"accepted": True, "score": d.score, "improved": before is None or d.score < before,
-            "matched": d.bytes_match}
+            "matched": matched} | ({"refused": refused} if d.bytes_match and refused else {})

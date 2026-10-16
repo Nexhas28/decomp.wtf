@@ -389,8 +389,10 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
     from a normal compile is which assembler runs and what text it is handed."""
     from . import toolchains
 
-    with tempfile.TemporaryDirectory(prefix="decompnet-var-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="decompnet-var-", dir=_work_parent(cfg)) as tmp:
         work = Path(tmp)
+        if _linux(cfg) and not wsl.wanted():
+            work.chmod(0o777)  # the container's user isn't the Mac user
         inc = work / "include"
         inc.mkdir()
         for d in cfg.include_dirs:
@@ -417,7 +419,7 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
         compile_argv = [a.replace("{include}", subst["{include}"]) for a in compile_argv]
         if not saw_dash_s:
             compile_argv.insert(1, "-S")
-        if "{asm}" not in compile_argv:
+        if subst["{asm}"] not in compile_argv:  # placeholders are substituted already: look for the path
             compile_argv += ["-o", subst["{asm}"]]
         wsl_extra = {"outputs": ["func.s", "func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}
         try:

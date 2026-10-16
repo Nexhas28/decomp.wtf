@@ -107,3 +107,32 @@ def test_lockdown_never_leaks_into_another_instance(tmp_path, home):
     assert other.local_agent("tyranitar")[0].name == "tyranitar"
     # and the guarded instance is still guarded
     assert _lockdown_refuses("tyranitar", home / ".decomp" / "decomp.db") is not None
+
+
+def test_a_helper_the_lockdown_refuses_ends_in_error_and_is_not_resumed(net, home, tmp_path):
+    """The refusal used to kill the helper's thread silently: the session sat at "starting" forever and
+    was resumed (and refused again) after every restart."""
+    from decompnet.app.agents import Manager, Session
+
+    set_settings(home, lockdown=True)
+    manager = Manager(net, tmp_path / "agent-home", "http://127.0.0.1:1/mcp")
+    persisted = []
+    manager.persist = persisted.append
+    s = Session("claude-1", "claude", "Claude Code #1", "fixture", "claude-1", {})
+    manager.sessions[s.id] = s
+    manager._run(s)  # (the thread's body, run here)
+    assert s.state == "error" and "fleet lockdown" in s.error
+    assert any(f["type"] == "error" and "fleet lockdown" in f["text"] for f in s.feed)
+    assert manager.running() == [] and persisted and persisted[-1] == []
+
+
+def test_an_autopilot_the_lockdown_refuses_ends_with_the_reason(net, home):
+    import threading
+
+    set_settings(home, lockdown=True)
+    state = {"state": "running", "total": 0, "tried": 0, "matched": 0, "near": 0, "twins": 0, "phase": "twins",
+             "no_drafts": "", "started_at": 0, "stop": threading.Event()}
+    net.autopilots["fixture"] = state
+    net._autopilot_run("fixture", [], state, 1)
+    assert state["state"] == "error" and "fleet lockdown" in state["error"] and state.get("finished_at")
+    assert "fleet lockdown" in net.autopilot_status("fixture")["error"]

@@ -21,14 +21,33 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 from .. import __version__
 from .cli import _alive, home_dir, replace_older
 
 
+# This bridge process's own id, the same for every identity it asks for: after the app restarts it gets its
+# ORIGINAL identity back, and another bridge with the same agent name never counts as this one.
+CLIENT_ID = os.environ.get("DECOMP_BRIDGE_ID", "").strip() or f"bridge-{uuid.uuid4().hex}"
+
+
 def _log(msg: str) -> None:
     print(f"decomp mcp: {msg}", file=sys.stderr, flush=True)
+
+
+def _rejected(text: str) -> bool:
+    """The app no longer knows this bridge's token: another session took over the identity while this one sat
+    idle, or the app forgot it. Connecting again with a new identity fixes it."""
+    return "invalid api token" in (text or "").lower()
+
+
+def _error_text(result) -> str:
+    """The text of a tool result the app returned as an error ("" for anything else)."""
+    if not getattr(result, "is_error", False):
+        return ""
+    return "\n".join(getattr(c, "text", "") or "" for c in (getattr(result, "content", None) or []))
 
 
 def _running(state: Path) -> dict | None:
@@ -62,8 +81,7 @@ def ensure_app(home: Path) -> dict:
 def mint(info: dict, name: str) -> str:
     port = info["port"]
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/agents/token", method="POST",
-                                 data=json.dumps({"name": name,
-                                                  "client": os.environ.get("DECOMP_BRIDGE_ID", "")}).encode(),
+                                 data=json.dumps({"name": name, "client": CLIENT_ID}).encode(),
                                  headers={"Cookie": f"decomp_live={info['secret']}", "X-Decomp": "1",
                                           "Host": f"127.0.0.1:{port}", "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -113,11 +131,15 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
                 failures += 1
                 _log(f"connection to decomp.wtf lost ({e}); retrying")
                 await anyio.sleep(min(10, failures))
-            _log("decomp.wtf restarted: connecting again")
+            remint = conn.get("remint", False)
+            _log("this identity was taken over by another session: getting a new one" if remint
+                 else "decomp.wtf restarted: connecting again")
             try:
                 fresh = await asyncio.to_thread(ensure_app, home_dir())
-                if not helper and (fresh["port"], fresh["secret"]) != (conn["info"]["port"], conn["info"]["secret"]):
+                if not helper and (remint or (fresh["port"], fresh["secret"]) != (conn["info"]["port"],
+                                                                                  conn["info"]["secret"])):
                     conn["token"] = await asyncio.to_thread(mint, fresh, name)  # a new app: a new identity
+                    conn.pop("remint", None)
                 conn["info"] = fresh
             except (OSError, ValueError, KeyError, SystemExit) as e:
                 _log(f"decomp.wtf isn't answering yet ({e})")
@@ -126,7 +148,7 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
     def lost(e: Exception) -> bool:
         text = str(e).lower()
         return ("session terminated" in text or "connect" in text or "closed" in text
-                or not _alive(conn["info"]["port"]))
+                or (not helper and _rejected(text)) or not _alive(conn["info"]["port"]))
 
     async def remote_call(fn):
         for attempt in range(2):
@@ -134,15 +156,22 @@ async def proxy(info: dict, token: str, name: str, helper: bool = False) -> None
                 await changed.wait_for(lambda: conn["remote"] is not None)
                 remote, gen = conn["remote"], conn["gen"]
             try:
-                return await fn(remote)
+                result = await fn(remote)
             except Exception as e:
                 if attempt or not lost(e):
                     raise
-                async with changed:
-                    if conn["gen"] == gen:  # the first call to notice: ask for a new session
-                        conn["remote"] = None
-                        want_new.set()
-                    await changed.wait_for(lambda: conn["gen"] > gen)
+                rejected = _rejected(str(e))
+            else:
+                # the app answers a token it no longer knows with an error result, not an exception
+                if attempt or helper or not _rejected(_error_text(result)):
+                    return result
+                rejected = True
+            async with changed:
+                if conn["gen"] == gen:  # the first call to notice: ask for a new session
+                    conn["remote"] = None
+                    conn["remint"] = conn.get("remint", False) or (rejected and not helper)
+                    want_new.set()
+                await changed.wait_for(lambda: conn["gen"] > gen)
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(keep_connected)

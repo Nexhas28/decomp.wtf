@@ -228,7 +228,8 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             out = [line(ov).lstrip("- ")]
             ap = ov.get("autopilot")
             if ap:
-                out.append(f"autopilot: {ap['state']}, {ap['tried']}/{ap['total']} drafts tried, {ap['matched']} matched")
+                out.append(f"autopilot: {ap['state']}, {ap['tried']}/{ap['total']} drafts tried, {ap['matched']} matched"
+                           + (f" ({ap['error']})" if ap.get("error") else ""))
             working = [f"{c['agent']} on {c['name']}" for c in live["claims"] if c["agent"] != "autopilot"]
             out.append("working now: " + (", ".join(working) if working else "nobody"))
             helpers = [f"{s.id} ({s.state})" for s in manager.sessions.values() if s.slug == slug]

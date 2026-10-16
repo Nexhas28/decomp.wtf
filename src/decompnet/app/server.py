@@ -461,10 +461,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"resources": scheduler.BUDGET.pressure(), "analysis": analysis}
 
     def state() -> dict:
-        projects = []
-        for slug, ov, why in overviews():
-            projects.append(ov | ({"broken": why} if why else {})
-                            | ({"verification": verification_scope(slug)} if not why else {}))
+        # the verification scope is the project page's (p_overview): the list polled here doesn't render it,
+        # and its aggregates per project per poll are too dear (and one bad project must not break the list)
+        projects = [ov | ({"broken": why} if why else {}) for _, ov, why in overviews()]
         tcs = [t for t in toolchains.status() if t["id"] in COMPILERS or t["id"] in TOOLS]
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
@@ -687,7 +686,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def p_overview(slug, request, data):
         settings.data["last_project"] = slug
         settings.save()
-        return net.overview(slug) | {"verification": verification_scope(slug)}
+        ov = net.overview(slug)
+        try:
+            return ov | {"verification": verification_scope(slug)}
+        except Exception:  # noqa: BLE001: the scope is diagnostics; the overview itself must still load
+            logging.getLogger("decomp.wtf").exception("verification scope for %s", slug)
+            return ov
 
     def p_live(slug, request, data):
         q = request.query_params

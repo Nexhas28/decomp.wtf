@@ -77,6 +77,20 @@ def test_c01_batch_compiles_once_and_verdicts_are_independent(net, alice, stubs)
                          "(SELECT id FROM functions WHERE project_id=1)")["n"] == 0  # every claim released
 
 
+def test_c01a_a_batch_counts_only_the_matches_it_accepted(net, alice, stubs):
+    """A function the validity guard refuses is reported as refused, not counted as matched."""
+    from decompnet import validity
+
+    net._validity = lambda fn, source: validity.Validity(
+        ok=(fn["name"] != "func_002"), warnings=() if fn["name"] != "func_002" else ("'p' is used uninitialized",))
+    out = net.attempt_many(alice, ["func_001", "func_002"],
+                           "int func_001(void) { return 1; }\nint func_002(void) { int *p; return *p; }")
+    assert "1 of 2 matched" in out
+    refused = out.split("### func_002", 1)[1]
+    assert "NOT ACCEPTED" in refused and "MATCH!" not in refused and "uninitialised use" in refused
+    assert net.store.one("SELECT status FROM functions WHERE name='func_002'")["status"] == "open"
+
+
 def test_c01b_shared_compile_error_reported_per_function(net, alice, stubs):
     net._compile = lambda proj, header, source, fn=None: stubs["Broken"]()
     out = net.attempt_many(alice, [f"func_00{i}" for i in range(1, 7)], "int x;")

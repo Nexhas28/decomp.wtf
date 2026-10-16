@@ -27,7 +27,7 @@ from pathlib import Path
 from .. import compiler_profiles as profiles
 from .. import retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
-from ..network import Agent, Network, NetworkError, _fragment_like, _hash_token, config_from
+from ..network import Agent, Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -80,7 +80,14 @@ PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["g
                       "ps2": ["ee-gcc-2.96", "mwcc-ps2"], "gba": ["agbcc"],
                       "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"]}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
-_ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{2,8})$")  # 2-4 digits on Game Boy, 8 elsewhere
+# 0x-prefixed: any width (2-4 digits on Game Boy); bare: the full 8 digits only, so names that happen to be
+# hex words ("add", "dead", "cafe") still resolve as names
+_ADDRESS = re.compile(r"^(?:0x([0-9A-Fa-f]{1,8})|([0-9A-Fa-f]{8}))$", re.I)
+
+
+def _address(text: str) -> int | None:
+    m = _ADDRESS.match(text.strip()) if text else None
+    return int(m.group(1) or m.group(2), 16) if m else None
 
 GP_NOTE = """
 /* This game keeps small globals (8 bytes or less) in $gp-relative small data. Declare those here WITHOUT
@@ -297,12 +304,15 @@ class RomNetwork(Network):
     def _function(self, name: str, project: str | None):
         """Functions can also be named by address (0x80001234), handy for agents reading assembly, and the way
         agents write names they read elsewhere (see _loose_functions)."""
-        m = _ADDRESS.match(name.strip()) if name else None
-        if m:
+        addr = _address(name)
+        if addr is not None:
             proj = self._project(project)
-            row = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], int(m.group(1), 16))
-            if row is not None:
-                return row
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], addr)
+            if len(rows) == 1:
+                return rows[0]
+            if rows:  # Game Boy banks share CPU addresses: the address alone doesn't say which one
+                raise NetworkError(f"0x{addr:X} is in more than one bank: name the function instead "
+                                   f"({', '.join(r['name'] for r in rows[:8])})")
         try:
             return super()._function(name, project)
         except NetworkError as e:
@@ -643,7 +653,7 @@ class RomNetwork(Network):
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"],
                               f"{info['cartridge']} · {info['cgb']['mode']} · {len(fns)} functions · "
-                              f"reading lane only (no C toolchain yet)",
+                              + ("matched with SDCC/GBDK-2020" if matchable else "reading lane only (no C toolchain yet)"),
                               "sm83", 0, str(workdir), json.dumps(cfg))).lastrowid
             names: set[str] = set()
             for f in fns:
@@ -785,7 +795,8 @@ class RomNetwork(Network):
         for naddr in neighbours:
             if len(picked) >= max_members:
                 break
-            row = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], naddr)
+            same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], naddr)
+            row = same[0] if len(same) == 1 else None  # several banks at one address: not a known neighbour
             if row is None or row["id"] == fn["id"] or row["status"] != "open":
                 continue
             if sum(m["n_insns"] or 0 for m in picked) + (row["n_insns"] or 0) > max_insns:
@@ -1138,8 +1149,9 @@ class RomNetwork(Network):
         self._rom_only(project, "read_data")
         proj = self._project(project)
         syms = self.symbols(proj["id"])
-        m = _ADDRESS.match(what.strip())
-        addr = int(m.group(1), 16) if m else syms.resolve(what.strip())
+        addr = _address(what)
+        if addr is None:
+            addr = syms.resolve(what.strip())
         if addr is None:
             raise NetworkError(f"`{what}` is not an address or a known symbol")
         length = max(4, min(int(length), 512))
@@ -1191,7 +1203,7 @@ class RomNetwork(Network):
             raise NetworkError("split_function is for ROM projects")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is matched; it can't be split")
-        m = _ADDRESS.match(str(at).strip())
+        m = re.match(r"^(?:0x)?([0-9A-Fa-f]{2,8})$", str(at).strip())  # `at` is always an address
         if not m:
             raise NetworkError("`at` must be an address like 0x80001234")
         addr = int(m.group(1), 16)
@@ -1247,11 +1259,7 @@ class RomNetwork(Network):
         proj = self.store.one("SELECT * FROM projects WHERE id=?", frag["project_id"])
         if not self.is_rom(proj):
             raise NetworkError("merge_function is for ROM projects")
-        a = (frag["vram"], frag["rom_offset"], frag["size"])
-        b = (cont["vram"], cont["rom_offset"], cont["size"])
-        adjacent = (a[0] is not None and b[0] is not None and a[0] == b[0] + (b[2] or 0)) or \
-                   (a[1] is not None and b[1] is not None and a[1] == b[1] + (b[2] or 0))
-        if not adjacent:
+        if not _adjacent(frag, cont, self.cfg(proj).get("arch") or ""):
             raise NetworkError(f"{frag['name']} and {cont['name']} are not adjacent: no boundary to merge")
         if not _fragment_like(frag, (self.cfg(proj).get("arch") or "")):
             raise NetworkError(f"{frag['name']} doesn't look like a fragment (no live-in saved register at entry)")
@@ -1530,7 +1538,14 @@ class RomNetwork(Network):
                 s = trial.by_name[new]
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (proj["id"], new, s.address, s.size, s.kind))
-            db.execute("UPDATE functions SET name=? WHERE project_id=? AND (name=? OR vram=?)", (new, proj["id"], old, addr))
+            # The function `old` names; by address only when that is unambiguous (Game Boy banks share CPU
+            # addresses: another bank's function at the same address must keep its name)
+            row = db.execute("SELECT id FROM functions WHERE project_id=? AND name=?", (proj["id"], old)).fetchone()
+            if row is None:
+                at = db.execute("SELECT id FROM functions WHERE project_id=? AND vram=?", (proj["id"], addr)).fetchall()
+                row = at[0] if len(at) == 1 else None
+            if row is not None:
+                db.execute("UPDATE functions SET name=? WHERE id=?", (new, row["id"]))
             for u, header in changed.items():
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
@@ -1869,8 +1884,11 @@ class RomNetwork(Network):
         evaluated against the local target; only a real local match goes through the normal acceptance
         path (_record: receipt, matched_epoch). A forged or stale report is recorded as historical."""
         proj = self._project(slug)
-        fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
-        if fn is None or fn["status"] == "matched":
+        same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
+        if len(same) != 1:  # none, or several Game Boy banks at that address: never guess which one matched
+            return
+        fn = same[0]
+        if fn["status"] == "matched":
             return
         ctx = self._context(proj["id"], fn["unit"])
         if ctx is None:
@@ -2254,7 +2272,12 @@ class RomNetwork(Network):
     def _autopilot_run(self, slug: str, ids: list[int], state: dict, workers: int, try_one=None) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
-        agent, _ = self.local_agent("autopilot")
+        try:
+            agent, _ = self.local_agent("autopilot")
+        except NetworkError as e:  # the fleet lockdown refuses the identity: end the run with the reason
+            state.update(state="error", error=str(e), finished_at=time.time())
+            logging.getLogger("decomp.wtf").warning("autopilot on %s: %s", slug, e)
+            return
         proj = self._project(slug)
         try_one = try_one or self._autopilot_one
         try:  # identical code first: free, and it takes those functions off the drafts' list
@@ -2348,9 +2371,9 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap, via=via,
-                         object_digest=cand.fingerprint() if d.bytes_match else None)
-            return {"matched": d.bytes_match, "score": d.score}
+            refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
+                                   via=via, object_digest=cand.fingerprint() if d.bytes_match else None)
+            return {"matched": d.bytes_match and not refused, "score": d.score}
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
@@ -2449,9 +2472,9 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
-                         object_digest=cand.fingerprint() if d.bytes_match else None)
-            return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+            refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
+                                   object_digest=cand.fingerprint() if d.bytes_match else None)
+            return "match" if d.bytes_match and not refused else "near" if d.percent >= 90 else "far"
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
@@ -2593,33 +2616,43 @@ class RomNetwork(Network):
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
-        cfg = self.cfg(proj)
-        proj = self._project(slug)
         cfg = json.loads(proj["config"])
         before = toolchains.profile_of(proj)
+        before_digest = snapshots.compiler_digest(proj)
         label: list[str] = []
         if toolchain is not None:
             tc = toolchains.get(toolchain)
-            cfg["compiler"] = toolchains.profile_from(
-                {**cfg.get("compiler", {}), "toolchain": tc.id, "flags": list(flags or tc.flags),
-                 "provenance": toolchains.PROVENANCE_EXPLICIT}).to_dict()
+            # a custom command template belongs to the old compiler; every other key (include_dirs,
+            # ro_paths, sandbox, ...) still describes the project and is kept
+            kept = {k: v for k, v in cfg.get("compiler", {}).items() if k != "cmd"}
+            cfg["compiler"] = {**kept, **toolchains.profile_from(
+                {**kept, "toolchain": tc.id, "flags": list(flags or tc.flags),
+                 "provenance": toolchains.PROVENANCE_EXPLICIT}).to_dict()}
             label.append(f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
         for key, value in (("compiler_profiles", compiler_profiles), ("compiler_ranges", compiler_ranges),
                            ("compiler_functions", compiler_functions)):
             if value is not profiles.UNSET:
                 cfg[key] = value
                 label.append(key.replace("_", " "))
-        profile = toolchains.profile_from(cfg.get("compiler", {}))
+        compiler = dict(cfg.get("compiler", {}))
+        profile = toolchains.profile_from(compiler)
         change = toolchains.profile_diff(before, profile, note="set_compiler")
-        cfg["compiler"] = profile.to_dict()
+        # normalise the profile fields in place; keys the profile doesn't model (cmd, include_dirs, ro_paths,
+        # sandbox, image, note) are kept, and a command-only config doesn't grow an empty toolchain
+        cfg["compiler"] = {**compiler, **profile.to_dict()}
+        if "toolchain" not in compiler and not profile.toolchain:
+            cfg["compiler"].pop("toolchain", None)
         try:
             profiles.validate(cfg, {r["name"] for r in self.store.all(
                 "SELECT name FROM functions WHERE project_id=?", proj["id"])})
         except (ValueError, toolchains.ToolchainError) as e:
             raise NetworkError(str(e))
+        # the compiler digest also covers keys the profile doesn't model (cmd, include_dirs, ...)
+        identity_changed = change.is_identity_change or \
+            snapshots.compiler_digest({"config": json.dumps(cfg)}) != before_digest
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            if change.is_identity_change:
+            if identity_changed:
                 # drafts: old seeds are m2c output for the old profile
                 db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
                 # search budgets: a different compiler is new search input (bounded; reason recorded)
@@ -2632,15 +2665,15 @@ class RomNetwork(Network):
             detail = (f"{'; '.join(label) or 'compiler'} (provenance {change.provenance[0]} -> "
                       f"{change.provenance[1]}; identity {change.before_identity[:12]} -> "
                       f"{change.after_identity[:12]}")
-            if change.is_identity_change:
-                detail += f"; invalidated: {', '.join(change.invalidates)}"
+            if identity_changed:
+                detail += f"; invalidated: {', '.join(change.invalidates or toolchains.INVALIDATED)}"
             detail += ")"
             self._event(db, proj["id"], None, "compiler", detail)
 
     def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
         or base_2, base_3... when another session of the same agent is active right now (never base-2: that's the
-        name of a helper session, see local_agent). `client` is the bridge's stable id (its unix socket identity):
+        name of a helper session, see local_agent). `client` is the bridge process's own stable id (bridge.CLIENT_ID):
         a bridge daemon that restarts with the same client id gets its ORIGINAL row back instead of a suffixed one
         (the identity split-brain perf-test found), while two genuinely concurrent clients still get separate
         identities."""
