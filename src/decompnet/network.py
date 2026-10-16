@@ -447,19 +447,24 @@ class Network:
     #: assembler swap measurably regresses already-matched functions (the pinned GNU as 2.6 keeps a
     #: blocking load-delay nop some ROM functions really have, while modern binutils drops it), so it is
     #: tried per attempt and kept only when it scores strictly better.
-    _VARIANT_MAX_SCORE = 200
+    _VARIANT_MAX_SCORE = 300
     #: A diff with this many extra instructions (ours and not the target's) is the assembler's blocking
     #: load-delay nops: worth the variant compile even when the score is far off (it turned a 5320 into
-    #: a reproducible 410 on slus-01363 func_800A51DC, and 110 into 10 on func_800B6344).
-    _VARIANT_MAX_EXTRA = 5
+    #: a reproducible 410 on slus-01363 func_800A51DC, and 110 into 10 on func_800B6344). Measured on
+    #: func_800AEA14 the variant is the difference between 230 and the reproducible 130, so the near-miss
+    #: limit is 300 and two extra rows are enough to try it - only non-matching attempts pay the second
+    #: compile, and only when there is a structural signature to explain.
+    _VARIANT_FAR_EXTRAS = 5
 
     def _worth_variant(self, verdict, d) -> bool:
+        """A near miss is always worth one variant compile; far off, only a strong structural signature
+        (>= _VARIANT_FAR_EXTRAS extra instructions) justifies it, so walls are not charged twice."""
         if verdict is True or d is None or d.score <= 0:
             return False
         if d.score <= self._VARIANT_MAX_SCORE:
             return True
         extras = sum(1 for marker, _t, _m in d.rows if marker.strip() == ">")
-        return extras >= self._VARIANT_MAX_EXTRA
+        return extras >= self._VARIANT_FAR_EXTRAS
 
     def _variant_configs(self, proj):
         """The assembler/assembly variants to try for one attempt, in order (never project-wide).
