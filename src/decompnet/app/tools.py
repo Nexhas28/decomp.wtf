@@ -383,10 +383,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         template instances), matched ones first, with the matching source of the best one. Start there."""
         return await run(ctx, "find_similar", function=function, limit=limit)
 
-    @mcp.tool(meta=ALWAYS_LOAD)
+    # (the topic list comes from GUIDES, so it never falls behind the guides that exist)
+    @mcp.tool(meta=ALWAYS_LOAD, description=f"Decompilation know-how. Call without a topic for the list "
+                                            f"({', '.join(GUIDES)}).")
     async def guide(ctx: Context, topic: str = "") -> str:
-        """Decompilation know-how. Call without a topic for the list (workflow, mips, gcc-kmc, ido, m2c,
-        data, structs, n64, naming)."""
         return await run(ctx, "guide", topic=topic)
 
     @mcp.tool(meta=ALWAYS_LOAD)
