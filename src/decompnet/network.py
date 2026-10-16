@@ -436,7 +436,7 @@ class Network:
         d = scoring.diff(self._target_obj(fn, proj), cand)
         if verdict is not None:
             d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-        if verdict is not True and 0 < d.score <= self._VARIANT_MAX_SCORE:
+        if self._worth_variant(verdict, d):
             # near miss: try the attempt-scoped assembler variant and keep it only when it is better
             alt = self._variant_attempt(fn, proj, source, ctx, d)
             if alt is not None:
@@ -448,14 +448,26 @@ class Network:
     #: blocking load-delay nop some ROM functions really have, while modern binutils drops it), so it is
     #: tried per attempt and kept only when it scores strictly better.
     _VARIANT_MAX_SCORE = 200
+    #: A diff with this many extra instructions (ours and not the target's) is the assembler's blocking
+    #: load-delay nops: worth the variant compile even when the score is far off (it turned a 5320 into
+    #: a reproducible 410 on slus-01363 func_800A51DC, and 110 into 10 on func_800B6344).
+    _VARIANT_MAX_EXTRA = 5
+
+    def _worth_variant(self, verdict, d) -> bool:
+        if verdict is True or d is None or d.score <= 0:
+            return False
+        if d.score <= self._VARIANT_MAX_SCORE:
+            return True
+        extras = sum(1 for marker, _t, _m in d.rows if marker.strip() == ">")
+        return extras >= self._VARIANT_MAX_EXTRA
 
     def _variant_configs(self, proj):
         """The assembler/assembly variants to try for one attempt, in order (never project-wide).
 
-        Both exist because the pinned pipeline is missing two stages the original PSY-Q build had:
-        the PSY-Q `move` expansion with modern binutils, and the maspsx assembly preprocessing that
-        encodes gcc's jump tables. Measured: swapping either in project-wide regresses already-matched
-        functions, so they are attempt-scoped and kept only when strictly better."""
+        Both exist because the pinned pipeline is missing two stages the original PSY-Q build had: the
+        PSY-Q `move` expansion with modern binutils, and the maspsx assembly preprocessing that encodes
+        gcc's jump tables. Measured: swapping either in project-wide regresses already-matched functions,
+        so they are attempt-scoped and kept only when strictly better."""
         try:
             cfg = json.loads(proj["config"])
             root = Path(proj["root"])
@@ -499,6 +511,435 @@ class Network:
         if base_diff is not None and best[4].score >= base_diff.score:
             return None
         return best
+    def _stale_text(self, proj, fn, snap: dict, why: str) -> str:
+        cur = self._context(proj["id"], fn["unit"])
+        versions = f" (v{snap['context_version']} -> v{cur['version']})" if why == "context changed" and cur else ""
+        return (f"⚠ the {why} during your compile{versions}: recorded as historical, not counted; re-read and retry")
+
+    def _asm_text(self, fn, proj) -> str:
+        return fn["asm"]
+
+    def _extra_brief(self, fn, proj) -> list[str]:
+        return []
+
+    # ---------------------------------------------------------------- projects
+
+    def list_projects(self) -> str:
+        rows = self.store.all(
+            """SELECT p.slug, p.name, p.arch, p.description, p.config, COUNT(f.id) AS total,
+                      SUM(f.status='matched') AS matched, SUM(f.size) AS bytes,
+                      SUM(CASE WHEN f.status='matched' THEN f.size ELSE 0 END) AS matched_bytes
+               FROM projects p LEFT JOIN functions f ON f.project_id=p.id GROUP BY p.id ORDER BY p.slug"""
+        )
+        if not rows:
+            return "No projects yet."
+        out = []
+        for r in rows:
+            pct = 100 * (r["matched_bytes"] or 0) / (r["bytes"] or 1)
+            legal = json.loads(r["config"]).get("legal", {})
+            out.append(f"- {r['slug']}: {r['name']} [{r['arch']}] — {r['matched'] or 0}/{r['total']} functions "
+                       f"matched ({pct:.1f}% of code); legal basis: {legal.get('basis')}, contributions licensed "
+                       f"{legal.get('license')}\n  {r['description']}".rstrip())
+        return "\n".join(out)
+
+    def get_context(self, project: str | None, function: str | None = None) -> str:
+        if function:
+            fn = self._function(function, project)
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+            ctx = self._context(proj["id"], fn["unit"])
+        else:
+            proj = self._project(project)
+            if self._unit_contexts(proj["id"]):
+                raise NetworkError(f"{proj['slug']} has one header per source file: pass `function` to get the "
+                                   f"header that function compiles against")
+            ctx = self._context(proj["id"])
+        return (f"// context.h for {proj['slug']} — version {ctx['version']} "
+                f"(prepended to every compile as #include \"context.h\")\n{ctx['header']}")
+
+    # ------------------------------------------------------------------ claims
+
+    def claim(self, agent: Agent, project: str | None = None, function: str | None = None,
+              strategy: str = "easiest") -> str:
+        fn = self.claim_row(agent, project, function, strategy)
+        if fn is None:
+            proj = self._project(project)
+            return f"Nothing left to claim in {proj['slug']} — every open function is matched or claimed. 🎉"
+        return self._brief(fn, agent, header="CLAIMED")
+
+    def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
+                  strategy: str = "easiest"):
+        """Claim (or renew) a function and return its row, or None when nothing is left.
+
+        A-02 invariant: this is the hottest path in the coordinator and it NEVER consults the analysis
+        broker — ordering is plain SQL over functions/search_budgets/events, and 'closest' results
+        always come from those tables. The brief for a walled function already shows its
+        function_walls rows (see _brief), so nothing here needs analysis either."""
+        if strategy not in STRATEGIES:
+            raise NetworkError(f"strategy must be one of {', '.join(STRATEGIES)}")
+        proj = self._project(project) if (project or function is None) else None
+        cap = STRATEGY_INSNS_CAP.get(strategy, -1)
+        now = time.time()
+        with self.store.tx() as db:
+            self._expire_claims(db)
+            held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
+                              (agent.id,)).fetchone()
+            if held is not None:
+                if function and held["id"] != self._function(function, proj["slug"] if proj else None)["id"]:
+                    raise NetworkError(f"you already hold {held['name']}; match it or release_function it first")
+                fn = held
+                db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+            elif function:
+                fn = self._function(function, proj["slug"] if proj else None)
+                if fn["status"] == "matched":
+                    raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
+                if fn["status"] == "asm":
+                    raise NetworkError(f"{fn['name']} is hand-written assembly: no C compiles to it, so it's left out")
+                other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                if other is not None:
+                    raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])} "
+                                       f"for another {int(other['expires_at'] - now) // 60} min")
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+            else:
+                if strategy == "priority":  # P11.2: the explainable adaptive policy picks from a bounded window
+                    rows = db.execute(
+                        """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                           AND f.id NOT IN (SELECT function_id FROM claims)
+                           AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
+                           AND (? = -1 OR f.n_insns <= ?)
+                           AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                           ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                               AND created_at > ?), f.id LIMIT 200""",
+                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                    ).fetchall()
+                    if not rows:
+                        return None
+                    fn = scheduler.choose(self, proj, list(rows), 1)[0]
+                else:
+                    fn = db.execute(
+                        f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                            AND f.id NOT IN (SELECT function_id FROM claims)
+                            AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
+                            AND (? = -1 OR f.n_insns <= ?)
+                            AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                            ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                                AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
+                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                    ).fetchone()
+                    if fn is None:
+                        return None
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+        return fn
+
+    def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
+        fn = self._function(function, project)
+        with self.store.tx() as db:
+            row = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+            if row is None or row["agent_id"] != agent.id:
+                raise NetworkError(f"you don't hold a claim on {fn['name']}")
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("UPDATE functions SET abandons=abandons+1 WHERE id=?", (fn["id"],))
+            note = notes.strip()
+            if note:
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (fn["project_id"], fn["id"], agent.id, note, time.time()))
+                sig = wall_signature(note)
+                if sig:  # PR-31: a wall release is recorded and scheduled out until something material changes
+                    db.execute("INSERT OR REPLACE INTO function_walls(function_id, signature, reason, at) "
+                               "VALUES(?,?,?,?)", (fn["id"], sig, note[:400], time.time()))
+                    db.execute(
+                        "INSERT INTO search_budgets(function_id, epoch, policy_version, turns_used, max_turns, "
+                        "cooldown_until, reset_reason, last_at) VALUES(?,'wall',1,4,4,?,'wall:'||?,?) "
+                        "ON CONFLICT(function_id) DO UPDATE SET cooldown_until=excluded.cooldown_until, "
+                        "reset_reason='wall:'||excluded.reset_reason, epoch='wall', turns_used=4, last_at=excluded.last_at",
+                        (fn["id"], time.time() + WALL_COOLDOWN, sig, time.time()))
+            self._event(db, fn["project_id"], agent.id, "release", fn["name"])
+        out = (f"Released {fn['name']}. Your best attempt and notes are saved so the next agent starts "
+               f"where you left off. Call claim_function for a new one.")
+        if wall_signature(note or ""):
+            out += ("\nWall recorded (%s): strategy claims skip %s for %dh or until its context/compiler "
+                    "changes." % (wall_signature(note), fn["name"], WALL_COOLDOWN // 3600))
+        return out
+
+    def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
+        return self._brief(self._function(function, project), agent, header="VIEW")
+
+    def _brief(self, fn, agent: Agent | None, header: str) -> str:
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._context(proj["id"], fn["unit"])
+        claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
+        lines = [f"## {header}: {proj['slug']}/{fn['name']}",
+                 f"size {fn['size']} bytes, {fn['n_insns']} instructions, arch {proj['arch']}, "
+                 f"context.h v{ctx['version']} ({len(ctx['header'].splitlines())} lines)"]
+        if claim:
+            who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
+            lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
+                         f"(each compile_and_diff renews it)")
+        if fn["status"] == "matched":
+            lines += [f"MATCHED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
+                      "```c", fn["matched_source"].strip(), "```"]
+        if self._hash_only(fn):
+            lines += ["", "### Target assembly", "This is a hash-only project: the coordinator keeps a one-way fingerprint of "
+                      "each function, never its code. Disassemble your own lawful copy with "
+                      f"`decompnet local asm <your-object.o> {fn['name']}` and diff locally with `decompnet local diff`."]
+        else:
+            lines += ["", "### Target assembly", "```asm", scoring.compact_asm(self._asm_text(fn, proj)), "```"]
+        lines += self._extra_brief(fn, proj)
+        if fn["status"] != "matched":
+            if fn["best_source"]:
+                lines += ["", f"### Best attempt so far: score {fn['best_score']} by "
+                              f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
+                              f"start from this"
+                          + ("\n⚠ LEGACY BEST (unverified): this score predates snapshot verification "
+                             "and may not reproduce under the current compiler/context — revalidate "
+                             "before trusting it" if "best_verified" in fn.keys() and not fn["best_verified"]
+                             else ""), "```c", fn["best_source"].strip(), "```"]
+            elif fn["seed"]:
+                lines += ["", "### Machine-generated starting point (m2c: expect wrong types and names; "
+                              "the context header helps)", "```c",
+                          fn["seed"].strip(), "```"]
+        walls = self.store.all(
+            "SELECT signature, reason, at FROM function_walls WHERE function_id=? ORDER BY at DESC LIMIT 3",
+            fn["id"])
+        if walls:
+            lines += ["", "### Known walls (don't re-sweep these without new information)"]
+            lines += [f"- {w['signature']} ({_ago(w['at'])}): {w['reason']}" for w in walls]
+        merges = self.store.all(
+            "SELECT m.id, m.at, c.name AS cont FROM merge_proposals m JOIN functions c ON c.id=m.continues_id "
+            "WHERE m.function_id=? ORDER BY m.id DESC LIMIT 2", fn["id"])
+        if merges:
+            lines += ["", "### Boundary merge proposals (review; never applied automatically)"]
+            lines += [f"- {fn['name']} continues {m['cont']} ({_ago(m['at'])})" for m in merges]
+        notes = self.store.all(
+            "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
+        if notes:
+            lines += ["", "### Notes from previous agents on this function"]
+            lines += [f"- ({n['name']}, {_ago(n['created_at'])}) {n['text']}" for n in notes]
+        pnotes = self.store.all(
+            "SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC LIMIT 5", proj["id"])
+        if pnotes:
+            lines += ["", "### Project-wide notes (latest)"] + [f"- ({n['name']}) {n['text']}" for n in pnotes]
+        if fn["unit"] and fn["unit"] in self._unit_contexts(proj["id"]):
+            lines.insert(2, f"source unit {fn['unit']}: call get_context with function=\"{fn['name']}\" for its header")
+        if header == "CLAIMED":
+            lines += ["", "Next: read context.h with get_context, write C for this function, and iterate with "
+                          "compile_and_diff until score is 0. Submit only the function body (plus any helper "
+                          "declarations); context.h is included automatically."]
+        return "\n".join(lines)
+
+    # --------------------------------------------------------- compile & diff
+
+    def compile_and_diff(self, agent: Agent, function: str, source: str, project: str | None = None) -> str:
+        return self.attempt(agent, function, source, project)["text"]
+
+    def attempt(self, agent: Agent, function: str, source: str, project: str | None = None) -> dict:
+        """Compile, score and record one attempt. Returns {"text", "score", "matched"} (score None: didn't compile)."""
+        self._require_budget(agent)
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        now = time.time()
+
+        # Claim bookkeeping first: you can't score (or get credit) on someone else's function.
+        with telemetry.span("attempt.claim"):
+            with self.store.tx() as db:
+                self._expire_claims(db)
+                claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                scratch = fn["status"] == "matched"
+                if not scratch:
+                    if claim is None:
+                        held = db.execute("SELECT 1 FROM claims WHERE agent_id=?", (agent.id,)).fetchone()
+                        if held:
+                            raise NetworkError("you hold another claim; release it before working on a different function")
+                        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                        self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+                    elif claim["agent_id"] != agent.id:
+                        raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+                    else:
+                        db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+
+        ctx = self._context(proj["id"], fn["unit"])
+        snap = snapshots.capture(fn, proj, ctx)
+        with telemetry.span("attempt.compile", origin=agent.name):
+            result = self._compile(proj, ctx["header"], source)
+
+        if not result.ok:
+            # A jump-table (or other assembly-level) rejection: the PSY-Q pipeline could assemble it, so
+            # try the variants before reporting a compile error.
+            alt = self._variant_attempt(fn, proj, source, ctx, None)
+            if alt is None:
+                self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
+                return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}",
+                        "score": None, "matched": False}
+            return self._judge(agent, fn, proj, ctx, snap, source, alt[0], scratch, variants=False)
+
+        return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
+
+    def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool,
+               variants: bool = True) -> dict:
+        """Evaluate one compiled object against fn's target and record the result: the single evaluator +
+        acceptance path shared by attempt() (one compile, one function) and attempt_many() (one compile,
+        several functions) — plan P2.1/P2.2: the batch must not grow a second acceptance implementation."""
+        variant_note = False
+        with telemetry.span("attempt.evaluate"):
+            cand, verdict, problems = self._evaluate(fn, proj, result.obj)
+        if cand is None:
+            self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
+            return {"text": f"❌ Compiled, but the object has no function named `{fn['name']}`. "
+                            f"Define it with exactly that name (non-static).", "score": None, "matched": False}
+        if self._hash_only(fn):
+            matched_now = cand.fingerprint() == fn["fingerprint"] and not scratch
+            score = 0 if matched_now else None
+        else:
+            with telemetry.span("attempt.score"):
+                d = scoring.diff(self._target_obj(fn, proj), cand)
+            if verdict is not None:
+                d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            if self._worth_variant(verdict, d):
+                # near miss: one attempt-scoped assembler-variant compile, kept only when strictly better
+                alt = self._variant_attempt(fn, proj, source, ctx, d)
+                if alt is not None:
+                    result, cand, verdict, problems, d = alt
+                    variant_note = True
+            matched_now = d.bytes_match and not scratch
+            score = d.score
+
+        ok, why = snapshots.check_current(self, proj, fn, snap)
+        if not ok:
+            # The context/target/compiler moved while this compiled: the result is historical search
+            # evidence only — never a current best or a match (plan P1.4).
+            self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=True,
+                         snapshot=snap, stale_reason=why)
+            return {"text": self._stale_text(proj, fn, snap, why), "score": score, "matched": False}
+
+        if matched_now and self.acceptance_paused(proj["slug"]):
+            # Runbook 24.1 step 1: exact, but new acceptance is paused for this project. The result
+            # is retained as search evidence (attempt, snapshot, candidate) and the claim is kept so
+            # the holder can re-run after resume_acceptance — never accepted while paused.
+            self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=True,
+                         snapshot=snap)
+            reason = self._pause_reason(proj["slug"])
+            return {"text": (f"⏸ ACCEPTANCE PAUSED for {proj['slug']}"
+                             + (f" ({reason})" if reason else "")
+                             + ": this attempt matches byte-for-byte, but new acceptance is paused "
+                               "per runbook 24.1. The score, source and snapshot are retained as "
+                               "evidence; the function stays open and your claim is kept. Revalidate "
+                               f"and call resume_acceptance('{proj['slug']}'), then re-run."),
+                    "score": score, "matched": False}
+
+        if self._hash_only(fn):
+            self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
+                         compiled=True, snapshot=snap)
+            if matched_now:
+                return {"text": f"✅ MATCH! {fn['name']} matches the target fingerprint. Credited to {agent.name}; "
+                                f"your claim is released.", "score": 0, "matched": True}
+            return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
+                            f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
+                            "against your own lawful copy.", "score": None, "matched": False}
+        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap)
+
+        if scratch:
+            head = f"(scratch — {fn['name']} was already matched) score {d.score}"
+        elif d.bytes_match:
+            return {"text": f"✅ MATCH! {fn['name']} is byte-identical to the target ({fn['n_insns']} instructions). "
+                            f"Credited to {agent.name}; your claim is released. Call claim_function for the next one.",
+                    "score": 0, "matched": True}
+        else:
+            best = self.store.one("SELECT best_score FROM functions WHERE id=?", fn["id"])["best_score"]
+            head = (f"score {d.score} ({scoring.percent_text(d.percent)} match) — best so far {best}. "
+                    f"Target {len([r for r in d.rows if r[1]])} insns, yours {len([r for r in d.rows if r[2]])}.")
+            if d.rows and all(m == " " for m, _, _ in d.rows):
+                head += ("\nNOT A MATCH YET: every instruction reads the same, but the bytes differ"
+                         + (" because of the linking notes at the end: fix those." if problems else
+                            ": an encoding the listing doesn't show (branch form, an immediate, a relocation)."))
+        warn = ""
+        if variant_note:
+            tail = result.log.strip().splitlines()[-1] if result.log.strip() else "used"
+            warn = f"\nassembler variant: {tail}"
+        elif result.log.strip():
+            warn = f"\ncompiler output:\n{result.log.strip()}"
+        if problems:
+            warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
+        return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
+
+    def stall_note(self, function_id: int, agent_id: int, after: int | None = None) -> str:
+        """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
+        mostly do in the first few tries, and the agent's time is better spent on the next one. Big functions get
+        longer (a quarter of Mario Party 6's agent matches over 64 instructions took more than 4 compiles, and
+        those functions hold most of the code left)."""
+        if after is None:
+            row = self.store.one("SELECT n_insns FROM functions WHERE id=?", function_id)
+            n = (row["n_insns"] if row else 0) or 0
+            after = 4 if n < 64 else 6 if n < 128 else 8 if n < 256 else 10
+        rows = self.store.all("SELECT score FROM attempts WHERE function_id=? AND agent_id=? ORDER BY id DESC LIMIT 16",
+                              function_id, agent_id)
+        best, since = None, 0
+        for r in reversed(rows):
+            if r["score"] is not None and (best is None or r["score"] < best):
+                best, since = r["score"], 0
+            else:
+                since += 1
+        if since < after:
+            return ""
+        nudge = (f"\n\n⏭ No better in your last {since} compiles. release_function with notes (what you tried, what's "
+                 "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
+                 "keeps your best attempt for whoever comes next.")
+        return nudge + _escalation_advice(self, function_id, agent_id, since)
+
+    def analysis_broker(self):
+        """The coordinator's analysis broker (P8). Built lazily with NO providers attached: the app
+        layer (the chat.py wiring) registers DirectGhidraProvider/ReaProvider on it. The lazy import
+        keeps the claim/attempt hot paths free of the broker (A-02)."""
+        from .analysis import Broker
+
+        broker = getattr(self, "_analysis_broker", None)
+        if broker is None:
+            broker = Broker()
+            self._analysis_broker = broker
+        return broker
+
+    def escalate(self, function: str, *, question: str | None = None, provider: str | None = None,
+                 budget: dict | None = None, project: str | None = None) -> str:
+        """A.3: a stalled agent asks the broker for a focused, budget-capped investigation of one
+        function (P8.5). Provider-optional: with no registered provider the agent gets explicit
+        guidance, never a silent guess; admission failures are reported verbatim. Candidates produced
+        here are bound to the function revision (A-06): a later context/target change demotes them to
+        historical evidence instead of letting them be applied as current."""
+        from .analysis.contracts import Budget, CapabilityError, TargetError
+
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        broker = self.analysis_broker()
+        profile = _profile_for(proj, fn)
+        if profile is None:
+            return (f"escalate_function: no admitted Ghidra profile for arch {proj['arch']!r} "
+                    f"({'big' if proj['big_endian'] else 'little'}-endian), or {fn['name']} has no "
+                    f"target bytes in the coordinator — escalation is unavailable for this project.")
+        wall = float((budget or {}).get("wall_seconds", 60.0))
+        cap = Budget(wall_seconds=wall, worker_seconds=wall,
+                     token_limit=int((budget or {}).get("token_limit", 8000)))
+        module = proj["slug"] or f"project-{proj['id']}"
+        key = f"{module}::{fn['name']}"
+        import shutil
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix="decompnet-escalate-"))
+        try:
+            artifact = tmp / f"{fn['name']}.bin"
+            artifact.write_bytes(fn["target"])
+            broker.register_target(module, artifact, profile, provider=provider,
+                                   mapping={"function": fn["name"], "vram": fn["vram"] or 0,
+                                            "rom_offset": fn["rom_offset"]})
+            investigation = broker.propose_investigation(
+                key, question or f"How should {fn['name']} be changed to reach an exact match?",
+                None, cap, snapshot=f"rev-{fn['revision']}", requester="escalate_function")
+            return _render_investigation(investigation, cap)
+        except (CapabilityError, TargetError) as e:
+            return f"escalate_function: {e}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
