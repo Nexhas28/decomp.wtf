@@ -39,14 +39,21 @@ WALL_SIGNATURES = (
     ("jump-table", r"Illegal operands (lui|addiu)|jtbl_|jump.?table"),
     ("load-delay-nop", r"load.?delay|spurious nop|extra nop"),
     ("bios-veneer", r"\bBIOS\b|veneer|hand.?written assembly|syscall"),
-    ("boundary-fragment", r"boundary|false.?split|fragment|continuation|mis.?split"),
-    ("toolchain-floor", r"\bfloor\b|toolchain"),
+    # These are matched as WORDS, not as substrings: a release note that merely names a tool directory
+    # ("... left for azflash-4/gb-merge-fragments ...") used to file the row as a wall for six hours,
+    # because `fragment` matched inside the path. The lookbehind requires the word not to be preceded by
+    # a word character or a hyphen, so paths and slugs are ignored while ordinary prose still trips it.
+    ("boundary-fragment", r"(?<![-\w])(?:boundary|fragments?|continuation)\b|(?<![-\w])(?:false|mis).?split"),
+    ("toolchain-floor", r"\bfloor\b|(?<![-\w])toolchain"),
     ("regalloc-tie", r"regalloc|allocno|register allocation|register tie"),
 )
 
 
 def wall_signature(text: str) -> str | None:
-    """The wall class a release note names, or None when the note is ordinary handoff text."""
+    """The wall class a release note names, or None when the note is ordinary handoff text.
+
+    Only prose counts: tool paths and slugs that happen to contain a wall word (e.g.
+    `tools/azflash-4/gb-merge-fragments`) are not a wall claim."""
     t = text or ""
     for sig, pattern in WALL_SIGNATURES:
         if re.search(pattern, t, re.I):
@@ -54,11 +61,39 @@ def wall_signature(text: str) -> str | None:
     return None
 
 
-def _fragment_like(fn) -> bool:
+def _fragment_like(fn, arch: str = "") -> bool:
     """The boundary-fragment shape perf-test observed: the entry instruction already uses a saved
     register (live-in) with no stack-frame prologue — a function split in two by the disassembler.
     Reads the first instruction in either stored form: plain mnemonic lines (walls/releases) or the
-    imported `/* rom vram word */  mnemonic operands` lines; labels and comments are not instructions."""
+    imported `/* rom vram word */  mnemonic operands` lines; labels and comments are not instructions.
+
+    `arch` selects the lane. On sm83 (Game Boy/Color) the test reads the BYTES instead: a row is a
+    fragment when a `jr`/`jp` inside it targets an address outside its own range. That must happen
+    before the text scan below, because a row with no stored assembly (205 of them on this project)
+    has no first instruction to test and would otherwise be refused without its bytes ever being
+    looked at."""
+    if (arch or "").lower() == "sm83":
+        code, base = fn["target"] or b"", fn["vram"] or 0
+        if not code:
+            return False
+        from .rom import sm83
+
+        at = 0
+        while at < len(code):
+            op = code[at]
+            target = None
+            if op == 0x18 or (0x20 <= op <= 0x38 and op % 8 == 0):  # jr / jr cc, relative
+                if at + 1 < len(code):
+                    off = code[at + 1]
+                    off -= 256 if off > 127 else 0
+                    target = base + at + 2 + off
+            elif op in (0xC2, 0xC3, 0xD2, 0xDA, 0xE2, 0xEA, 0xF2, 0xFA):  # jp / jp cc, absolute
+                if at + 2 < len(code):
+                    target = code[at + 1] | (code[at + 2] << 8)
+            if target is not None and not (base <= target < base + len(code)):
+                return True
+            at += max(1, sm83.length(code, at))
+        return False
     for line in (fn["asm"] or "").splitlines():
         text = line.strip()
         if not text or text.startswith((".", "#", "@")):
@@ -1240,7 +1275,9 @@ class Network:
                    (b[1] is not None and a[1] is not None and a[1] == b[1] + (b[2] or 0))
         if not adjacent:
             raise NetworkError(f"{fn['name']} and {cont['name']} are not adjacent: no boundary to merge")
-        if not _fragment_like(fn):
+        proj_row = self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])
+        arch = (json.loads(proj_row["config"] or "{}").get("arch") or "") if proj_row else ""
+        if not _fragment_like(fn, arch):
             raise NetworkError(f"{fn['name']} doesn't look like a fragment (no live-in saved register at entry)")
         with self.store.tx() as db:
             db.execute("INSERT INTO merge_proposals(function_id, continues_id, at, evidence) VALUES(?,?,?,?)",

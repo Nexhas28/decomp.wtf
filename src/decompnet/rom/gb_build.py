@@ -161,8 +161,13 @@ def parse_listing(text: str) -> dict[str, BuiltFunction]:
         for byte in line.group(2).split():
             code.append(int(byte, 16))
         asm.append(line.group(3).strip())
-        if re.match(r"^\s*(reti?|jp\s+hl|jr\s)", line.group(3)) and not line.group(3).strip().startswith("call"):
-            flush()  # a function ends at its terminating instruction
+        # A function ends at its own label (handled above) or at EOF -- never at a transfer instruction.
+        # Flushing on `reti?` also matched `ret C`/`ret NZ`/..., and flushing on bare `jr` matched both
+        # conditional jumps and loops (`jr 00101$`): every candidate with a branch was truncated at its
+        # first one and could never match a ROM function that continues past it. Measured on
+        # azuredreamsaaze: 1651 of 2631 targets contain such a branch. SDCC's listing gives every function
+        # a `_name::` label (local labels like `00101$:` start with a digit and are skipped by _LABEL), so
+        # the label rule alone separates them, and function-level data (`__str_0:`) still ends one.
     flush()
     return funcs
 
