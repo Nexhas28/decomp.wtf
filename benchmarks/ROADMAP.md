@@ -59,3 +59,36 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/test_rea.py -q                 #
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_retrieval.py -q           # A.13 evidence (incl. real FID/BSim lanes)
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_analysis.py -q            # broker surface
 ```
+
+## Game Boy / Game Boy Color support (Wave 4, in progress)
+
+Requested feature. Status: **the reading lane is done and validated on a real cartridge; the matching
+lane needs a C toolchain for the CPU.**
+
+### Landed
+
+| Piece | What it does |
+| --- | --- |
+| `rom/sm83.py` | Complete Sharp LR35902 disassembler written for this fork: all 256 base opcodes and all 256 CB-prefixed ones, the 11 undocumented opcodes rendered as `db $xx` (so a sweep never desynchronises), `jr`/`call`/`jp` target helpers. Capstone has no SM83 backend, which is why this exists. |
+| `rom/gb.py` | Detection (Nintendo logo + header checksum + power-of-two size), full cartridge header (title with the CGB 15-byte rule, CGB flag/mode, MBC, ROM/RAM size, checksums, SGB flag, size-mismatch reporting), 16 KiB banking, function discovery (RST/interrupt vectors + entry + `call`/`jp` targets, sequential sweep **and** byte scan) and disassembled function records. |
+| `rom/detect.py` | `gb`/`gbc` registered as platforms; `.gb`/`.gbc` files are detected, and the "not a ROM" message now lists them. |
+| `engine._import_gb` | Importing a Game Boy ROM creates a real project: platform, 16 KiB segments, every discovered function with its disassembly, symbols and a context version. Functions are stored as `asm` (visible, searchable, briefable) and deliberately **not claimable** — no agent should burn compiles on a lane that cannot judge a candidate yet. |
+| `app.js` | `GB`/`GBC` labels in the sidebar so imported projects read correctly. |
+
+Evidence (real cartridge, `Legend of Zelda, The - Link's Awakening DX (Rev 2) (SGB Enhanced) (GB Compatible).gbc`,
+1 MiB): detected `gbc` (flag 0x80 → cgb-enhanced), `MBC5+RAM+battery`, 64 banks, SGB flag set, header
+checksum verified; **3,108 functions discovered in 9.8 s** with 758 resolved call references, entry
+vector `nop` / `cp $11` at 0x150 (the real CGB compatibility check), largest function 228 instructions.
+Tests: `tests/test_gb.py` — 85 passing, including an end-to-end import test.
+
+### Next (matching lane)
+
+1. **Toolchain**: an SDCC/GBDK (or RGBDS + a C compiler) profile in `toolchains.py`, with the flags a
+   cartridge build actually used. Until then `diff` on a Game Boy function answers with the honest
+   "no compiler profile" message.
+2. **Bank-aware relocation model**: the CPU sees 0x4000-0x7FFF switched by the MBC, so two banks can
+   share a CPU address. Functions are currently addressed by flat ROM offset; the matcher needs
+   bank+address pairs, plus MBC bank-register writes as relocations.
+3. **Symbol/split conventions**: pret/pokered-style naming (`LoadGBPal`, `wram_*`) and a splat-like
+   split driven by the discovered call graph rather than fixed 0x400 extents.
+4. **Draft generation**: m2c is MIPS-only, so Game Boy needs either its own SM83→C draft or none.

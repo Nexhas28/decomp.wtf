@@ -1156,7 +1156,7 @@ async function installToolchain(id, proprietary) {
 
 /* ------------------------------------------------------------------ public decomps */
 const PLAT_ORDER = ["gc", "wii", "ps", "ps2", "n64", "gba", "nds", "switch", "win32", "xbox360", "3ds", "xbox", "psp"];
-const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
+const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", gb: "GB", gbc: "GBC", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
 const cat = { list: null, downloaded: null, plat: "", q: "", done: false };
 
 /* The list decomp.dev had, as this install downloaded it before the directory was retired (none on a new one). */

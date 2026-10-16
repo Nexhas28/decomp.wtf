@@ -414,6 +414,8 @@ class RomNetwork(Network):
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
+        if picked.platform in ("gb", "gbc"):
+            return self._import_gb(picked, slug, workdir, log)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
                 + ", ".join(f"{o[0]} at 0x{o[2]:08X}" for o in picked.overlays[:6]) + (", ..." if len(picked.overlays) > 6 else ""))
@@ -527,6 +529,59 @@ class RomNetwork(Network):
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
         log(f"ready: {len(fns)} functions to decompile")
+        return slug
+
+    def _import_gb(self, picked, slug: str, workdir: Path, log) -> str:
+        """Game Boy / Game Boy Color: functions found by the fork's own SM83 disassembler.
+
+        The reading lane is complete (detection, header, disassembly, function discovery), but the
+        *matching* lane is not: byte-identical Game Boy C needs an SDCC/GBDK toolchain this app does not
+        ship yet. Functions are therefore imported as `asm` — visible, searchable, disassembled and
+        briefable, and deliberately NOT claimable, so no agent burns compiles on a lane that cannot
+        judge a candidate yet. When the toolchain lands they become `open` (see benchmarks/ROADMAP.md)."""
+        from ..rom import gb
+
+        info = picked.info
+        fns = gb.split(workdir / picked.filename, workdir, log=log)
+        cfg = {
+            "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": "sm83",
+            "rom": {**info, "file": picked.filename, "program": picked.filename},
+            "segments": [{"name": "rom", "rom_start": 0, "rom_end": info["size"], "vram": 0}],
+            # no compiler profile is claimed: the honest state is "none available for this platform yet"
+            "compiler": {"toolchain": "", "flags": [], "timeout": 20, "wrapper": "cc",
+                         "provenance": "unavailable",
+                         "note": "Game Boy C toolchain (SDCC/GBDK) is not supported yet: reading and "
+                                 "disassembly work, matching does not"},
+            "legal": {"basis": "personal-copy", "license": "personal use only",
+                      "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
+                      "confirmed_at": time.time()},
+            "context": {"file": None},
+        }
+        now = time.time()
+        with self.store.tx() as db:
+            pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                             (slug, info["title"],
+                              f"{info['cartridge']} · {info['cgb']['mode']} · {len(fns)} functions · "
+                              f"reading lane only (no C toolchain yet)",
+                              "sm83", 0, str(workdir), json.dumps(cfg))).lastrowid
+            names: set[str] = set()
+            for f in fns:
+                name = f.name
+                if name in names:
+                    name = f"{name}_{f.rom:06x}"
+                names.add(name)
+                db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (pid, name, f.size, f.n_insns, f.code, json.dumps([list(r) for r in f.refs or []]),
+                     f.asm, None, "rom", f.vram, f.rom, "asm"))
+                db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
+                           (pid, name, f.vram, f.size, "func", None))
+            db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
+            self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
+        log(f"ready: {len(fns)} functions disassembled. Game Boy matching needs a C toolchain "
+            f"(SDCC/GBDK) that this app doesn't ship yet, so they are shown as assembly for now")
         return slug
 
     def _community_layout(self, data: bytes | Path, name: str = "") -> Path | None:
