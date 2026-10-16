@@ -58,6 +58,9 @@ final class Projects: ObservableObject {
     /// The function map (every function, for the dot grid) and who's working on which.
     @Published private(set) var map: [MapCell] = []
     @Published private(set) var working: [String: String] = [:]
+    /// What the auto-fixer is repairing, and what researchers are writing notes on (by name).
+    @Published private(set) var fixing: Set<String> = []
+    @Published private(set) var researching: Set<String> = []
     /// Functions that just matched, and when: the map rings them for a moment, like the page.
     @Published private(set) var flashes: [String: Date] = [:]
     private var mapSig: String?
@@ -122,6 +125,8 @@ final class Projects: ObservableObject {
         events = []
         map = []
         working = [:]
+        fixing = []
+        researching = []
         flashes = [:]
         mapSig = nil
         mapFetchedAt = .distantPast
@@ -154,11 +159,14 @@ final class Projects: ObservableObject {
                 }
                 lastEvent = max(lastEvent, new.map(\.id).max() ?? 0)
                 events = Array((events + new).suffix(40))
-                if new.contains(where: { ["match", "split", "rename", "rescan"].contains($0.kind ?? "") }) { mapDirty = true }
+                if new.contains(where: { ["match", "split", "rename", "rescan", "boundary", "set_aside"].contains($0.kind ?? "") }) { mapDirty = true }
             }
             var claimed: [String: String] = [:]
             for c in live.claims ?? [] { if let n = c.name { claimed[n] = c.agent ?? "an agent" } }
             if claimed != working { working = claimed }
+            let fix = Set(live.fixing ?? []), research = Set(live.researching ?? [])
+            if fix != fixing { fixing = fix }
+            if research != researching { researching = research }
             if mapDirty { await loadMap(api, slug) }
             overviewError = nil
         } catch {

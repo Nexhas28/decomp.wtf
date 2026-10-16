@@ -217,7 +217,8 @@ private struct OverviewView: View {
                     if let ap = AutopilotText(ov) { autopilot(ov, ap) }
                     Section {
                         if !projects.map.isEmpty {
-                            FunctionMap(cells: projects.map, working: projects.working, flashes: projects.flashes,
+                            FunctionMap(cells: projects.map, working: projects.working, fixing: projects.fixing,
+                                        researching: projects.researching, flashes: projects.flashes,
                                         isFork: ov.isFork) { name in
                                 web.openFunction(ov.slug, name)
                             }
