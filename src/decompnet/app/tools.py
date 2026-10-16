@@ -13,7 +13,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__
-from . import localtools
+from . import localtools, okf
 from ..network import Agent, NetworkError
 from .engine import RomNetwork
 
@@ -224,16 +224,48 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "local_tools": lambda net, agent, slug, tool="": localtools.describe(tool.strip()),
     "run_tool": lambda net, agent, slug, tool, operation, **args:
         localtools.run(net, slug, tool.strip(), operation, agent=getattr(agent, "name", "") or "you", **args),
+    "search_knowledge": lambda net, agent, slug, query: okf.search(query),
+    "read_knowledge": lambda net, agent, slug, path="index.md": okf.read(path),
+    "add_knowledge": lambda net, agent, slug, title, description, text, sources, tags=None, type="Concept":
+        _add_knowledge(net, agent, title, description, text, sources, tags, type),
+    "next_to_research": lambda net, agent, slug, count=1: net.next_to_research(agent, slug, count),
+    "add_research_note": lambda net, agent, slug, function, text: _research_note(net, agent, slug, function, text),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "rescan_gba"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
+# A researcher's own tools: it writes notes and know-how instead of matching. Other helpers never see them.
+RESEARCH_ONLY = {"add_knowledge", "next_to_research", "add_research_note"}
+RESEARCHER = "researcher"
 
 
-def tool_names(fork: bool) -> list[str]:
-    """The tools that make sense for a project: forks and ROM projects share the core loop."""
-    skip = ROM_ONLY if fork else FORK_ONLY
+def tool_names(fork: bool, role: str | None = None) -> list[str]:
+    """The tools that make sense for a project: forks and ROM projects share the core loop; a researcher also
+    gets its own."""
+    skip = (ROM_ONLY if fork else FORK_ONLY) | (set() if role == RESEARCHER else RESEARCH_ONLY)
     return [n for n in HANDLERS if n not in skip]
+
+
+def _researcher(net: RomNetwork, agent: Agent, what: str, chat_too: bool = False) -> None:
+    """Refuse `what` to an agent that isn't a researcher helper (or, chat_too, the agent the user talks to)."""
+    if (getattr(net, "role", None) or {}).get(getattr(agent, "id", None)) == RESEARCHER:
+        return
+    if chat_too and agent is not None and hasattr(net, "is_chat") and net.is_chat(agent):
+        return
+    raise NetworkError(f"{what} is for researcher helpers")
+
+
+def _add_knowledge(net, agent, title, description, text, sources, tags, type) -> str:
+    _researcher(net, agent, "add_knowledge", chat_too=True)
+    model = (getattr(net, "role_model", None) or {}).get(getattr(agent, "id", None)) or "default model"
+    researcher = (getattr(net, "role", None) or {}).get(agent.id) == RESEARCHER
+    by = f"decomp.wtf/researcher ({model})" if researcher else "decomp.wtf/chat"
+    return okf.add(title, description, text, sources, tags, type, by=by)
+
+
+def _research_note(net, agent, slug, function, text) -> str:
+    _researcher(net, agent, "add_research_note")
+    return net.add_research_note(agent, slug, function, text)
 
 
 def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
@@ -244,11 +276,22 @@ def _named(net: RomNetwork, agent: Agent, slug: str, args: dict) -> dict:
     return args
 
 
+# What a researcher never does: it leaves functions to the matching helpers (its prompt says so; this makes sure).
+NOT_FOR_RESEARCHERS = {"claim_function", "release_function", "compile_and_diff"}
+
+
+def _allowed(net: RomNetwork, agent: Agent, name: str) -> None:
+    if name in NOT_FOR_RESEARCHERS and (getattr(net, "role", None) or {}).get(getattr(agent, "id", None)) == RESEARCHER:
+        raise NetworkError(f"researchers don't {name.split('_')[0]}: next_to_research and add_research_note are your "
+                           "work; matching helpers claim the functions")
+
+
 def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str:
     """Run one tool for the built-in agent; errors come back as text the model can act on."""
     if name not in HANDLERS:
         return f"error: unknown tool {name!r}"
     try:
+        _allowed(net, agent, name)
         return HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
     except NetworkError as e:
         return f"error: {e}"
@@ -271,6 +314,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
+            _allowed(net, agent, name)
             return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args)))
         except NetworkError as e:
             raise ToolError(str(e)) from None
@@ -459,6 +503,47 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "run_tool", tool=tool, operation=operation, file=file, file2=file2, arch=arch,
                          address=address, base=base, count=count, offset=offset, length=length, hex=hex, text=text,
                          format=format, microcode=microcode, what=what, mode=mode, width=width, height=height)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def search_knowledge(ctx: Context, query: str) -> str:
+        """Search the project's knowledge base (compiler quirks, platform notes, decomp tools, know-how researchers
+        found): every concept that mentions all the words, with a snippet. Try a compiler or platform name."""
+        return await run(ctx, "search_knowledge", query=query)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def read_knowledge(ctx: Context, path: str = "index.md") -> str:
+        """Read one file of the knowledge base by its path (from search_knowledge); "index.md" lists everything,
+        a folder's index.md lists that folder."""
+        return await run(ctx, "read_knowledge", path=path)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def add_knowledge(ctx: Context, title: str, description: str, text: str, sources: list[str],
+                            tags: list[str] | None = None, type: str = "Concept") -> str:
+        """Researchers: save general know-how (a compiler quirk, a matching trick, a platform convention) to the
+        knowledge base, for every agent after you. Nothing from the game itself: no assembly, C or data.
+
+        Args:
+            title: short name of the topic, e.g. "IDO 7.1: -O2 loop unrolling"
+            description: one sentence saying what it is
+            text: the know-how, in Markdown: what to do and when it applies
+            sources: the URLs of the pages it came from (at least one)
+            tags: a few words, e.g. ["ido", "n64", "loops"]
+            type: the kind of concept (default "Concept")
+        """
+        return await run(ctx, "add_knowledge", title=title, description=description, text=text, sources=sources,
+                         tags=tags, type=type)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def next_to_research(ctx: Context, count: int = 1) -> str:
+        """Researchers: up to 3 open functions nobody holds and nobody has researched yet, in the order matching
+        agents will claim them. They are set aside for you for 30 minutes; nothing is claimed."""
+        return await run(ctx, "next_to_research", count=count)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def add_research_note(ctx: Context, function: str, text: str) -> str:
+        """Researchers: your guidance for the next agent to claim `function` (what it likely does, how to start,
+        compiler tricks that apply, matched look-alikes, pitfalls). It is pinned first in that agent's brief."""
+        return await run(ctx, "add_research_note", function=function, text=text)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:

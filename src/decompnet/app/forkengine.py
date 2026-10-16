@@ -28,7 +28,7 @@ from .. import similarity, toolchains
 from ..forks import catalog, csource, datadiff, drafts, dtksplits, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
-from ..network import Agent, Network, NetworkError, _refused_text
+from ..network import Agent, Network, NetworkError, _refused_text, research_text
 from ..scoring import percent_text
 from ..textedit import replace_once
 
@@ -1645,8 +1645,12 @@ class ForkEngine:
         why = (cfg.get("link_failed") or {}).get(unit.source or "")
         if why and not unit.complete:
             lines += ["", f"### {unit.source} didn't link yet (file_status shows its data)", why]
+        research = self.net.research_note(fn["id"])
+        if research:  # however many notes came after it
+            lines += ["", "### Research notes (read first)", f"({research['name']}) {research_text(research['text'])}"]
         notes = self.net.store.all("SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
-                                   "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
+                                   "WHERE n.function_id=? AND n.id<>? ORDER BY n.id DESC LIMIT 6", fn["id"],
+                                   research["id"] if research else 0)
         if notes:
             lines += ["", "### Notes"] + [f"- ({n['name']}) {n['text']}" for n in notes]
         lines += ["", "Send compile_and_diff the complete function definition (same name and signature as the original), "
@@ -2401,12 +2405,11 @@ class ForkEngine:
             current = text[span[0]:span[1]] if span else None
         attempts = self.net.store.all("SELECT t.score, t.created_at, a.name AS agent FROM attempts t LEFT JOIN agents a "
                                       "ON a.id=t.agent_id WHERE t.function_id=? ORDER BY t.id", fn["id"])
-        notes = self.net.store.all("SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a "
-                                   "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
+        notes = self.net.function_notes(fn["id"])
         return self.net.set_aside_info(fn) | {
                 "name": fn["name"], "vram": fn["vram"] or 0, "rom_offset": 0, "size": fn["size"], "insns": fn["n_insns"],
                 "status": fn["status"], "best": fn["best_score"], "asm": asm, "unit": fn["unit"],
                 "source": current or fn["best_source"], "source_kind": "matched" if fn["status"] == "matched" else
                 ("latest" if current else "best" if fn["best_source"] else None),
                 "match_percent": pct, "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
-                "notes": [dict(n) for n in notes], "calls": [], "called_by": []}
+                "notes": notes, "calls": [], "called_by": []}
