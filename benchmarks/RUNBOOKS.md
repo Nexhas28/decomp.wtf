@@ -86,3 +86,29 @@ by `tests/test_downgrade.py`), so a downgrade is a code rollback, not a database
    (Section 21): a version change invalidates the run and it must be restarted.
 7. **To go forward again**, install the new wheel and send an in-app message; opening the database
    re-runs the additive migration check idempotently (also covered by the test above).
+
+## 24.8 A runaway agent fleet (fleet lockdown)
+Symptom: hundreds of agent identities appear (often named after a theme), functions are claimed and
+released continuously, and the GUI's "working now" list keeps growing. Observed cause on this host: an
+external `opencode serve --service` process (started by an agent session, env `OPENCODE=1`,
+`AI_AGENT=opencode`) spawning `tools/mcp_agent.py --name <name> serve` workers; each worker minted a new
+identity through `/api/agents/token`. Three static MCP client configs (`~/.config/opencode/opencode.json`,
+`~/.gemini/config/mcp_config.json`, `~/.codex/config.toml`) add more identities whenever those apps start.
+
+1. **Stop the spawner, not just the workers.** Kill the service and every worker bridge:
+   `pkill -9 -f "opencode serve"`, `pkill -9 -f "mcp_agent.py --name"`, `pkill -9 -f "decomp mcp --name"`,
+   then `rm -f /tmp/decomp-mcp-*.sock /tmp/decomp-mcp-*.bridge-id`. Killing only the bridges leaves the
+   service free to spawn more.
+2. **Turn on the lockdown** so a respawn cannot mint anything:
+   `<DECOMP_HOME>/.decomp/settings.json` → `{"lockdown": true, "allowed_agents": []}`. Read on every mint,
+   no restart needed. `DECOMP_LOCKDOWN=1`/`0` overrides the file for scripted use.
+3. **Verify**: `python3 tools/mcp_agent.py --name lockdown-probe status` must fail with
+   "bridge … did not start" (the mint was refused), while an existing identity (e.g. `you`, `lead-*`,
+   `dsh-*`) still answers — the lockdown only blocks NEW names.
+4. **Clear the debris**: erase the client-spawned identities (delete their claims, rename to `erased-<id>`,
+   set `token_hash='revoked:…'`, `last_seen=NULL`). Keep `you`, `lead-*`, `dsh-*` and the machine agents.
+5. **Disable the client configs** that auto-start the MCP server (set `enabled: false` in opencode.json,
+   `disabled: true` in the Antigravity `mcp_config.json`, `enabled = false` under `[mcp_servers.decomp]`
+   in `~/.codex/config.toml`). Back the files up first.
+6. **Lift the lockdown** only when you want new agents again: set `"lockdown": false` (or add specific
+   names to `allowed_agents` while keeping it on).
