@@ -3101,7 +3101,24 @@ class RomNetwork(Network):
                 if row:
                     claims.append(dict(row) | {"agent": "@" + c["agent"], "claimed_at": None})
         return {"events": [dict(e) for e in reversed(events)], "attempts": [dict(t) for t in reversed(attempts)],
-                "claims": claims, "overview": self.overview(slug)}
+                "claims": claims, "overview": self.overview(slug), **self._busy_elsewhere(slug, proj)}
+
+    def _busy_elsewhere(self, slug: str, proj) -> dict:
+        """Functions taken without a claim, for the map: the auto-fixer's current list and the ones researchers were
+        handed (both by name)."""
+        fixing = []
+        if (fixer := getattr(self, "fixer", None)) is not None:
+            try:
+                fixing = list(fixer.status(slug).get("working_on") or [])
+            except Exception:
+                fixing = []
+        now = time.time()
+        with self._research_lock:
+            held = [fid for fid, (_, until) in self._research_held.items() if until > now]
+        researching = [r["name"] for r in self.store.all(
+            f"SELECT name FROM functions WHERE project_id=? AND id IN ({','.join('?' * len(held))})",
+            proj["id"], *held)] if held else []
+        return {"fixing": fixing, "researching": researching}
 
     def set_compiler(self, slug: str, toolchain: str | None = None, flags: list[str] | None = None, *,
                      compiler_profiles=profiles.UNSET, compiler_ranges=profiles.UNSET,

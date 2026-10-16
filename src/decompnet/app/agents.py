@@ -1399,8 +1399,10 @@ class Manager:
             from . import fixer as fixmod
 
             ov = self.net.overview(s.slug)
+            guide = fixmod.LANES.get(self.net.fixer.lane(s.slug) if hasattr(self.net, "fixer") else "mips") \
+                or fixmod.LANES["mips"]
             return fixmod.FIXER_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or ov.get("platform") or "",
-                                              items=fixmod.describe(fixer["items"]))
+                                              items=fixmod.describe(fixer["items"]), **guide)
         text = self._prompt(s)
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)

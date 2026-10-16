@@ -693,6 +693,7 @@ async function poll(first) {
     if (!first) applyAttempts(live.attempts);
     addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
+    S.fixing = live.fixing || []; S.researching = live.researching || [];
     if (!first) toastStopped(S.sessions || [], live.sessions);
     S.sessions = live.sessions;
     for (const s of live.sessions) {
@@ -1552,7 +1553,7 @@ function cssColor(name) {
   return rgb;
 }
 function readColors() {
-  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), bios: cssColor("--bios"), hi: cssColor("--match-hi"), ink: cssColor("--ink") };
+  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), bios: cssColor("--bios"), hi: cssColor("--match-hi"), ink: cssColor("--ink"), fix: cssColor("--fix"), research: cssColor("--research") };
 }
 const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -1575,11 +1576,17 @@ function layoutMap() {
   applyClaims();
 }
 
+/* Whatever is busy on a function, over its own state: the auto-fixer (even on assembly it is repairing), an agent's
+   claim, a researcher writing it a note. f.base keeps the state the map came with (matched, asm, bios, open). */
+const BUSY = new Set(["working", "fixing", "researching"]);
 function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
+  const fixing = new Set(S.fixing || []), researching = new Set(S.researching || []);
   let changed = false;
   for (const f of S.map) {
-    const status = f.status === "matched" || f.status === "asm" || f.status === "bios" ? f.status : working.has(f.name) ? "working" : "open";
+    if (f.base == null) f.base = BUSY.has(f.status) ? "open" : f.status;
+    const status = f.base === "matched" ? "matched" : fixing.has(f.name) ? "fixing" : working.has(f.name) ? "working"
+      : f.base === "asm" || f.base === "bios" ? f.base : researching.has(f.name) ? "researching" : f.base === "open" ? "open" : f.base;
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -1615,7 +1622,7 @@ function drawBase() {
   const r = size >= 10 ? 2.5 : size >= 7 ? 1.5 : 1;
   moving = [];
   S.map.forEach((f, i) => {
-    if (f.status === "working") { moving.push(i); return; }  // drawn every frame, pulsing
+    if (BUSY.has(f.status)) { moving.push(i); return; }  // drawn every frame, pulsing
     const x = (i % cols) * (size + gap), y = Math.floor(i / cols) * (size + gap);
     const [c, a] = cellColor(f);
     ctx.fillStyle = rgb(c, a);
@@ -1640,7 +1647,8 @@ function drawMap() {
   let live = moving.length > 0;
   for (const i of moving) {
     const [x, y] = at(i);
-    ctx.fillStyle = rgb(colors.work, 0.55 + 0.45 * Math.sin(now / 260 + i));
+    const st = S.map[i].status;
+    ctx.fillStyle = rgb(st === "fixing" ? colors.fix : st === "researching" ? colors.research : colors.work, 0.55 + 0.45 * Math.sin(now / 260 + i));
     ctx.beginPath(); ctx.roundRect(x, y, size, size, r); ctx.fill();
   }
   for (const [name, fl] of S.flash) {
@@ -1674,7 +1682,7 @@ $("map").addEventListener("mousemove", (ev) => {
   if (i < 0) { tip.hidden = true; return; }
   const f = S.map[i];
   const p = pctOf(f.best, f.insns);
-  const status = f.status === "matched" ? `matched${f.matched_by ? " by " + esc(f.matched_by) : ""}` : f.status === "working" ? `${esc(f.agent)} is on it` : f.best != null ? `best ${pctText(p)}` : "not started";
+  const status = f.status === "matched" ? `matched${f.matched_by ? " by " + esc(f.matched_by) : ""}` : f.status === "working" ? `${esc(f.agent)} is on it` : f.status === "fixing" ? "the auto-fixer is repairing it" : f.status === "researching" ? "a researcher is writing it a note" : f.best != null ? `best ${pctText(p)}` : "not started";
   const where = S.ov && S.ov.kind === "fork" ? esc(f.unit || "") : hex8(f.vram);
   tip.innerHTML = `<b>${esc(f.name)}</b><br>${where} · ${f.insns} instructions<br>${status}`;
   tip.hidden = false;
@@ -2546,7 +2554,7 @@ $("fnNext").onclick = () => stepFn(1);
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
 const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["bios", "BIOS"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" || f.status === "bios" ? f.status : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" || f.status === "bios" ? f.status : BUSY.has(f.status) ? "working" : f.best != null ? "tried" : "open");
 const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4, bios: 5 };
 
 function renderList() {

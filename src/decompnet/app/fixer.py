@@ -56,8 +56,8 @@ def flags(text: str) -> set[str]:
     return {k for k, rx in FLAGS.items() if rx.search(text or "")}
 
 
-def wanted(fn, kinds: set[str]) -> set[str]:
-    """The asks that still make sense for a function as it is now."""
+def wanted(fn, kinds: set[str], permuter: bool = True) -> set[str]:
+    """The asks that still make sense for a function as it is now (`permuter`: the project has one: MIPS)."""
     out = set()
     if fn["status"] == "matched":
         return out
@@ -65,7 +65,7 @@ def wanted(fn, kinds: set[str]) -> set[str]:
         out.add("boundary")
     if "set_aside" in kinds and fn["status"] == "open":
         out.add("set_aside")
-    if "permuter" in kinds and fn["status"] == "open" and fn["best_source"] and fn["best_score"] \
+    if permuter and "permuter" in kinds and fn["status"] == "open" and fn["best_source"] and fn["best_score"] \
             and (fn["n_insns"] or 0) <= PERMUTER_MAX:
         out.add("permuter")
     return out
@@ -82,22 +82,49 @@ For each function, in order:
    it: their addresses are in the assembly). Check the note against the assembly yourself; notes can be wrong.
 2. Repair it with one of these, only when the assembly shows it:
    - fix_boundary(first, second, at, reason): two neighbouring functions meet in the wrong place. `at` is where
-     `second` should start; `second`'s end address joins them into one. Typical cases:
-       * `first` ends on jr/j/branch and its delay slot is `second`'s first instruction: at = second's address + 4
-       * `first` ends with `second`'s prologue (addiu sp,sp,-N) or first instruction: at = that instruction's address
-       * `second` has no prologue, uses saved registers / sp offsets `first` set up, or is only `first`'s epilogue,
-         and `first` runs on into it (no return of its own): join them (at = second's end)
-     Every byte stays where it is; the tool refuses cuts that would split a jump from its delay slot. The saved best
-     attempts are judged again and the result says if one matched.
-   - set_aside_function(function, reason): no C compiles to it: a BIOS/kernel call stub, coprocessor code, $ra kept
-     in a global, frameless code that reads registers no caller set. Never for ordinary C that is just hard.
-   - queue_for_permuter(function, reason): its best attempt has the right instruction count and structure, and only
-     registers or instruction order differ (what the notes call an allocator or regalloc wall).
-3. Then add_note(function=..., text="auto-fixer: <what you did, or why you changed nothing>"), one line.
+     `second` should start; `second`'s end address joins them into one. Every byte stays where it is, and the tool
+     refuses a cut inside an instruction or at a start other code calls. Typical cases here:
+{cases}
+     The saved best attempts are judged again and the result says if one matched.
+   - set_aside_function(function, reason): no C compiles to it. {aside} Never for ordinary C that is just hard. When
+     a hand-written routine is in pieces, join the pieces first, then set the whole routine aside once.
+{permuter}3. Then add_note(function=..., text="auto-fixer: <what you did, or why you changed nothing>"), one line.
 
 Don't claim, compile or release functions. If a repair is refused, read why: fix your call or leave it with a note.
 Be brief: work, don't narrate. Stop when the list is done.
 """
+
+# What a wrong cut and hand-written code look like, by kind of CPU (boundary.lane)
+LANES = {
+    "mips": {
+        "cases": """       * `first` ends on jr/j/branch and its delay slot is `second`'s first instruction: at = second's address + 4
+       * `first` ends with `second`'s prologue (addiu sp,sp,-N) or first instruction: at = that instruction's address
+       * `second` has no prologue, uses saved registers / sp offsets `first` set up, or is only `first`'s epilogue,
+         and `first` runs on into it (no return of its own): join them (at = second's end)
+     (A cut that would split a jump from its delay slot is refused.)""",
+        "aside": "A BIOS/kernel call stub, coprocessor code (GTE, cop0), $ra kept in a global, frameless code that reads "
+                 "registers no caller set.",
+        "permuter": """   - queue_for_permuter(function, reason): its best attempt has the right instruction count and structure, and only
+     registers or instruction order differ (what the notes call an allocator or regalloc wall).
+"""},
+    "sm83": {
+        "cases": """       * `first` doesn't end in ret/reti/jp/jr (unconditional) and runs on into `second`: join them (at = second's end)
+       * `second` starts mid-routine (uses registers or the stack `first` set up, starts with a pop): join them
+       * `first` ends with `second`'s first instruction(s): at = the address where `second` really starts
+     Addresses are the Game Boy's (0x0000-0x7FFF, the bank in the name: Call_002_78c4 is bank 2).""",
+        "aside": "Hand-written assembly: arguments in HL/DE/A that the game's C compiler (SDCC/GBDK) doesn't pass that "
+                 "way, routines with several entry points or falling into each other, data bytes after a call (a "
+                 "trampoline reading inline operands), stack tricks, hardware-timing loops.",
+        "permuter": ""},
+    "gba": {
+        "cases": """       * `first` doesn't end in bx lr / pop {{..., pc}} / an unconditional b and runs on into `second`: join them
+       * `second` is only `first`'s literal pool (data words after its return) or its last instructions: join them
+       * `first` ends with `second`'s first instructions (its push): at = the address where `second` really starts
+     Thumb cuts are on a halfword, never inside a bl pair; ARM on a word.""",
+        "aside": "A BIOS call stub (swi then bx lr), ARM-mode code copied to IWRAM, routines written for speed with "
+                 "registers no compiler would choose, code reading registers no caller set.",
+        "permuter": ""},
+}
 
 
 def describe(items: list[dict]) -> str:
@@ -121,15 +148,20 @@ class Fixer:
         self.last_error: dict[str, str] = {}  # slug -> why the last start failed
         self._lock = threading.Lock()
 
-    def mips(self, slug: str) -> bool:
-        """The repairs are for MIPS ROM projects (N64, PlayStation, PlayStation 2) on this copy's own project."""
+    def lane(self, slug: str) -> str:
+        """The kind of code (boundary.lane) when the repairs work on this copy's own project, else ""."""
+        from .boundary import lane
+
         try:
             proj = self.net.project_row(slug)
-            cfg = self.net.cfg(proj)
-            return (self.net.is_rom(proj) and not self.net.fork_slug(slug) and slug not in getattr(self.net, "links", {})
-                    and (cfg.get("arch") or proj["arch"] or "mips").lower() == "mips")
+            if self.net.fork_slug(slug) or slug in getattr(self.net, "links", {}):
+                return ""
+            return lane(self.net, proj)
         except Exception:
-            return False
+            return ""
+
+    def mips(self, slug: str) -> bool:  # (kept for callers: any supported project now)
+        return bool(self.lane(slug))
 
     def settings(self) -> dict:
         cfg = self.config() or {}
@@ -148,7 +180,7 @@ class Fixer:
             fn = self.net._function(function, slug)
         except Exception:
             return
-        if (kinds := wanted(fn, kinds)):
+        if (kinds := wanted(fn, kinds, self.lane(slug) == "mips")):
             self._add(slug, fn, kinds, text, fresh=True)
 
     def why_not(self, slug: str) -> str:
@@ -156,7 +188,9 @@ class Fixer:
         if slug in getattr(self.net, "links", {}):
             return "In a team room only the host's app runs the auto-fixer: its repairs change the room's copy."
         if not self.mips(slug):
-            return "The auto-fixer works on N64, PlayStation and PlayStation 2 projects."
+            from .boundary import SUPPORTED
+
+            return f"The auto-fixer works on {SUPPORTED} projects."
         return ""
 
     def scan(self, slug: str, manual: bool = False) -> int:
@@ -175,7 +209,7 @@ class Fixer:
         for r in rows:
             if r["note_agent"] in fixers:
                 continue
-            if (kinds := wanted(r, flags(r["note_text"]))) and self._add(slug, r, kinds, r["note_text"], fresh=manual):
+            if (kinds := wanted(r, flags(r["note_text"]), self.lane(slug) == "mips")) and self._add(slug, r, kinds, r["note_text"], fresh=manual):
                 n += 1
         return n
 
