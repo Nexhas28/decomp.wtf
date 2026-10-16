@@ -266,14 +266,14 @@ def test_flagged_notes_start_one_session_with_the_list(net, monkeypatch):
     assert json.loads(net._function("func_80001010", "game")["meta"])["fixer_at"] > 0
 
 
-def test_only_mips_projects_start_the_fixer(net):
+def test_only_supported_projects_start_the_fixer(net):
     with net.store.tx() as db:
-        db.execute("UPDATE projects SET arch='sm83', config=json_set(config, '$.arch', 'sm83', '$.platform', 'gbc')")
+        db.execute("UPDATE projects SET arch='ppc', config=json_set(config, '$.arch', 'ppc', '$.platform', 'gc')")
     fx = fixer.Fixer(net, None)
     fx.observe("game", "func_80001010", "fragment, needs merge")
     assert fx.status("game")["waiting"] == [] and fx.scan("game") == 0
-    assert "N64, PlayStation" in fx.why_not("game")
-    with pytest.raises(ValueError, match="PlayStation"):
+    assert "Game Boy Advance" in fx.why_not("game")
+    with pytest.raises(ValueError, match="Game Boy"):
         fx.run_now("game")
 
 
@@ -301,3 +301,72 @@ def test_run_now_starts_at_once_even_when_switched_off(net):
     assert started == [["func_80001010"]] and out["running"] == "fixer-1" and out["flagged"] == 1
     net.links["game"] = object()
     assert "host" in fx.why_not("game")
+
+
+
+def byte_project(tmp_path, platform: str, rows: list[tuple[str, int, bytes, str]]):
+    """A Game Boy or GBA project: (name, address, bytes, assembly) per function, back to back in the ROM."""
+    n = RomNetwork(tmp_path / f"{platform}.db", tmp_path / platform)
+    arch = "sm83" if platform in ("gb", "gbc") else "arm"
+    cfg = {"kind": "rom", "platform": platform, "arch": arch, "big_endian": False}
+    with n.store.tx() as db:
+        db.execute("INSERT INTO projects(id, slug, name, description, arch, big_endian, root, config) "
+                   "VALUES(1, 'game', 'game', '', ?, 0, '/tmp/game', ?)", (arch, json.dumps(cfg)))
+        rom = 0x100
+        for name, addr, code, asm in rows:
+            db.execute("INSERT INTO functions(project_id, name, size, n_insns, target, relocs, asm, status, unit, vram, "
+                       "rom_offset) VALUES(1,?,?,?,?,'[]',?,'open','',?,?)", (name, len(code), 1, code, asm, addr, rom))
+            db.execute("INSERT INTO symbols(project_id, name, address, size, kind) VALUES(1,?,?,?,'func')",
+                       (name, addr, len(code)))
+            rom += len(code)
+    agent, _ = n.local_agent("fixer-1")
+    n.fixer_ids.add(agent.id)
+    return n, agent
+
+
+def test_game_boy_pieces_join_and_cut_only_between_instructions(tmp_path):
+    # ld hl,$c804; ld a,[hl]  (no ret: runs on)  |  and 3; ret
+    net, agent = byte_project(tmp_path, "gbc", [("Call_000_0100", 0x0100, bytes([0x21, 0x04, 0xC8, 0x7E]), "    ld hl,$c804\n    ld a,[hl]"),
+                                                ("Call_000_0104", 0x0104, bytes([0xE6, 0x03, 0xC9]), "    and 3\n    ret")])
+    for inside in ("0x0102", "0x0105"):  # inside ld hl,$c804 / inside and 3
+        with pytest.raises(NetworkError, match="where an instruction starts"):
+            net.fix_boundary(agent, "game", "Call_000_0100", "Call_000_0104", inside, "x")
+    assert net.fix_boundary(agent, "game", "Call_000_0100", "Call_000_0104", "0x0106", "x").startswith("✅")
+    assert [(r["name"], r["size"]) for r in net.store.all("SELECT * FROM functions ORDER BY vram")] == \
+        [("Call_000_0100", 6), ("Call_000_0106", 1)]  # the moved piece's name follows its address
+    assert net.fix_boundary(agent, "game", "Call_000_0100", "Call_000_0106", "0x0107", "torn routine").startswith("✅ joined")
+    fn = net._function("Call_000_0100", "game")
+    assert fn["target"] == bytes([0x21, 0x04, 0xC8, 0x7E, 0xE6, 0x03, 0xC9]) and fn["n_insns"] == 4
+
+
+def test_gba_never_cuts_a_bl_pair(tmp_path):
+    # push {lr}; bl ...; pop {pc}  |  movs r0, #1; bx lr
+    a = struct.pack("<4H", 0xB500, 0xF000, 0xF802, 0xBD00)
+    b = struct.pack("<2H", 0x2001, 0x4770)
+    net, agent = byte_project(tmp_path, "gba", [("sub_08000100", 0x08000100, a, "\tthumb_func_start sub_08000100"),
+                                                ("sub_08000108", 0x08000108, b, "\tthumb_func_start sub_08000108")])
+    with pytest.raises(NetworkError, match="where an instruction starts"):
+        net.fix_boundary(agent, "game", "sub_08000100", "sub_08000108", "0x08000104", "x")
+    assert net.fix_boundary(agent, "game", "sub_08000100", "sub_08000108", "0x0800010C", "x").startswith("✅ joined")
+    fn = net._function("sub_08000100", "game")
+    assert fn["target"] == a + b and fn["size"] == 12
+
+
+def test_game_boy_notes_flag_but_never_the_permuter(tmp_path):
+    net, _ = byte_project(tmp_path, "gbc", [("Call_000_0100", 0x0100, bytes([0x7E, 0xC9]), "    ld a,[hl]\n    ret")])
+    fx = fixer.Fixer(net, None)
+    assert fx.why_not("game") == ""
+    fn = net._function("Call_000_0100", "game")
+    assert fixer.wanted(dict(fn) | {"best_source": "x", "best_score": 5}, {"permuter", "boundary"}, permuter=False) == {"boundary"}
+
+
+def test_the_map_hears_what_the_fixer_and_researchers_hold(net):
+    class Fx:
+        def status(self, slug):
+            return {"working_on": ["func_80001000"]}
+
+    net.fixer = Fx()
+    fid = net._function("func_80001038", "game")["id"]
+    net._research_held[fid] = (1, 9e12)
+    live = net.live("game")
+    assert live["fixing"] == ["func_80001000"] and live["researching"] == ["func_80001038"]
