@@ -734,6 +734,7 @@ class Network:
         """Evaluate one compiled object against fn's target and record the result: the single evaluator +
         acceptance path shared by attempt() (one compile, one function) and attempt_many() (one compile,
         several functions) — plan P2.1/P2.2: the batch must not grow a second acceptance implementation."""
+        variant_note = False
         with telemetry.span("attempt.evaluate"):
             cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:
@@ -748,6 +749,12 @@ class Network:
                 d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            if verdict is not True and 0 < d.score <= self._VARIANT_MAX_SCORE:
+                # near miss: one attempt-scoped assembler-variant compile, kept only when strictly better
+                alt = self._variant_attempt(fn, proj, source, ctx, d)
+                if alt is not None:
+                    result, cand, verdict, problems, d = alt
+                    variant_note = True
             matched_now = d.bytes_match and not scratch
             score = d.score
 
@@ -799,7 +806,12 @@ class Network:
                 head += ("\nNOT A MATCH YET: every instruction reads the same, but the bytes differ"
                          + (" because of the linking notes at the end: fix those." if problems else
                             ": an encoding the listing doesn't show (branch form, an immediate, a relocation)."))
-        warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
+        warn = ""
+        if variant_note:
+            tail = result.log.strip().splitlines()[-1] if result.log.strip() else "used"
+            warn = f"\nassembler variant: {tail}"
+        elif result.log.strip():
+            warn = f"\ncompiler output:\n{result.log.strip()}"
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
         return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
