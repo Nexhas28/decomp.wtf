@@ -1720,7 +1720,10 @@ class ForkEngine:
 
     def _claim_in_room(self, link, agent: Agent, slug: str, function: str | None, strategy: str) -> str:
         """A member of a room: the host hands out functions (nobody does one twice); the brief comes from this copy."""
-        name = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy)
+        if function is None and strategy in ("quick", "close"):  # a Focus: picked here, asked for by name
+            name = self.net._room_focus_claim(link, agent, slug, strategy)
+        else:
+            name = link.claim(agent, self._fn(slug, function)["name"] if function else None, strategy)
         if name is None:
             return "Nothing left to claim in this room: every function with a source file matches or someone is on it. 🎉"
         try:

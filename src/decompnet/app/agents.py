@@ -168,6 +168,13 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
 PER_SESSION = 2
 
+# A helper's Focus (the launcher's menu) -> the claim strategy it works by, and what to say when that runs out.
+# Default is no focus: claims work as they always have.
+FOCUSES = {"quick": ("quick", "no small function (Quick Wins) is left to do here",
+                     "Quick Wins, small functions only"),
+           "close": ("close", "no function at 90% match or better (Close Calls) is left to do here",
+                     "Close Calls, functions already 90%+ matched only")}
+
 # ------------------------------------------------------------------- tiered Claude Code helpers
 # model="tiered": a Claude Code helper whose model is picked per function (tier_for) right before each claim.
 # Each session runs one function (per_session 1), so the model can change from one claim to the next.
@@ -695,7 +702,7 @@ class Session:
                 "model": (self.routed_model if self.tiered else self.options.get("model")) or "",
                 "tiered": self.tiered, "tier": self.tier, "tier_function": self.tier_function,
                 "effort": (self.routed_effort if self.tiered else self.options.get("effort")) or "",
-                "task_class": self.task_class,
+                "task_class": self.task_class, "focus": self.options.get("focus") or "",
                 "prompt_policy": PROMPT_POLICY_VERSION, "usd": round(self.usd, 4), "tokens": self.tokens,
                 "team": (self.options.get("team") or {}).get("function", ""),  # every member works on it, not only the claim holder
                 "feed": [f for f in self.feed if f["seq"] > since]}
@@ -1132,6 +1139,10 @@ class Manager:
             return
         self.assignments[agent.id] = s.slug
         s.agent_id = agent.id
+        focus = FOCUSES.get(s.options.get("focus") or "")
+        if focus and hasattr(self.net, "focus"):
+            self.net.focus[agent.id] = focus[0]
+            s.push("info", f"focus: {focus[2]}")
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
         failures = throttles = 0
@@ -1150,6 +1161,9 @@ class Manager:
                 break
             if self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
+                break
+            if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
+                s.push("info", f"stopping: {focus[1]}")
                 break
             if (cap := self.over_budget(s.slug)) is not None:
                 s.push("info", f"stopping: the agents on this project have spent the ${cap:.2f} budget (Setup)")
@@ -1225,6 +1239,7 @@ class Manager:
             s.stop.wait(3 if ok else min(60, 5 * failures + max(0, 10 - (time.time() - t0))))
         if s.state != "error":
             s.state = "stopped"
+        getattr(self.net, "focus", {}).pop(agent.id, None)
         if not s.stop.is_set():  # finished by itself (done, budget, errors): no need to resume it
             s.stop.set()
             self.persist(self.running())

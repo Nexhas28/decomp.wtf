@@ -163,7 +163,11 @@ def _project_info(net: RomNetwork, slug: str) -> str:
 def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: str, count: int = 1) -> str:
     """A claim; one asked for that's matched, hand-written assembly, BIOS code or someone else's is the next free function
     instead (an agent asking for those has nothing better to do than the next one, and is told why). count > 1: a
-    batch of small ones."""
+    batch of small ones. A helper started with a Focus claims by it, whatever strategy it asks for."""
+    if (focus := getattr(net, "focus", {}).get(agent.id)):
+        strategy = focus
+        if focus == "close":
+            count = 1  # a batch adds the neighbours, however far from matching they are
     strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
     if not function and int(count or 1) > 1:
         return net.claim_many(agent, slug, int(count), strategy)

@@ -1037,6 +1037,17 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             options["billing"] = "api"
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
+        focus = str(given.get("focus") or "default")
+        if focus != "default":  # Quick Wins / Close Calls: which functions the helpers take
+            if focus not in agents.FOCUSES:
+                return fail(ValueError(f"unknown focus {focus!r}"))
+            try:
+                left = net.strategy_left(slug, agents.FOCUSES[focus][0])
+            except NetworkError as e:
+                return fail(e)
+            if not left:
+                return fail(ValueError(f"Nothing to start on: {agents.FOCUSES[focus][1]}. Pick another focus."))
+            options["focus"] = focus
         if given.get("purpose") == "header":  # shared header / struct work: a tiered helper takes Opus for it
             options["purpose"] = "header"
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
