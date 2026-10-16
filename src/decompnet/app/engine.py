@@ -22,14 +22,13 @@ import secrets
 import struct
 import threading
 import time
-from collections import Counter
 from pathlib import Path
 
 from .. import compiler_profiles as profiles
 from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
-from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent, Network,
-                       NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
+from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, SKIP_MAX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent,
+                       Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -95,18 +94,23 @@ _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 # 0x-prefixed: any width (2-4 digits on Game Boy); bare: the full 8 digits only, so names that happen to be
 # hex words ("add", "dead", "cafe") still resolve as names
 _ADDRESS = re.compile(r"^(?:0x([0-9A-Fa-f]{1,8})|([0-9A-Fa-f]{8}))$", re.I)
-# per-function compiler comments some hosts' builds honour (this one doesn't): only the room's host can judge them
 ROOM_CLAIM_TRIES = 6  # host offers this copy can't take, given back before a room claim gives up
 RESEARCH_HOLD = 30 * 60  # how long a function next_to_research handed one researcher is skipped for the others
 _HOST_HOLDS = re.compile(r"^you already hold (\S+?);")
-_DIRECTIVE = re.compile(r"/\*\s*decomp-(?:compiler|assembler|cflags)\s*:")
 
 
 def _host_refused(score) -> str:
     return (f"❌ NOT A MATCH YET: your copy scored 0, but the room's host scored "
-            f"{score if score is not None else 'it as not compiling'}. The host uses its own compiler settings and "
-            "honors decomp-compiler/decomp-assembler/decomp-cflags comments that this copy can't check: keep "
-            "iterating, the host's score is what counts. Your claim is kept.")
+            f"{score if score is not None else 'it as not compiling'}. The host's judge is the one that counts (its "
+            "compiler settings, its decomp-* comment profiles, its cut of the function): keep iterating. Your claim "
+            "is kept.")
+
+
+def _host_cut_differs(fn, host_size: int) -> str:
+    return (f"❌ NOT A MATCH HERE: the room's host matched its {fn['name']}, but the host's function is {host_size} "
+            f"bytes and this copy's is {fn['size']} (the two copies cut this part of the game differently, e.g. the "
+            "host merged a false split). This copy's function is other code, so the match can't be kept here. "
+            "Ask the host to share its cut, or work on another function.")
 
 
 def _address(text: str) -> int | None:
@@ -261,6 +265,9 @@ class RomNetwork(Network):
         self.rescan_busy = lambda slug: False  # server supplies its built-in agent/session guard
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
+        self.fixer_ids: set[int] = set()  # agent ids of auto-fixer sessions: the only ones its tools work for
+        # set by the server: a note was left on this copy's own project (slug, function name, text, agent)
+        self.on_note = lambda slug, function, text, agent: None
         self.role: dict[int, str] = {}  # helper agent id -> its job when it isn't matching ("researcher")
         self.role_model: dict[int, str] = {}  # researcher agent id -> the model it runs (for what it adds to .okf)
         # function id -> (researcher agent id, until): what next_to_research handed out, so two researchers don't
@@ -1304,6 +1311,8 @@ class RomNetwork(Network):
         success), true adjacency, the fragment shape, and that neither function is matched. Refused
         merges change nothing and leave the proposal row for review."""
         self._rom_only(project, "merge_function")
+        if self._link(project) is not None:
+            raise NetworkError("in a team room only the host's app merges functions")
         frag = self._function(fragment, project)
         cont = self._function(continues, project)
         if frag["project_id"] != cont["project_id"]:
@@ -1665,17 +1674,23 @@ class RomNetwork(Network):
             return super().claim(agent, project, function, strategy)
         if function:
             function = self._function(function, project)["name"]
-        # The host hands out the claim, this copy has to be able to take it too: a BIOS stub or hand-written
-        # assembly here, or something this copy has as matched, is given straight back on the host, so the two
-        # never disagree about who holds what (an older host can't be told what to skip: ask it again).
-        refused, retried = [], False
+        # The host hands out the claim, this copy has to be able to take it too. The host is told what this copy
+        # set aside (BIOS calls, hand-written assembly): its strategy claims leave those out unless a person gave
+        # them back to agents there. A function this copy can't take anyway (an older host, which ignores the
+        # list, or something matched here) is given straight back on the host, so the two never disagree about
+        # who holds what, and from then on this copy picks by the strategy itself and asks for it by name: an
+        # older host would only offer the next set-aside stub.
+        proj = self._project(project)
+        self._set_aside_once(proj)
+        skip = self.set_aside_names(proj)
+        refused, retried, pick_here = [], False, False
         for _ in range(ROOM_CLAIM_TRIES):
             try:
-                if function is None and strategy in ("quick", "close"):
+                if function is None and (pick_here or strategy in ("quick", "close")):
                     # a Focus in a room: the host may not know these strategies, so pick here and ask for it by name
                     name = self._room_focus_claim(link, agent, project, strategy)
                 else:
-                    name = link.claim(agent, function, strategy)
+                    name = link.claim(agent, function, strategy, skip=skip)
             except NetworkError as e:
                 held = _HOST_HOLDS.match(str(e))
                 if held is None or retried or self._holds(agent, held.group(1), project):
@@ -1693,6 +1708,7 @@ class RomNetwork(Network):
                 if function or str(e).startswith("you already hold"):
                     raise
                 refused.append(f"{name} ({e})")
+                pick_here = True
                 continue
             return self._brief(fn, agent, header="CLAIMED")
         raise NetworkError("the room's host kept offering functions this copy can't take ("
@@ -1713,6 +1729,23 @@ class RomNetwork(Network):
         except NetworkError:
             pass  # not held there any more (or unreachable: the host's claim expires on its own)
 
+    def set_aside_names(self, proj) -> list[str]:
+        """The functions this copy set aside as BIOS calls or hand-written assembly, smallest first (what a room
+        member's claims ask the host to leave out)."""
+        return [r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=? AND status='asm' "
+                                                  "ORDER BY n_insns, vram LIMIT ?", proj["id"], SKIP_MAX)]
+
+    def follow_give_back(self, slug: str, name: str) -> None:
+        """The room's host gave `name` back to agents by hand: this copy follows, so its helpers can take it too."""
+        fn = self.store.one("SELECT id, status, meta FROM functions WHERE project_id=? AND name=?",
+                            self._project(slug)["id"], name)
+        if fn is None or fn["status"] != "asm":
+            return
+        meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
+        meta["for_agents"] = True
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'", (json.dumps(meta), fn["id"]))
+
     def _room_focus_claim(self, link, agent: Agent, project: str | None, strategy: str) -> str | None:
         """The first open function by `strategy` in this copy of the room that the host lets the agent have."""
         proj = self._project(project)
@@ -1721,7 +1754,7 @@ class RomNetwork(Network):
             f"""SELECT f.name FROM functions f WHERE f.project_id=? AND f.status='open'
                 AND f.id NOT IN (SELECT function_id FROM claims WHERE agent_id<>?)
                 AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, "")}
-                ORDER BY {STRATEGIES[strategy]} LIMIT 12""", proj["id"], agent.id, cap, cap)
+                ORDER BY {STRATEGIES.get(strategy) or STRATEGIES["easiest"]} LIMIT 12""", proj["id"], agent.id, cap, cap)
         for r in rows:
             try:
                 return link.claim(agent, r["name"], "easiest")
@@ -1847,7 +1880,15 @@ class RomNetwork(Network):
             telemetry.count("batch.compiler_invocations")
             compiles += 1
             if not result.ok:  # a shared compile error: report once per function, keep per-function records
+                host = not items[0][4] and self._directives(proj0, source, fn0).applied
                 for fn, proj, ctx, snap, scratch in items:
+                    # comments this copy couldn't build: the room's host may (see Network.attempt)
+                    judged = self._second_judge(agent, fn, source, False, failed_here=True) if host else None
+                    if judged is not None:
+                        res = self._host_verdict(agent, fn, ctx, snap, source, judged, result.log.strip())
+                        matched += bool(res.get("matched"))
+                        out.append(f"### {fn['name']}\n{res['text']}")
+                        continue
                     self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
                     out.append(f"### {fn['name']}\n❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}")
                 continue
@@ -1897,17 +1938,18 @@ class RomNetwork(Network):
         res = super().attempt(agent, function, source, project)
         if res["matched"]:
             res["text"] += "\nShared with the room: the host confirmed the match."
-        elif (res["score"] is not None and fn["status"] != "matched" and not _DIRECTIVE.search(source)
+        elif (res["score"] is not None and fn["status"] != "matched" and not self._unknown_directives(fn, source)
               and (fn["best_score"] is None or res["score"] < fn["best_score"])):
             threading.Thread(target=lambda: self._report(link, agent, fn["name"], source, res["score"]),
                              daemon=True).start()
         return res
 
-    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
-        """A room's host has the last word (it may compile with settings or decomp-* comments this copy can't
-        apply): asked about every exact result here, and about every source with decomp-compiler/-assembler/
-        -cflags comments, whose score here means little (the host's per-member rate limit bounds how often)."""
-        directives = bool(_DIRECTIVE.search(source))
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool, failed_here: bool = False) -> dict | None:
+        """A room's host has the last word: asked about every exact result here, and about every source with
+        decomp-* comments this copy can't apply (see directives), whose score here means little (the host's
+        per-member rate limit bounds how often). A host match of a function the host cuts differently (its size
+        isn't this copy's: it merged a false split, say) is no match here: this copy's function is other code."""
+        directives = self._unknown_directives(fn, source) or failed_here
         if not exact and not directives:
             return None
         slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
@@ -1929,6 +1971,9 @@ class RomNetwork(Network):
                         "text": f"⚠️ This copy scored 0, but the room's host couldn't be reached to confirm it ({e}). "
                                 "NOT saved as a match: compile it again once the host is back."}
             return None  # unreachable: judged here as usual (this copy's score, nothing accepted on it alone)
+        size = got.get("size")
+        if got.get("matched") and size is not None and size != fn["size"]:
+            return {"matched": False, "score": None, "text": _host_cut_differs(fn, size)}
         if got.get("matched"):
             return {"matched": True, "score": 0, "text": ""}
         host = got.get("score")
@@ -1936,8 +1981,15 @@ class RomNetwork(Network):
             return {"matched": False, "score": host, "text": _host_refused(host)}
         return {"matched": False, "score": host,
                 "text": (f"score {host} on the room's host" if host is not None else "❌ doesn't compile on the room's host")
-                        + " (this source has decomp-* compiler comments that only the host applies, so this copy's "
-                          "score doesn't count; the host's does). Keep iterating."}
+                        + (" (this copy can't build this source's decomp-* compiler comments: the host's score is "
+                           "the one that counts)" if failed_here else
+                           " (this source has decomp-* compiler comments only the host defines, so this copy's "
+                           "score doesn't count; the host's does)") + ". Keep iterating."}
+
+    def _unknown_directives(self, fn, source: str) -> bool:
+        """Whether `source` has decomp-* comments this copy can't apply (only a host that defines them can judge it)."""
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        return bool(self._directives(proj, source, fn).unknown)
 
     def reopen_unconfirmed(self, slug: str, host_matched: list[dict]) -> list[str]:
         """Member side, first sync with the room: the host's full list of matches arrives, and a match here that
@@ -1947,29 +1999,64 @@ class RomNetwork(Network):
         kept as the best so far. Compared by name; by address only where neither side has two functions there
         (overlays reuse addresses, and names for them can differ between copies). Returns their names."""
         names = {m["name"] for m in host_matched if m.get("name")}
+        host_size = {m["name"]: m["size"] for m in host_matched if m.get("name") and m.get("size") is not None}
         host_at: dict[int, int] = {}
         for m in host_matched:
             host_at[m["vram"]] = host_at.get(m["vram"], 0) + 1
         proj = self._project(slug)
         here = {r["vram"]: r["n"] for r in self.store.all(
             "SELECT vram, COUNT(*) AS n FROM functions WHERE project_id=? GROUP BY vram", proj["id"])}
-        rows = self.store.all("SELECT id, name, vram FROM functions WHERE project_id=? AND status='matched'", proj["id"])
-        rows = [r for r in rows if r["name"] not in names
-                and not (host_at.get(r["vram"]) == 1 and here.get(r["vram"]) == 1)]
+        rows = self.store.all("SELECT f.*, EXISTS(SELECT 1 FROM verification_receipts v WHERE v.function_id=f.id) AS "
+                              "verified FROM functions f WHERE f.project_id=? AND f.status='matched'", proj["id"])
+        # ...and a host match taken by name without being verified here, whose function the host cuts to another
+        # size (it merged a false split): this copy's function is other code, so the match isn't this copy's
+        rows = [r for r in rows if (r["name"] not in names and not (host_at.get(r["vram"]) == 1 and here.get(r["vram"]) == 1))
+                or (r["name"] in names and not r["verified"] and self._other_cut(r, proj, host_size.get(r["name"])))]
         if not rows:
             return []
         with self.store.tx() as db:
             for r in rows:
                 db.execute("DELETE FROM verification_receipts WHERE function_id=?", (r["id"],))
+                meta = json.loads(r["meta"] or "{}")
+                meta.pop("host_only", None)
                 db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=matched_source, "
                            "best_agent_id=matched_agent_id, matched_source=NULL, matched_agent_id=NULL, "
-                           "matched_at=NULL, revision=revision+1 WHERE id=?", (r["id"],))
+                           "matched_at=NULL, meta=?, revision=revision+1 WHERE id=?",
+                           (json.dumps(meta) if meta else None, r["id"]))
             db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (proj["id"],))
             self._event(db, proj["id"], None, "collab",
-                        f"reopened {len(rows)} match{'es' if len(rows) != 1 else ''} the room's host doesn't have "
+                        f"reopened {len(rows)} match{'es' if len(rows) != 1 else ''} the room's host doesn't have, or "
+                        f"cuts to another size "
                         f"(their code is kept as the best so far): " + ", ".join(r["name"] for r in rows[:10])
                         + (", ..." if len(rows) > 10 else ""))
         return [r["name"] for r in rows]
+
+    def _other_cut(self, fn, proj, host_size: int | None, source: str | None = None) -> int | None:
+        """The size of the host's function when it isn't this copy's `fn` (the host cut that code differently: it
+        merged a false split, say), else None. From the host's word (`host_size`) when it sends it; otherwise
+        measured: the host's source (`source`, default fn's matched source), built here with every decomp-*
+        comment it has, comes out another length. Measured once per cut: remembered in meta.cut_checked."""
+        if host_size is not None:
+            return host_size if host_size != fn["size"] else None
+        source = source if source is not None else fn["matched_source"]
+        meta = json.loads(fn["meta"] or "{}")
+        if not source or meta.get("cut_checked") == [fn["size"], hashlib.sha256(source.encode()).hexdigest()[:16]]:
+            return None
+        if self._directives(proj, source, fn).unknown:
+            return None  # built here without some of its comments: its length says nothing
+        try:
+            result, cand, _, _, _ = self._compile_and_evaluate(fn, proj, source, self._context(proj["id"], fn["unit"]))
+        except Exception:
+            return None
+        built = len(getattr(cand, "code", None) or b"") if result is not None and result.ok and cand is not None else 0
+        if not built:
+            return None
+        if built != fn["size"]:
+            return built
+        meta["cut_checked"] = [fn["size"], hashlib.sha256(source.encode()).hexdigest()[:16]]
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+        return None
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
@@ -2016,7 +2103,9 @@ class RomNetwork(Network):
             return self.forks.release(agent, fork, function, notes)
         link = self._link(project)
         if link is None:
-            return super().release(agent, function, notes, project)
+            out = super().release(agent, function, notes, project)
+            self._noted(project, function, notes, agent)
+            return out
         # always tell the host, even when this copy has no claim: the host's claim is the one that blocks
         name = self._function(function, project)["name"]
         try:
@@ -2047,9 +2136,54 @@ class RomNetwork(Network):
     def add_note(self, agent: Agent, project: str | None, text: str, function: str | None = None) -> str:
         link = self._link(project)
         if link is None:
-            return super().add_note(agent, project, text, function)
+            out = super().add_note(agent, project, text, function)
+            if function:
+                self._noted(project, function, text, agent)
+            return out
         name = self._function(function, project)["name"] if function else None
         return link.call("/collab/note", agent, text=text, function=name) or "Noted, and shared with the room."
+
+    def _noted(self, project: str | None, function: str, text: str, agent: Agent) -> None:
+        """Tell the auto-fixer about a note on this copy's own project (after it was saved; never in its way)."""
+        if not (text or "").strip():
+            return
+        try:
+            proj = self._project(project)
+            if self.is_rom(proj) and not self.fork_slug(proj["slug"]):
+                self.on_note(proj["slug"], self._function(function, proj["slug"])["name"], text, agent)
+        except Exception as e:  # the note is saved either way
+            logging.getLogger("decomp.wtf").info("auto-fixer on a note: %s", e)
+
+    def is_fixer(self, agent: Agent) -> bool:
+        return agent.id in self.fixer_ids
+
+    def require_fixer(self, agent: Agent) -> None:
+        if not self.is_fixer(agent):
+            raise NetworkError("only the auto-fixer can do this (decomp.wtf starts it when notes ask for it)")
+
+    def fix_boundary(self, agent: Agent, project: str | None, first: str, second: str, at: str, reason: str) -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        slug = self._project(project)["slug"]
+        with self.store.lock:
+            pid = self._project(slug)["id"]
+            self._require_not_rescanning(pid)
+            self._active_attempts[pid] = self._active_attempts.get(pid, 0) + 1
+        try:
+            return boundary.fix_boundary(self, agent, slug, first, second, at, reason)
+        finally:
+            with self.store.lock:
+                self._active_attempts[pid] -= 1
+
+    def set_aside_function(self, agent: Agent, project: str | None, function: str, reason: str) -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        return boundary.set_aside(self, agent, self._project(project)["slug"], function, reason)
+
+    def queue_for_permuter(self, agent: Agent, project: str | None, function: str, reason: str = "") -> str:
+        from . import boundary
+        self.require_fixer(agent)
+        return boundary.queue_permuter(self, agent, self._project(project)["slug"], function, reason)
 
     def add_research_note(self, agent: Agent, project: str | None, function: str, text: str) -> str:
         fn = self._function(function, project)
@@ -2135,14 +2269,18 @@ class RomNetwork(Network):
             db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
                        (project_id, aid, kind, detail, created_at))
 
-    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str, name: str | None = None) -> None:
+    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str, name: str | None = None,
+                           size: int | None = None) -> None:
         """Member side: the room's host reports this function matched. A remote report is never accepted on
         its own (plan X-01): the reported source is recompiled against the CURRENT local context and
         evaluated against the local target; only a real local match goes through the normal acceptance
         path (_record: receipt, matched_epoch). When this copy can't reproduce it (the host compiled with
         decomp-* comments or a compiler this copy lacks) the attempt is kept as historical evidence, and in a
         linked room, where the host is the judge, the function is still marked matched as the host's (no
-        receipt: nothing was verified here). Found by name (overlays reuse addresses), else by a unique address."""
+        receipt: nothing was verified here) - unless the host's function has another size (`size`, or the length
+        the source builds to here when it has no comments this copy can't apply): then the two copies cut this
+        code differently and the host's match is of other code. Found by name (overlays reuse
+        addresses), else by a unique address."""
         proj = self._project(slug)
         fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", proj["id"], name) if name else None
         if fn is None:
@@ -2175,9 +2313,14 @@ class RomNetwork(Network):
         if matched_now and ok and self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True,
                                                via="room", snapshot=snap, object_digest=cand.fingerprint()) is None:
             return
+        built = len(getattr(cand, "code", None) or b"") if compiled else 0
+        if size is None and built and built != fn["size"] and not self._directives(proj, source, fn).unknown:
+            size = built  # built here the host's way, it is another length: the host's cut is another
+        other_cut = size is not None and size != fn["size"]
         self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=compiled, via="room",
-                     snapshot=snap, stale_reason=why or "remote match failed local verification")
-        if self.cfg(proj).get("link"):
+                     snapshot=snap, stale_reason=why or (f"the host's function is {size} bytes, this copy's {fn['size']}"
+                                                         if other_cut else "remote match failed local verification"))
+        if self.cfg(proj).get("link") and not other_cut:
             self._mark_host_match(fn["id"], agent, source)
 
     HOST_ONLY = ("matched on the room's host, which judges the room; this copy can't rebuild it (decomp-* compiler "
@@ -2259,7 +2402,9 @@ class RomNetwork(Network):
         """Mirror the room's merges, splits and names. The host already regression-tested them on the same ROM."""
         proj = self._project(slug)
         pid = proj["id"]
-        self._mirror_merges(proj, functions)
+        if functions:  # the host joined functions or moved a cut: join here first, the splits below cut again
+            from . import boundary
+            boundary.follow_layout(self, proj, functions)
         local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         for f in sorted(functions, key=lambda f: f["vram"]):
             if f["vram"] in local:
@@ -2286,7 +2431,9 @@ class RomNetwork(Network):
                            (pid, f["name"], f["vram"], tail.size, "func"))
             local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         self._xrefs.pop(pid, None)
-        self._mirror_merges(proj, functions)  # a cut the host moved earlier: the piece cut out takes in what follows
+        if functions:  # a cut the host moved earlier: the piece the splits just cut out takes in what follows
+            from . import boundary
+            boundary.follow_layout(self, proj, functions)
         syms = self.symbols(pid)
         for sym in symbols:
             current, off = syms.name_at(sym["address"])
@@ -2308,68 +2455,6 @@ class RomNetwork(Network):
                                 word.sub(sym["name"], r["best_source"]) if r["best_source"] else None, r["id"]))
             self._syms.pop(pid, None)
             syms = self.symbols(pid)
-
-    def _mirror_merges(self, proj, functions: list[dict]) -> None:
-        """Join what the host joined: a host function that runs over the start of local functions the host no
-        longer has (a false split it repaired) takes them in. A piece that runs past the host function's end is
-        taken in only when the host has a function starting there, which the split pass then cuts back out (a
-        moved cut). Matched functions and addresses several overlays share are left alone; notes and saved best
-        attempts of the joined pieces stay with the function they became part of."""
-        pid = proj["id"]
-        rows = self.store.all("SELECT * FROM functions WHERE project_id=?", pid)
-        if not functions:
-            return
-        shared = {v for v, n in Counter(r["vram"] for r in rows).items() if n > 1}
-        local = {r["vram"]: r for r in rows if r["vram"] not in shared}
-        host = {f["vram"] for f in functions}
-        for f in sorted(functions, key=lambda f: f["vram"]):
-            head, end = local.get(f["vram"]), f["vram"] + f["size"]
-            if head is None or head["vram"] + head["size"] >= end or head["status"] == "matched" or not head["asm"]:
-                continue
-            parts, at = [], head["vram"] + head["size"]
-            while at < end and (r := local.get(at)) is not None and at not in host:
-                if r["status"] == "matched" or not r["asm"] or (at + r["size"] > end and end not in host):
-                    parts = []
-                    break
-                parts.append(r)
-                at += r["size"]
-            if not parts or at < end:  # a gap, or pieces the host doesn't join the same way: left as they are
-                continue
-            rf = self._parse_asm(head["name"], head["asm"], head["unit"])
-            pieces = [self._parse_asm(p["name"], p["asm"], p["unit"]) for p in parts]
-            combined = split.RomFunction(head["name"], rf.vram, rf.rom, rf.segment,
-                                         rf.lines + [ln for p in pieces for ln in p.lines], rf.asm_path,
-                                         rf.labels.union(*(p.labels for p in pieces)))
-            syms = self.symbols(pid)
-            for p in parts:
-                gone = syms.by_name.pop(p["name"], None)
-                if gone is not None:
-                    syms.by_addr.pop(gone.address, None)
-            target = self._make_target(proj, combined, syms)
-            with self.store.tx() as db:
-                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
-                           "revision=revision+1 WHERE id=?",
-                           (combined.size, len(combined.lines), target.code, json.dumps(target.to_json()),
-                            self._asm_source(combined), head["id"]))
-                db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (combined.size, pid, head["name"]))
-                for p in parts:  # what people learned about a piece stays, on the function it was part of
-                    db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (head["id"], p["id"]))
-                    if p["best_source"]:
-                        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
-                                   (pid, head["id"], None, f"Best attempt at {p['name']} (0x{p['vram']:08X}, score "
-                                    f"{p['best_score']}) before the host joined it into {head['name']}:\n{p['best_source']}",
-                                    time.time()))
-                    db.execute("DELETE FROM merge_proposals WHERE function_id=? OR continues_id=?", (p["id"], p["id"]))
-                    self._delete_function_rows(db, p["id"])
-                    db.execute("DELETE FROM functions WHERE id=?", (p["id"],))
-                    db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (pid, p["name"]))
-                self._event(db, pid, None, "merge", f"{' + '.join([head['name']] + [p['name'] for p in parts])} "
-                                                    f"joined, as on the host")
-            for p in parts:
-                local.pop(p["vram"], None)
-            local[head["vram"]] = self.store.one("SELECT * FROM functions WHERE id=?", head["id"])
-            for cache in (self._xrefs, self._ops, self._syms):
-                cache.pop(pid, None)
 
     # ------------------------------------------------------------------ export
 
@@ -2580,13 +2665,14 @@ class RomNetwork(Network):
             cfg["priority"] = ([fn["name"]] + items) if on else items
         return self._update_cfg(slug, change)["priority"]
 
-    def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
+    def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest",
+                  skip: list[str] | tuple = ()):
         self._yield_autopilot(function, project)
         with self.store.lock:
             proj = self._project(project) if project or function is None else self.store.one(
                 "SELECT * FROM projects WHERE id=?", self._function(function, project)["project_id"])
             self._require_not_rescanning(proj["id"])
-            return self._claim_row_available(agent, project, function, strategy)
+            return self._claim_row_available(agent, project, function, strategy, skip)
 
     def released_since(self, agent_id: int, project_id: int, names: list[str], since: float) -> set[str]:
         """Which of `names` this agent gave back (release_function) since `since`: it found them not worth doing."""
@@ -2594,7 +2680,7 @@ class RomNetwork(Network):
             "SELECT 1 FROM events WHERE project_id=? AND agent_id=? AND kind='release' AND detail=? AND created_at>=?",
             project_id, agent_id, n, since)}
 
-    def _claim_row_available(self, agent, project, function, strategy):
+    def _claim_row_available(self, agent, project, function, strategy, skip=()):
         if project and not self.fork_slug(project):
             proj = self._project(project)
             names = self.cfg(proj).get("priority", [])
@@ -2605,16 +2691,17 @@ class RomNetwork(Network):
             if function is None and agent.id not in self.focus:  # a Focus picks by its own rule, stars included
                 # a starred-only helper that released a star (data, not code...) doesn't get it handed back again
                 given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id]) if only else set()
+                skipped = set(self._skippable(proj, skip)) if skip else set()  # set aside in a room member's copy
                 for name in names:
                     row = self.store.one("SELECT f.id, f.status FROM functions f WHERE f.project_id=? AND f.name=?", proj["id"], name)
-                    if row and row["status"] == "open" and name not in given_up and not held and not self.store.one(
+                    if row and row["status"] == "open" and name not in given_up and row["id"] not in skipped and not held and not self.store.one(
                             "SELECT 1 FROM claims WHERE function_id=?", row["id"]):
                         function = name
                         break
                 if only and function is None and not held:
                     raise NetworkError("no ★ Next in line function is left for you: the rest are done, released by you "
                                        "or being worked on by others. Stop here: this session ends by itself.")
-        return Network.claim_row(self, agent, project, function, strategy)
+        return Network.claim_row(self, agent, project, function, strategy, skip)
 
     # ------------------------------------------------------------------ autopilot
 

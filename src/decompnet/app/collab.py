@@ -33,7 +33,7 @@ from starlette.routing import Route
 
 from .. import compiler_profiles as profiles
 from .. import toolchains
-from ..network import Agent, NetworkError, _hash_token
+from ..network import SKIP_MAX, Agent, NetworkError, _hash_token
 from ..rom.symbols import AUTO_NAME
 from . import forkroom
 
@@ -237,7 +237,7 @@ class Room:
         out: dict = {"e": max_e, "events": [dict(ev) for ev in events]}
         first = e == 0
         if first or names:
-            rows = net.store.all("SELECT f.name, f.vram, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
+            rows = net.store.all("SELECT f.name, f.vram, f.size, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
                                  "ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched'", pid)
             out["matched"] = [dict(r) for r in rows if first or r["name"] in names]
         best = net.store.all("SELECT f.name, f.vram, f.best_score, f.best_source, MAX(t.id) AS last FROM attempts t "
@@ -370,13 +370,20 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
-        return {"function": fn["name"] if fn else None, "vram": fn["vram"] if fn else None}
+        if not room.fork:  # this copy's own BIOS and assembly detectors, even if its overview was never opened
+            net._set_aside_once(net.project_row(room.slug))
+        # what the member's copy set aside: strategy claims leave it out, unless a person gave it back here
+        skip = [str(s) for s in d.get("skip") or [] if isinstance(s, str)][:SKIP_MAX] if isinstance(d.get("skip"), list) else []
+        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"), skip=skip)
+        given = bool(fn and fn["meta"] and json.loads(fn["meta"]).get("for_agents"))
+        return {"function": fn["name"] if fn else None, "vram": fn["vram"] if fn else None, "for_agents": given}
 
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        res = net.attempt(agent, str(d.get("function", "")), str(d.get("source", "")), room.slug)
-        return {"score": res["score"], "matched": res["matched"]}
+        name = str(d.get("function", ""))
+        res = net.attempt(agent, name, str(d.get("source", "")), room.slug)
+        # the function's size here: a member whose copy cuts it differently must not take this match as its own
+        return {"score": res["score"], "matched": res["matched"], "size": net._function(name, room.slug)["size"]}
 
     def best(room, member, d):
         """A member's attempt got better: kept as the function's best so far, as reported (no compile here: the host
@@ -573,8 +580,16 @@ class Link:
 
     # -- actions, called by RomNetwork for a linked project
 
-    def claim(self, agent: Agent, function: str | None, strategy: str) -> str | None:
-        return self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy})["function"]
+    def claim(self, agent: Agent, function: str | None, strategy: str, skip: list[str] | tuple = ()) -> str | None:
+        """`skip`: what this copy set aside (an older host ignores it). A function the host's person gave back to
+        agents by hand comes with for_agents: this copy follows, so it can take it."""
+        data = {"agent": agent.name, "function": function, "strategy": strategy}
+        if skip:
+            data["skip"] = list(skip)
+        out = self._req("POST", "/collab/claim", data)
+        if out.get("function") and out.get("for_agents"):
+            self.net.follow_give_back(self.slug, out["function"])
+        return out["function"]
 
     def attempt(self, agent: Agent, function: str, source: str) -> dict:
         return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source})
@@ -612,13 +627,14 @@ class Link:
             if net.reopen_unconfirmed(slug, st["matched"]) and st.get("functions"):
                 net.apply_remote_layout(slug, st["functions"], [])  # a reopened piece may be one the host joined
         for m in st.get("matched") or []:
-            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"))
+            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"),
+                                   size=m.get("size"))
         for b in st.get("best") or []:
             net.apply_remote_best(slug, b["vram"], b["score"], b["source"])
         for n in st.get("notes") or []:
             net.apply_remote_note(slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"])
         for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "collab") and not (ev["agent"] or "").startswith(mine):
+            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "boundary", "collab") and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []

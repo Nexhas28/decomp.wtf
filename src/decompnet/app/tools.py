@@ -204,6 +204,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
+    "fix_boundary": lambda net, agent, slug, first, second, at, reason:
+        net.fix_boundary(agent, slug, first, second, at, reason),
+    "set_aside_function": lambda net, agent, slug, function, reason: net.set_aside_function(agent, slug, function, reason),
+    "queue_for_permuter": lambda net, agent, slug, function, reason="": net.queue_for_permuter(agent, slug, function, reason),
     "rescan_gba": lambda net, agent, slug, apply=False, revision=None:
         json.dumps(net.rescan_gba(slug, apply=apply, revision=revision, log=lambda message: None), indent=2),
     "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
@@ -232,17 +236,20 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "add_research_note": lambda net, agent, slug, function, text: _research_note(net, agent, slug, function, text),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "rescan_gba"}
+# the auto-fixer's repairs (boundary.py): listed for, and allowed to, its sessions only
+FIXER_ONLY = {"fix_boundary", "set_aside_function", "queue_for_permuter"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "rescan_gba"} | FIXER_ONLY
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 # A researcher's own tools: it writes notes and know-how instead of matching. Other helpers never see them.
 RESEARCH_ONLY = {"add_knowledge", "next_to_research", "add_research_note"}
 RESEARCHER = "researcher"
 
 
-def tool_names(fork: bool, role: str | None = None) -> list[str]:
+def tool_names(fork: bool, role: str | None = None, fixer: bool = False) -> list[str]:
     """The tools that make sense for a project: forks and ROM projects share the core loop; a researcher also
-    gets its own."""
-    skip = (ROM_ONLY if fork else FORK_ONLY) | (set() if role == RESEARCHER else RESEARCH_ONLY)
+    gets its own, and the auto-fixer its repairs."""
+    skip = ((ROM_ONLY if fork else FORK_ONLY) | (set() if role == RESEARCHER else RESEARCH_ONLY)
+            | (set() if fixer else FIXER_ONLY))
     return [n for n in HANDLERS if n not in skip]
 
 
@@ -402,6 +409,26 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def fix_boundary(ctx: Context, first: str, second: str, at: str, reason: str) -> str:
+        """Auto-fixer only: move where two neighbouring functions meet. `at` is the new address where `second`
+        starts; `second`'s end address joins them into one function. Every byte stays where it is; the saved
+        best attempts are judged again. Refused when a piece would end on a jump whose delay slot is in the
+        other piece, or when either is matched, claimed or permuting. `reason`: the evidence."""
+        return await run(ctx, "fix_boundary", first=first, second=second, at=at, reason=reason)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def set_aside_function(ctx: Context, function: str, reason: str) -> str:
+        """Auto-fixer only: set a function no C compiles to (hand-written, a BIOS/kernel call) aside as
+        assembly, out of agents' way. `reason`: what in its code shows it."""
+        return await run(ctx, "set_aside_function", function=function, reason=reason)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def queue_for_permuter(ctx: Context, function: str, reason: str = "") -> str:
+        """Auto-fixer only: hand a function whose C is right but whose registers or order aren't to the
+        permuter, starting from its best attempt."""
+        return await run(ctx, "queue_for_permuter", function=function, reason=reason)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def rescan_gba(ctx: Context, apply: bool = False, revision: str | None = None) -> str:
