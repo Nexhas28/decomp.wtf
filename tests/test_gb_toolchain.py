@@ -231,7 +231,8 @@ def test_mgbdis_split_finds_code_and_covers_the_rom(tmp_path):
     from tests.test_gb import make_rom
 
     rom = bytearray(make_rom(size=0x8000))
-    rom[0x150:0x156] = bytes.fromhex("ea0021c9e0f2c9")     # a setter and an HRAM write
+    rom[0x100:0x104] = bytes.fromhex("cd5001c9")            # the entry *calls* $0150, so it is an entry
+    rom[0x150:0x156] = bytes.fromhex("ea0021c9e0f2c9")      # a setter and an HRAM write
     rom[0x200:0x204] = bytes.fromhex("af47c9")
     path = tmp_path / "game.gb"
     path.write_bytes(bytes(rom))
