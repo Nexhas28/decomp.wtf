@@ -63,3 +63,26 @@ without receipts stay matched but are never promoted to receipted verification.
 3. Inspect scoring-policy drift, lost candidate diversity, prematurely stopped functions.
 4. Review cold-start/failed-analysis costs and holdout composition.
 5. Retain the faster implementation only with an explicit acceptable trade-off; otherwise disable.
+
+## 24.7 Rolling back to the previous release (P12.3)
+The schema only ever gains columns with defaults and new tables (store.py MIGRATIONS/SCHEMA; enforced
+by `tests/test_downgrade.py`), so a downgrade is a code rollback, not a database rollback.
+
+1. **Stop the app, keep the database.** `decomp stop`; the live DB is `<DECOMP_HOME>/.decomp/decomp.db`
+   plus its WAL. Do not hand-copy it (runbook 24.0: the WAL is lost by a raw file copy).
+2. **Back up with the sqlite API** before any downgrade (24.0) — e.g.
+   `python3 -c "import sqlite3;sqlite3.connect('<db>').backup(sqlite3.connect('<db>.pre-downgrade'))"`.
+3. **Reinstall the previous wheel** into the tool venv:
+   `uv pip install --python <tool-venv>/bin/python3 --reinstall --no-deps <previous-decompnet-*.whl>`.
+4. **Start the old version against the same database.** Expected: no migration error; columns and
+   tables it does not know about are simply never read. Its INSERTs omit the newer columns and the
+   defaults (or NULL) apply — this is what `test_columns_added_by_migration_all_carry_defaults_or_are_nullable`
+   pins down for an old writer.
+5. **Accept the known asymmetries:** rows written by the NEWER version and read by the OLDER one lose
+   the newer semantics (a legacy `best_verified=0` flag is invisible to an old build, which will treat
+   that best attempt as authoritative again; wall cooldowns and merge proposals are ignored). No data
+   is destroyed by the downgrade itself.
+6. **Do not downgrade mid-benchmark.** Benchmark identity keys the harness manifest to a commit
+   (Section 21): a version change invalidates the run and it must be restarted.
+7. **To go forward again**, install the new wheel and send an in-app message; opening the database
+   re-runs the additive migration check idempotently (also covered by the test above).
