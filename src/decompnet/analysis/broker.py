@@ -55,10 +55,18 @@ def _identity(engine: str, profile: dict, digest: str, facets: tuple, functions:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+# Route-specific wrapper metadata excluded from correlation identity: two wrappers (direct Ghidra,
+# REA) over the same engine/profile/input share one evidence group (A-04; REA adapter GAP-8).
+_ROUTE_KEYS = frozenset({"provider", "provider_route", "route", "rea_version", "read_only",
+                         "rea_home", "rea_tmp", "rea-entry", "rea_protocol"})
+
+
 def _correlation_group(engine: str, profile: dict, digest: str) -> str:
     """Evidence identity shared by every route over the same engine/profile/input (P8.2.7)."""
-    payload = {"engine": engine, "profile": profile, "input": digest}
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+    normalised = ({k: v for k, v in profile.items() if k not in _ROUTE_KEYS}
+                  if isinstance(profile, dict) else profile)
+    payload = {"engine": engine, "profile": normalised, "input": digest}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:20]
 
 
 def independent_sources(group_a: str, group_b: str) -> bool:
