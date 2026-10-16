@@ -1366,25 +1366,38 @@ def make_portfolio(function_key: str, *, best: DraftCandidate | None = None,
 # ONE target function with an explicit body range. Read-only evidence: nothing here mutates
 # project state (analysis proposals still go through the protected edit path).
 
-def _rom_elf_segments(cfg: dict, data: bytes) -> list[tuple[int, int, int, bytes]]:
-    """(vaddr, filesz, memsz, payload) per config segment; duplicate vram ranges (overlays) keep
-    only the first copy — the loader cannot map two segments onto one address."""
+def _rom_elf_segments(cfg: dict, data: bytes, *, rom_offset: int | None = None) -> list[tuple[int, int, int, bytes]]:
+    """(vaddr, filesz, memsz, payload) per config segment.
+
+    Overlays share one vram range, so only one of them can be mapped. `rom_offset` (the function's
+    offset in the ROM container) selects WHICH: the segment containing it wins the range, and the
+    others are skipped. Without it the first segment of each range is kept, as before."""
+    segs = cfg.get("segments", [])
+    winner = None
+    if rom_offset is not None:
+        winner = next((s for s in segs if s["rom_start"] <= rom_offset < s["rom_end"]), None)
     out: list[tuple[int, int, int, bytes]] = []
-    seen: set[tuple[int, int]] = set()
-    for seg in cfg.get("segments", []):
+    kept: list[tuple[int, int]] = []
+    ordered = ([winner] if winner is not None else []) + [s for s in segs if s is not winner]
+    for seg in ordered:
         start, end, vram = seg["rom_start"], seg["rom_end"], seg["vram"]
-        if (vram, vram + end - start) in seen:
+        rng = (vram, vram + end - start)
+        # overlays are all mapped at one vram with different sizes: exact-key dedupe is not enough,
+        # any vram overlap means the loader could only keep one of them (the last one wins, so a
+        # stray overlay would silently replace the function's real bytes)
+        if any(not (rng[1] <= k[0] or rng[0] >= k[1]) for k in kept):
             continue
-        seen.add((vram, vram + end - start))
         if end > len(data):
             continue
+        kept.append(rng)
         out.append((vram, end - start, end - start, data[start:end]))
     return out
 
 
-def rom_wrapper(proj: dict, out_dir: Path) -> Path:
+def rom_wrapper(proj: dict, out_dir: Path, *, rom_offset: int | None = None) -> Path:
     """One ELF32 (little-endian) wrapper of the project's segment images at their real vram
-    addresses. Cached by the project's rom identity; overwriting is safe (content-addressed)."""
+    addresses. `rom_offset` selects which overlay wins its vram range (see _rom_elf_segments).
+    Cached by the project's rom identity plus the selected overlay; overwriting is safe."""
     import hashlib
     import struct
 
@@ -1392,8 +1405,8 @@ def rom_wrapper(proj: dict, out_dir: Path) -> Path:
     if cfg.get("big_endian"):
         raise AdmissionError("the ROM wrapper lane is little-endian only; big-endian ROMs are not admitted")
     rom = (Path(proj["root"]) / cfg["rom"]["file"]).read_bytes()
-    segs = _rom_elf_segments(cfg, rom)
-    digest = hashlib.sha256(rom + b"rom-wrapper-v2").hexdigest()[:16]
+    segs = _rom_elf_segments(cfg, rom, rom_offset=rom_offset)
+    digest = hashlib.sha256(rom + b"rom-wrapper-v3" + str(rom_offset or 0).encode()).hexdigest()[:16]
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"rom-{proj['slug']}-{digest}.elf"
@@ -1413,7 +1426,8 @@ def rom_wrapper(proj: dict, out_dir: Path) -> Path:
     return out
 
 
-def decompile_rom_function(proj: dict, addr: int, size: int, cache_dir: Path, *, timeout: int = 300) -> dict:
+def decompile_rom_function(proj: dict, addr: int, size: int, cache_dir: Path, *, timeout: int = 300,
+                           rom_offset: int | None = None) -> dict:
     """Decompile one ROM function: wrap the project image, import headless with the pinned Ghidra
     (no auto-analysis; the shipped script disassembles the body, defines referenced data and
     decompiles), and return the evidence. Requires Ghidra + Java 21 (available())."""
@@ -1423,7 +1437,7 @@ def decompile_rom_function(proj: dict, addr: int, size: int, cache_dir: Path, *,
     scripts.mkdir(parents=True, exist_ok=True)
     (scripts / "DecompOne.java").write_text(
         importlib_resources().read_text("decompnet.forks.ghidra_scripts", "DecompOne.java"), encoding="utf-8")
-    wrapper = rom_wrapper(proj, Path(cache_dir) / "rom")
+    wrapper = rom_wrapper(proj, Path(cache_dir) / "rom", rom_offset=rom_offset)
     gh = ghidra_home()
     user_home = os.environ.get("DECOMP_GHIDRA_USER_HOME", str(Path(cache_dir) / "ghidra-user"))
     Path(user_home).mkdir(parents=True, exist_ok=True)
