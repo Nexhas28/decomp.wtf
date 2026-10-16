@@ -546,7 +546,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
-  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); }
+  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); }
   if (tab === "team") renderTeam();
   if (tab === "source" && S.ov) renderSource(S.ov);
   if (tab === "settings") renderProjectSettings();
@@ -632,7 +632,7 @@ async function poll(first) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
     }
     addThoughts(live.sessions, first);
-    if (S.tab === "agents") renderSessions(live.sessions);
+    if (S.tab === "agents") { renderSessions(live.sessions); renderTrust(S.ov); }
     renderNow(live.claims);
     renderStats(live.overview);
     const claimSig = live.claims.map((c) => c.name + "\u0000" + c.agent).join("\n");
@@ -847,43 +847,54 @@ function renderOverview() {
 }
 
 /* A.2/P11.7: the truthful verification scope — receipt coverage, the matched epoch, candidate
-   origins and the recorded wall/stall reasons. Counts, never a rounded green percent. */
-function overviewPanel(id) {
-  const cols = document.querySelector('.ptab[data-pane="overview"] .cols');
-  if (!cols) return null;
+   origins and the recorded wall/stall reasons. Counts, never a rounded green percentage that
+   overclaims. Shown on the overview and the Agents tab; a payload without the block hides both. */
+function tabPanel(pane, id) {
+  const tab = document.querySelector(`.ptab[data-pane="${pane}"]`);
+  if (!tab) return null;
+  const host = tab.querySelector(".cols") || tab.querySelector(".agents-grid") || tab;
   let p = document.getElementById(id);
   if (!p) {
     p = document.createElement("section");
     p.id = id;
     p.className = "panel";
     p.hidden = true;
-    cols.append(p);
+    host.append(p);
   }
   return p;
 }
 
 function renderTrust(ov) {
-  const p = overviewPanel("trustPanel");
-  if (!p || !ov) return;
-  const v = ov.verification;
-  if (!v) { p.hidden = true; return; }
-  p.hidden = false;
-  const matched = ov.matched || 0;
+  const v = ov && ov.verification;
+  for (const [pane, id] of [["overview", "trustPanel"], ["agents", "trustPanelAgents"]]) {
+    const p = tabPanel(pane, id);
+    if (!p) continue;
+    if (!v) { p.hidden = true; continue; }
+    p.hidden = false;
+    p.innerHTML = trustPanel(v, ov.matched || 0);
+  }
+}
+
+function trustPanel(v, matched) {
   const receipts = v.receipts || 0;
   const gap = matched - receipts;
   const list = (obj) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${esc(k)} ×${n}`);
-  p.innerHTML = `<header class="panel-head"><h2>Verification</h2></header>
-    <p class="muted small">${receipts} of ${matched} matched functions have verification receipts · matched epoch ${v.matched_epoch ?? "?"}</p>
-    ${gap > 0 ? `<p class="bad small">${gap} matched function${gap === 1 ? "" : "s"} without a receipt: accepted before (or outside) snapshot verification.</p>` : `<p class="ok small">Every matched function has a receipt.</p>`}
+  const verdict = !matched ? `<p class="muted small">No matches to verify yet.</p>`
+    : gap > 0 ? `<p class="bad small">${gap.toLocaleString()} matched function${gap === 1 ? "" : "s"} without a receipt: accepted before (or outside) snapshot verification.</p>`
+    : `<p class="ok small">Every matched function has a receipt.</p>`;
+  return `<header class="panel-head"><h2>Verification</h2></header>
+    <p class="muted small">${receipts.toLocaleString()} receipt${receipts === 1 ? "" : "s"} for ${matched.toLocaleString()} matched functions · matched epoch ${v.matched_epoch ?? "?"}</p>
+    ${verdict}
     <p class="muted small">candidate origins: ${list(v.origins).join(" · ") || "none recorded"}</p>
     <p class="muted small">budget stall resets: ${list(v.stalls).join(" · ") || "none recorded"}</p>
     <p class="muted small">known walls: ${list(v.walls).join(" · ") || "none recorded"}</p>`;
 }
 
-/* A.4/P2.8: the compile-cache diagnostics line — hits/misses, published entries, quarantined and
-   evicted entries; graceful when the cache is off or not created yet. */
+/* A.4/P2.8: the compile-cache diagnostics — the cache's own counts (entries and bytes on disk, hits and
+   misses, published puts, coalesced waiters, quarantines, evictions), or a clear "off". Older servers
+   send only `stats`: those fields fall back, never to an invented number. */
 function renderCache(info) {
-  const p = overviewPanel("cachePanel");
+  const p = tabPanel("overview", "cachePanel");
   if (!p) return;
   if (!info) { p.hidden = true; return; }
   p.hidden = false;
@@ -893,14 +904,14 @@ function renderCache(info) {
     return;
   }
   const s = info.stats || {};
-  const total = (s.hits || 0) + (s.misses || 0);
-  const rate = total ? ` (${Math.round((100 * (s.hits || 0)) / total)}% hit rate)` : "";
-  const warns = [];
-  if (s.quarantined) warns.push(`<p class="bad small">${s.quarantined} quarantined: tampered or corrupt entries were never served.</p>`);
-  if (s.evicted) warns.push(`<p class="muted small">${s.evicted} evicted by quota.</p>`);
-  p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2></header>
-    <p class="muted small">${s.hits || 0} hits / ${s.misses || 0} misses${rate} · ${s.puts || 0} published · ${s.coalesced || 0} coalesced</p>${warns.join("")}
-    <p class="muted small" title="${esc(info.diagnose || "")}">${esc(info.dir || "")}</p>`;
+  const num = (k) => (info[k] != null ? info[k] : (s[k] || 0));
+  const hits = num("hits"), misses = num("misses"), total = hits + misses;
+  const rate = info.hit_rate != null ? Math.round(100 * info.hit_rate) : total ? Math.round((100 * hits) / total) : null;
+  const quarantined = num("quarantined"), evicted = num("evicted");
+  p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2><span class="muted small">${esc(info.dir || "")}</span></header>
+    <p class="${quarantined ? "bad" : "muted"} small">${num("entries").toLocaleString()} entries · ${bytes(info.bytes || 0)} on disk · ${hits.toLocaleString()} hits / ${misses.toLocaleString()} misses · ${rate == null ? "n/a" : `${rate}%`} hit rate · ${num("puts").toLocaleString()} published · ${num("coalesced").toLocaleString()} coalesced waiters · ${quarantined.toLocaleString()} quarantined · ${evicted.toLocaleString()} evicted</p>
+    ${quarantined ? `<p class="bad small">tampered or corrupt entries were quarantined, never served.</p>` : ""}
+    <p class="muted small" title="${esc(info.diagnose || "")}">hover for quotas and the cache's own diagnosis</p>`;
 }
 
 function renderAgentsKpi(ov) {

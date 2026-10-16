@@ -467,10 +467,32 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     async def api_cache(request: Request) -> JSONResponse:
         return guard(request) or JSONResponse(await call(cache_status))
 
+    def cache_on_disk(root: Path) -> tuple[int, int]:
+        """(entries, bytes) under a cache root, accounted as the cache itself does (one directory per
+        published entry; 512 bytes of manifest overhead plus payload and log). An entry whose manifest
+        cannot be read still counts: what the GUI cannot see is exactly what it must be told about."""
+        entries = used = 0
+        objects = Path(root) / "objects"
+        try:
+            dirs = [d for d in objects.iterdir() if d.is_dir()] if objects.is_dir() else []
+        except OSError:
+            return 0, 0
+        for d in dirs:
+            entries += 1
+            size = 512
+            try:
+                meta = json.loads((d / "entry.json").read_text(encoding="utf-8"))
+                size += int(meta.get("size") or 0) + len(meta.get("log") or "")
+            except (OSError, ValueError, TypeError):
+                pass
+            used += size
+        return entries, used
+
     def cache_status() -> dict:
-        """A.4/P2.8: the compile cache the coordinator uses, for the GUI's diagnostics line — hit/miss
-        counts, published entries, quarantined and evicted entries, plus the cache's own diagnose().
-        Graceful: the cache turned off, unwritable, or not created yet all answer truthfully."""
+        """A.4/P2.8: the compile cache the coordinator uses, for the GUI's diagnostics line — the cache's
+        own hit/miss/put/coalesce/quarantine/eviction counts, entries and bytes on disk, the hit rate,
+        plus its diagnose() text. Graceful: the cache turned off, unwritable, or unreadable all answer
+        truthfully with enabled=False, so a cache problem can never break the page."""
         if os.environ.get("DECOMPNET_COMPILE_CACHE") == "0":
             return {"enabled": False, "reason": "DECOMPNET_COMPILE_CACHE=0 turns the compile cache off"}
         root = Path(os.environ["DECOMPNET_CACHE_DIR"]) if os.environ.get("DECOMPNET_CACHE_DIR") \
@@ -479,7 +501,20 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if cache is None:
             return {"enabled": False, "dir": str(root),
                     "reason": f"the compile cache at {root} cannot be created (unwritable?)"}
-        return {"enabled": True, "dir": str(root), "stats": dict(cache.stats), "diagnose": cache.diagnose()}
+        try:
+            entries, used = cache_on_disk(cache.root)
+            stats = dict(cache.stats)
+            hits = int(stats.get("hits") or 0)
+            misses = int(stats.get("misses") or 0)
+            total = hits + misses
+            return {"enabled": True, "dir": str(cache.root), "entries": entries, "bytes": used,
+                    "hits": hits, "misses": misses, "hit_rate": (hits / total) if total else None,
+                    "puts": int(stats.get("puts") or 0), "coalesced": int(stats.get("coalesced") or 0),
+                    "quarantined": int(stats.get("quarantined") or 0), "evicted": int(stats.get("evicted") or 0),
+                    "stats": stats, "diagnose": cache.diagnose()}
+        except Exception as e:  # noqa: BLE001: cache diagnostics are best-effort, never a broken page
+            return {"enabled": False, "dir": str(getattr(cache, "root", root)),
+                    "reason": f"the compile cache cannot be read ({type(e).__name__}: {e})"}
 
     @mcp.custom_route("/api/import", methods=["POST"])
     async def api_import(request: Request) -> Response:
