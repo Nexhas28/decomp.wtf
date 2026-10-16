@@ -22,6 +22,7 @@ function duration(h) { return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` :
 function bytes(n) { return n >= 1 << 20 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} bytes`; }
 function money(usd) { return usd >= 10 ? `$${usd.toFixed(0)}` : `$${usd.toFixed(2)}`; }
 
+let apiRetried = false;
 async function api(path, { method = "GET", body, raw } = {}) {
   const opts = { method, headers: {} };
   if (method !== "GET") opts.headers["X-Decomp"] = "1";
@@ -30,6 +31,15 @@ async function api(path, { method = "GET", body, raw } = {}) {
   const res = await fetch(path, opts);
   let data = null;
   try { data = await res.json(); } catch { /* not json */ }
+  if (res.status === 401 && !apiRetried) {
+    // The app restarted and this tab's session key no longer matches. Reload once so the page
+    // re-enters (the app keeps its key across restarts now), instead of silently freezing on
+    // the last-known state; if the key genuinely changed, the app's own page explains how to
+    // reopen it — this tab never loops.
+    apiRetried = true;
+    location.reload();
+    return null;
+  }
   if (!res.ok) throw new Error((data && data.error) || `request failed (${res.status})`);
   return data;
 }
