@@ -2283,6 +2283,21 @@ class RomNetwork(Network):
         self.fixer_ids.discard(agent.id)
         return freed
 
+    def disconnect_all(self, slug: str, keep: set[str] = frozenset()) -> list[str]:
+        """Disconnect every outside agent holding a function in this project (the Agents tab's "Disconnect all"),
+        except the names in `keep` (the app's own helpers). Returns who was disconnected."""
+        proj = self._project(slug)
+        names = [r["name"] for r in self.store.all(
+            "SELECT DISTINCT a.name FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a ON a.id=c.agent_id "
+            "WHERE f.project_id=? AND a.origin IN ('chat', 'local') ORDER BY a.name", proj["id"])]
+        out = []
+        for name in names:
+            if name in keep or name in ("you", "function-nuke", "autopilot"):
+                continue
+            self.disconnect_agent(name)
+            out.append(name)
+        return out
+
     def next_to_research(self, agent: Agent, slug: str, count: int = 1) -> str:
         if self.role.get(agent.id) != "researcher":
             raise NetworkError("next_to_research is for researcher helpers; matching agents use claim_function")
