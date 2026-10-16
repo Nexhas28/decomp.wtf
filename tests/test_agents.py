@@ -117,6 +117,27 @@ def test_opencode_free_models_keep_their_tools_but_never_get_to_use_them(tmp_pat
         assert json.loads((work / "opencode.json").read_text())["permission"] == {"edit": rule, "bash": rule, "webfetch": rule}
 
 
+def test_opencode_2_helpers_run_standalone_not_through_the_shared_service(tmp_path, monkeypatch):
+    """OpenCode 2's `opencode run` goes through one background service that keeps the MCP servers it connected
+    first, so a helper's calls arrived as the user's own opencode identity. --standalone, where it exists."""
+    monkeypatch.setattr(agents, "_config_model", lambda kind: None)
+    for version, help_text, standalone in (("2.0.31", "--standalone  Run with a private server", True),
+                                           ("1.19.0", "--model string", False)):
+        m = _manager(tmp_path, monkeypatch, "opencode")
+        exe = tmp_path / "bin" / "opencode"
+        exe.write_text(f'#!/bin/sh\nif [ "$1" = run ]; then echo "{help_text}"; else echo "opencode v{version}"; fi\n')
+        agents._standalone.clear()
+        agents._log_levels.clear()
+        s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "anthropic/claude-haiku-5-5"})
+        work = tmp_path / f"oc-{version}"
+        work.mkdir()
+        cmd, _, _ = m._command(s, "tok", work)
+        assert ("--standalone" in cmd) is standalone, cmd
+        assert cmd[1] == "run" and cmd[cmd.index("--log-level") + 1] == ("error" if standalone else "ERROR")
+    agents._standalone.clear()
+    agents._log_levels.clear()
+
+
 def test_gemini_cli_helpers_carry_on_as_antigravity():
     assert agents.kind_id("gemini") == "antigravity" and agents.kind_id("agy") == "antigravity"
     assert "gemini" not in agents.KINDS and agents.KINDS["antigravity"].command == "agy"
