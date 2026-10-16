@@ -1,0 +1,8 @@
+# Downloaded/built third-party tools stay local; only the docs, manifest and tests are tracked.
+*/.venv/
+*/bin/
+*/lib/
+*/dist/
+*/build/
+*/share/
+*/.crates*

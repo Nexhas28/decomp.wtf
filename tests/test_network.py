@@ -11,7 +11,8 @@ from decompnet.project import import_project
 from .solutions import SOLUTIONS, WRONG_CLAMP
 
 DEMO = Path(__file__).resolve().parent.parent / "projects" / "demo"
-# projects/demo is a toy x86-64 game built with the computer's own gcc into ELF objects: Linux only
+# projects/demo is a toy x86-64 game built with the computer's own gcc into ELF objects, which a Mac's compiler
+# doesn't make: these tests skip there, but still cover the matching core when run where a Linux gcc exists
 HOST_GCC = sys.platform.startswith("linux") and shutil.which("gcc") is not None
 needs_host_gcc = pytest.mark.skipif(not HOST_GCC, reason="projects/demo needs a Linux gcc (x86-64 ELF)")
 

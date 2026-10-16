@@ -1,0 +1,3620 @@
+{
+ "game.o\u001fram\u001f.text\u001f65536": {
+  "key": "game.o\u001fram\u001f.text\u001f65536",
+  "name": "clamp_s32",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65536,
+  "block_offset": 0,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65536,
+    65571
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nint clamp_s32(int param_1,int param_2,int param_3)\n\n{\n  if ((param_2 <= param_1) && (param_2 = param_3, param_1 <= param_3)) {\n    param_2 = param_1;\n  }\n  return param_2;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65536,
+    "size": 4,
+    "mnemonic": "slt v0,a0,a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65540,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x0001001c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65544,
+    "size": 4,
+    "mnemonic": "_move v0,a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65548,
+    "size": 4,
+    "mnemonic": "move v0,a2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65552,
+    "size": 4,
+    "mnemonic": "slt v1,v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65556,
+    "size": 4,
+    "mnemonic": "beql v1,zero,0x0001001c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65560,
+    "size": 4,
+    "mnemonic": "_move v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65564,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65568,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65536,
+    "end": 65547,
+    "successors": [
+     65564,
+     65548
+    ]
+   },
+   {
+    "start": 65548,
+    "end": 65563,
+    "successors": [
+     65564,
+     65564
+    ]
+   },
+   {
+    "start": 65564,
+    "end": 65571,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65540,
+    "kind": "data",
+    "target": 65564,
+    "value": ""
+   },
+   {
+    "address": 65556,
+    "kind": "data",
+    "target": 65564,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "clamp_s32",
+    "signature": "undefined clamp_s32(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65572": {
+  "key": "game.o\u001fram\u001f.text\u001f65572",
+  "name": "abs_s32",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65572,
+  "block_offset": 36,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65572,
+    65591
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nint abs_s32(int param_1)\n\n{\n  if (param_1 < 0) {\n    param_1 = -param_1;\n  }\n  return param_1;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65572,
+    "size": 4,
+    "mnemonic": "move v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65576,
+    "size": 4,
+    "mnemonic": "bltzl v0,0x00010030",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65580,
+    "size": 4,
+    "mnemonic": "_subu v0,zero,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65584,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65588,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65572,
+    "end": 65583,
+    "successors": [
+     65584,
+     65584
+    ]
+   },
+   {
+    "start": 65584,
+    "end": 65591,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65576,
+    "kind": "data",
+    "target": 65584,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "abs_s32",
+    "signature": "undefined abs_s32(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65592": {
+  "key": "game.o\u001fram\u001f.text\u001f65592",
+  "name": "player_take_damage",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65592,
+  "block_offset": 56,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65592,
+    65675
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nvoid player_take_damage(int param_1)\n\n{\n  if ((short)g_player._32_2_ < 1) {\n    g_player._28_4_ = g_player._28_4_ - param_1;\n    if ((int)g_player._28_4_ < 1) {\n      g_player._28_4_ = 0;\n      g_player._34_2_ = 3;\n    }\n    g_player._32_2_ = 0x3c;\n  }\n  return;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65592,
+    "size": 4,
+    "mnemonic": "lui v1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65596,
+    "size": 4,
+    "mnemonic": "addiu v1,v1,0x1020",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65600,
+    "size": 4,
+    "mnemonic": "lh v0,0x0(v1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65604,
+    "size": 4,
+    "mnemonic": "bgtz v0,0x00010084",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65608,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65612,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65616,
+    "size": 4,
+    "mnemonic": "lw v0,0x101c(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65620,
+    "size": 4,
+    "mnemonic": "subu v0,v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65624,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65628,
+    "size": 4,
+    "mnemonic": "sw v0,0x101c(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65632,
+    "size": 4,
+    "mnemonic": "bgtz v0,0x00010080",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65636,
+    "size": 4,
+    "mnemonic": "_li v0,0x3c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65640,
+    "size": 4,
+    "mnemonic": "li v0,0x3",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65644,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65648,
+    "size": 4,
+    "mnemonic": "sw zero,0x101c(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65652,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65656,
+    "size": 4,
+    "mnemonic": "sh v0,0x1022(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65660,
+    "size": 4,
+    "mnemonic": "li v0,0x3c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65664,
+    "size": 4,
+    "mnemonic": "sh v0,0x0(v1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65668,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65672,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65592,
+    "end": 65611,
+    "successors": [
+     65668,
+     65612
+    ]
+   },
+   {
+    "start": 65612,
+    "end": 65639,
+    "successors": [
+     65664,
+     65640
+    ]
+   },
+   {
+    "start": 65640,
+    "end": 65663,
+    "successors": [
+     65664
+    ]
+   },
+   {
+    "start": 65664,
+    "end": 65667,
+    "successors": [
+     65668
+    ]
+   },
+   {
+    "start": 65668,
+    "end": 65675,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65600,
+    "kind": "data",
+    "target": 69664,
+    "value": ""
+   },
+   {
+    "address": 65604,
+    "kind": "data",
+    "target": 65668,
+    "value": ""
+   },
+   {
+    "address": 65616,
+    "kind": "data",
+    "target": 69660,
+    "value": ""
+   },
+   {
+    "address": 65628,
+    "kind": "data",
+    "target": 69660,
+    "value": ""
+   },
+   {
+    "address": 65632,
+    "kind": "data",
+    "target": 65664,
+    "value": ""
+   },
+   {
+    "address": 65648,
+    "kind": "data",
+    "target": 69660,
+    "value": ""
+   },
+   {
+    "address": 65656,
+    "kind": "data",
+    "target": 69666,
+    "value": ""
+   },
+   {
+    "address": 65664,
+    "kind": "data",
+    "target": 69664,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "player_take_damage",
+    "signature": "undefined player_take_damage(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65676": {
+  "key": "game.o\u001fram\u001f.text\u001f65676",
+  "name": "rng_next",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65676,
+  "block_offset": 140,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65676,
+    65723
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nuint rng_next(void)\n\n{\n  g_rng_state = g_rng_state * 0x41c64e6d + 0x3039;\n  return g_rng_state >> 0x10 & 0x7fff;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65676,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65680,
+    "size": 4,
+    "mnemonic": "lw v0,0x1028(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65684,
+    "size": 4,
+    "mnemonic": "lui v1,0x41c6",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65688,
+    "size": 4,
+    "mnemonic": "ori v1,v1,0x4e6d",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65692,
+    "size": 4,
+    "mnemonic": "mult v0,v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65696,
+    "size": 4,
+    "mnemonic": "mflo v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65700,
+    "size": 4,
+    "mnemonic": "addiu v0,v0,0x3039",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65704,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65708,
+    "size": 4,
+    "mnemonic": "sw v0,0x1028(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65712,
+    "size": 4,
+    "mnemonic": "srl v0,v0,0x10",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65716,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65720,
+    "size": 4,
+    "mnemonic": "_andi v0,v0,0x7fff",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65676,
+    "end": 65723,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65680,
+    "kind": "data",
+    "target": 69672,
+    "value": "null"
+   },
+   {
+    "address": 65708,
+    "kind": "data",
+    "target": 69672,
+    "value": "null"
+   }
+  ],
+  "types": [
+   {
+    "name": "rng_next",
+    "signature": "undefined rng_next(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65724": {
+  "key": "game.o\u001fram\u001f.text\u001f65724",
+  "name": "count_alive_entities",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65724,
+  "block_offset": 188,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65724,
+    65779
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nint count_alive_entities(void)\n\n{\n  int iVar1;\n  int iVar2;\n  int iVar3;\n  \n  iVar3 = 0;\n  iVar2 = 0;\n  iVar1 = 0;\n  do {\n    iVar2 = iVar2 + 1;\n    iVar3 = iVar3 + (*(ushort *)(g_entities + iVar1 + 2) & 1);\n    iVar1 = iVar1 + 0x1c;\n  } while (iVar2 < 0x20);\n  return iVar3;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65724,
+    "size": 4,
+    "mnemonic": "clear a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65728,
+    "size": 4,
+    "mnemonic": "clear a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65732,
+    "size": 4,
+    "mnemonic": "clear v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65736,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65740,
+    "size": 4,
+    "mnemonic": "addu v0,v0,v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65744,
+    "size": 4,
+    "mnemonic": "lhu v0,0x102e(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65748,
+    "size": 4,
+    "mnemonic": "addiu a0,a0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65752,
+    "size": 4,
+    "mnemonic": "andi v0,v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65756,
+    "size": 4,
+    "mnemonic": "addu a1,a1,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65760,
+    "size": 4,
+    "mnemonic": "slti v0,a0,0x20",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65764,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x000100c8",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65768,
+    "size": 4,
+    "mnemonic": "_addiu v1,v1,0x1c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65772,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65776,
+    "size": 4,
+    "mnemonic": "_move v0,a1",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65724,
+    "end": 65735,
+    "successors": [
+     65736
+    ]
+   },
+   {
+    "start": 65736,
+    "end": 65771,
+    "successors": [
+     65736,
+     65772
+    ]
+   },
+   {
+    "start": 65772,
+    "end": 65779,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65744,
+    "kind": "data",
+    "target": 69678,
+    "value": ""
+   },
+   {
+    "address": 65744,
+    "kind": "data",
+    "target": 69706,
+    "value": ""
+   },
+   {
+    "address": 65764,
+    "kind": "data",
+    "target": 65736,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "count_alive_entities",
+    "signature": "undefined count_alive_entities(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65780": {
+  "key": "game.o\u001fram\u001f.text\u001f65780",
+  "name": "entity_update_physics",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65780,
+  "block_offset": 244,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65780,
+    65883
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nvoid entity_update_physics(int param_1)\n\n{\n  int iVar1;\n  \n  iVar1 = *(int *)(param_1 + 0x10) + 2;\n  *(int *)(param_1 + 0x10) = iVar1;\n  if (0x18 < iVar1) {\n    *(undefined4 *)(param_1 + 0x10) = 0x18;\n  }\n  iVar1 = *(int *)(param_1 + 8) + *(int *)(param_1 + 0x10);\n  *(int *)(param_1 + 8) = iVar1;\n  *(int *)(param_1 + 4) = *(int *)(param_1 + 4) + *(int *)(param_1 + 0xc);\n  if (0x1c0 < iVar1) {\n    *(undefined4 *)(param_1 + 8) = 0x1c0;\n    *(undefined4 *)(param_1 + 0x10) = 0;\n    *(ushort *)(param_1 + 2) = *(ushort *)(param_1 + 2) | 2;\n  }\n  return;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65780,
+    "size": 4,
+    "mnemonic": "move a2,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65784,
+    "size": 4,
+    "mnemonic": "lw v0,0x10(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65788,
+    "size": 4,
+    "mnemonic": "addiu v0,v0,0x2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65792,
+    "size": 4,
+    "mnemonic": "sw v0,0x10(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65796,
+    "size": 4,
+    "mnemonic": "slti v0,v0,0x19",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65800,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x00010114",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65804,
+    "size": 4,
+    "mnemonic": "_li v0,0x18",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65808,
+    "size": 4,
+    "mnemonic": "sw v0,0x10(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65812,
+    "size": 4,
+    "mnemonic": "lw v1,0x4(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65816,
+    "size": 4,
+    "mnemonic": "lw a0,0xc(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65820,
+    "size": 4,
+    "mnemonic": "lw v0,0x8(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65824,
+    "size": 4,
+    "mnemonic": "lw a1,0x10(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65828,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65832,
+    "size": 4,
+    "mnemonic": "addu v0,v0,a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65836,
+    "size": 4,
+    "mnemonic": "sw v0,0x8(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65840,
+    "size": 4,
+    "mnemonic": "slti v0,v0,0x1c1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65844,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x00010154",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65848,
+    "size": 4,
+    "mnemonic": "_sw v1,0x4(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65852,
+    "size": 4,
+    "mnemonic": "lhu v1,0x2(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65856,
+    "size": 4,
+    "mnemonic": "li v0,0x1c0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65860,
+    "size": 4,
+    "mnemonic": "sw v0,0x8(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65864,
+    "size": 4,
+    "mnemonic": "sw zero,0x10(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65868,
+    "size": 4,
+    "mnemonic": "ori v1,v1,0x2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65872,
+    "size": 4,
+    "mnemonic": "sh v1,0x2(a2)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65876,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65880,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65780,
+    "end": 65807,
+    "successors": [
+     65812,
+     65808
+    ]
+   },
+   {
+    "start": 65808,
+    "end": 65811,
+    "successors": [
+     65812
+    ]
+   },
+   {
+    "start": 65812,
+    "end": 65851,
+    "successors": [
+     65876,
+     65852
+    ]
+   },
+   {
+    "start": 65852,
+    "end": 65875,
+    "successors": [
+     65876
+    ]
+   },
+   {
+    "start": 65876,
+    "end": 65883,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 65800,
+    "kind": "data",
+    "target": 65812,
+    "value": ""
+   },
+   {
+    "address": 65844,
+    "kind": "data",
+    "target": 65876,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "entity_update_physics",
+    "signature": "undefined entity_update_physics(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65884": {
+  "key": "game.o\u001fram\u001f.text\u001f65884",
+  "name": "entity_default_hp",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65884,
+  "block_offset": 348,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65884,
+    65979
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nundefined4 entity_default_hp(int param_1)\n\n{\n  undefined4 uVar1;\n  \n  switch((param_1 + -1) * 0x10000 >> 0x10) {\n  case 0:\n    uVar1 = 3;\n    break;\n  case 1:\n    uVar1 = 2;\n    break;\n  case 2:\n    uVar1 = 10;\n    break;\n  case 3:\n    uVar1 = 0x32;\n    break;\n  case 4:\n    uVar1 = 1;\n    break;\n  default:\n    uVar1 = 0;\n  }\n  return uVar1;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65884,
+    "size": 4,
+    "mnemonic": "addiu a0,a0,-0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65888,
+    "size": 4,
+    "mnemonic": "sll a0,a0,0x10",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65892,
+    "size": 4,
+    "mnemonic": "sra a0,a0,0x10",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65896,
+    "size": 4,
+    "mnemonic": "sltiu v0,a0,0x5",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65900,
+    "size": 4,
+    "mnemonic": "beq v0,zero,0x000101b0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65904,
+    "size": 4,
+    "mnemonic": "_sll v0,a0,0x2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65908,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65912,
+    "size": 4,
+    "mnemonic": "addu at,at,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65916,
+    "size": 4,
+    "mnemonic": "lw v0,0x458(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65920,
+    "size": 4,
+    "mnemonic": "jr v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65924,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65928,
+    "size": 4,
+    "mnemonic": "j 0x000101b4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65932,
+    "size": 4,
+    "mnemonic": "_li v0,0x3",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65936,
+    "size": 4,
+    "mnemonic": "j 0x000101b4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65940,
+    "size": 4,
+    "mnemonic": "_li v0,0x2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65944,
+    "size": 4,
+    "mnemonic": "j 0x000101b4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65948,
+    "size": 4,
+    "mnemonic": "_li v0,0xa",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65952,
+    "size": 4,
+    "mnemonic": "j 0x000101b4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65956,
+    "size": 4,
+    "mnemonic": "_li v0,0x32",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65960,
+    "size": 4,
+    "mnemonic": "j 0x000101b4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65964,
+    "size": 4,
+    "mnemonic": "_li v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65968,
+    "size": 4,
+    "mnemonic": "clear v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65972,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65976,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65884,
+    "end": 65907,
+    "successors": [
+     65968,
+     65908
+    ]
+   },
+   {
+    "start": 65908,
+    "end": 65919,
+    "successors": [
+     65920
+    ]
+   },
+   {
+    "start": 65920,
+    "end": 65927,
+    "successors": [
+     65928,
+     65936,
+     65944,
+     65952,
+     65960
+    ]
+   },
+   {
+    "start": 65928,
+    "end": 65935,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65936,
+    "end": 65943,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65944,
+    "end": 65951,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65952,
+    "end": 65959,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65960,
+    "end": 65967,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65968,
+    "end": 65971,
+    "successors": [
+     65972
+    ]
+   },
+   {
+    "start": 65972,
+    "end": 65979,
+    "successors": []
+   }
+  ],
+  "calls": [
+   {
+    "address": 65920,
+    "target": null,
+    "name": "",
+    "indirect": true
+   }
+  ],
+  "references": [
+   {
+    "address": 65900,
+    "kind": "data",
+    "target": 65968,
+    "value": ""
+   },
+   {
+    "address": 65916,
+    "kind": "data",
+    "target": 66648,
+    "value": "00010188"
+   },
+   {
+    "address": 65920,
+    "kind": "data",
+    "target": 65928,
+    "value": ""
+   },
+   {
+    "address": 65920,
+    "kind": "data",
+    "target": 65936,
+    "value": ""
+   },
+   {
+    "address": 65920,
+    "kind": "data",
+    "target": 65944,
+    "value": ""
+   },
+   {
+    "address": 65920,
+    "kind": "data",
+    "target": 65952,
+    "value": ""
+   },
+   {
+    "address": 65920,
+    "kind": "data",
+    "target": 65960,
+    "value": ""
+   },
+   {
+    "address": 65928,
+    "kind": "data",
+    "target": 65972,
+    "value": ""
+   },
+   {
+    "address": 65936,
+    "kind": "data",
+    "target": 65972,
+    "value": ""
+   },
+   {
+    "address": 65944,
+    "kind": "data",
+    "target": 65972,
+    "value": ""
+   },
+   {
+    "address": 65952,
+    "kind": "data",
+    "target": 65972,
+    "value": ""
+   },
+   {
+    "address": 65960,
+    "kind": "data",
+    "target": 65972,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "entity_default_hp",
+    "signature": "undefined entity_default_hp(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "ok",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f65980": {
+  "key": "game.o\u001fram\u001f.text\u001f65980",
+  "name": "entity_spawn",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 65980,
+  "block_offset": 444,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    65980,
+    66107
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nshort * entity_spawn(short param_1,undefined4 param_2,undefined4 param_3)\n\n{\n  undefined4 uVar1;\n  int iVar2;\n  undefined1 *puVar3;\n  \n  iVar2 = 0;\n  puVar3 = g_entities;\n  do {\n    iVar2 = iVar2 + 1;\n    if ((*(ushort *)((int)puVar3 + 2) & 1) == 0) {\n      *(short *)puVar3 = param_1;\n      *(undefined4 *)((int)puVar3 + 4) = param_2;\n      *(undefined4 *)((int)puVar3 + 8) = param_3;\n      *(short *)((int)puVar3 + 0xc) = 0;\n      *(short *)((int)puVar3 + 0xe) = 0;\n      *(short *)((int)puVar3 + 0x10) = 0;\n      *(short *)((int)puVar3 + 0x12) = 0;\n      *(short *)((int)puVar3 + 2) = 1;\n      uVar1 = entity_default_hp((int)param_1);\n      *(undefined4 *)((int)puVar3 + 0x18) = uVar1;\n      return (short *)puVar3;\n    }\n    puVar3 = (undefined1 *)((int)puVar3 + 0x1c);\n  } while (iVar2 < 0x20);\n  return (short *)0x0;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 65980,
+    "size": 4,
+    "mnemonic": "addiu sp,sp,-0x18",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65984,
+    "size": 4,
+    "mnemonic": "move a3,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65988,
+    "size": 4,
+    "mnemonic": "clear v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65992,
+    "size": 4,
+    "mnemonic": "li t0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 65996,
+    "size": 4,
+    "mnemonic": "sll a0,a0,0x10",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66000,
+    "size": 4,
+    "mnemonic": "sw s0,0x10(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66004,
+    "size": 4,
+    "mnemonic": "lui s0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66008,
+    "size": 4,
+    "mnemonic": "addiu s0,s0,0x102c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66012,
+    "size": 4,
+    "mnemonic": "sw ra,0x14(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66016,
+    "size": 4,
+    "mnemonic": "lhu v0,0x2(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66020,
+    "size": 4,
+    "mnemonic": "andi v0,v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66024,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x0001021c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66028,
+    "size": 4,
+    "mnemonic": "_addiu v1,v1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66032,
+    "size": 4,
+    "mnemonic": "sra a0,a0,0x10",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66036,
+    "size": 4,
+    "mnemonic": "sh a3,0x0(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66040,
+    "size": 4,
+    "mnemonic": "sw a1,0x4(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66044,
+    "size": 4,
+    "mnemonic": "sw a2,0x8(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66048,
+    "size": 4,
+    "mnemonic": "sw zero,0xc(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66052,
+    "size": 4,
+    "mnemonic": "sw zero,0x10(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66056,
+    "size": 4,
+    "mnemonic": "jal 0x0001015c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66060,
+    "size": 4,
+    "mnemonic": "_sh t0,0x2(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66064,
+    "size": 4,
+    "mnemonic": "sw v0,0x18(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66068,
+    "size": 4,
+    "mnemonic": "j 0x0001022c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66072,
+    "size": 4,
+    "mnemonic": "_move v0,s0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66076,
+    "size": 4,
+    "mnemonic": "slti v0,v1,0x20",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66080,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x000101e0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66084,
+    "size": 4,
+    "mnemonic": "_addiu s0,s0,0x1c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66088,
+    "size": 4,
+    "mnemonic": "clear v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66092,
+    "size": 4,
+    "mnemonic": "lw ra,0x14(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66096,
+    "size": 4,
+    "mnemonic": "lw s0,0x10(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66100,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66104,
+    "size": 4,
+    "mnemonic": "_addiu sp,sp,0x18",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 65980,
+    "end": 66015,
+    "successors": [
+     66016
+    ]
+   },
+   {
+    "start": 66016,
+    "end": 66031,
+    "successors": [
+     66076,
+     66032
+    ]
+   },
+   {
+    "start": 66032,
+    "end": 66075,
+    "successors": [
+     65884,
+     66092
+    ]
+   },
+   {
+    "start": 66076,
+    "end": 66087,
+    "successors": [
+     66016,
+     66088
+    ]
+   },
+   {
+    "start": 66088,
+    "end": 66091,
+    "successors": [
+     66092
+    ]
+   },
+   {
+    "start": 66092,
+    "end": 66107,
+    "successors": []
+   }
+  ],
+  "calls": [
+   {
+    "address": 66056,
+    "target": 65884,
+    "name": "entity_default_hp",
+    "indirect": false
+   }
+  ],
+  "references": [
+   {
+    "address": 66000,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   },
+   {
+    "address": 66012,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66016,
+    "kind": "data",
+    "target": 69678,
+    "value": ""
+   },
+   {
+    "address": 66016,
+    "kind": "data",
+    "target": 69706,
+    "value": ""
+   },
+   {
+    "address": 66024,
+    "kind": "data",
+    "target": 66076,
+    "value": ""
+   },
+   {
+    "address": 66036,
+    "kind": "data",
+    "target": 69676,
+    "value": "null"
+   },
+   {
+    "address": 66036,
+    "kind": "data",
+    "target": 69704,
+    "value": ""
+   },
+   {
+    "address": 66040,
+    "kind": "data",
+    "target": 69680,
+    "value": ""
+   },
+   {
+    "address": 66040,
+    "kind": "data",
+    "target": 69708,
+    "value": ""
+   },
+   {
+    "address": 66044,
+    "kind": "data",
+    "target": 69684,
+    "value": ""
+   },
+   {
+    "address": 66044,
+    "kind": "data",
+    "target": 69712,
+    "value": ""
+   },
+   {
+    "address": 66048,
+    "kind": "data",
+    "target": 69688,
+    "value": ""
+   },
+   {
+    "address": 66048,
+    "kind": "data",
+    "target": 69716,
+    "value": ""
+   },
+   {
+    "address": 66052,
+    "kind": "data",
+    "target": 69692,
+    "value": ""
+   },
+   {
+    "address": 66052,
+    "kind": "data",
+    "target": 69720,
+    "value": ""
+   },
+   {
+    "address": 66060,
+    "kind": "data",
+    "target": 69678,
+    "value": ""
+   },
+   {
+    "address": 66060,
+    "kind": "data",
+    "target": 69706,
+    "value": ""
+   },
+   {
+    "address": 66064,
+    "kind": "data",
+    "target": 69700,
+    "value": ""
+   },
+   {
+    "address": 66068,
+    "kind": "data",
+    "target": 66092,
+    "value": ""
+   },
+   {
+    "address": 66072,
+    "kind": "data",
+    "target": 69676,
+    "value": "null"
+   },
+   {
+    "address": 66080,
+    "kind": "data",
+    "target": 66016,
+    "value": ""
+   },
+   {
+    "address": 66092,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66096,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "entity_spawn",
+    "signature": "undefined entity_spawn(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "ok",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f66108": {
+  "key": "game.o\u001fram\u001f.text\u001f66108",
+  "name": "add_score",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 66108,
+  "block_offset": 572,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    66108,
+    66183
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nvoid add_score(int param_1)\n\n{\n  g_score = g_score + param_1 * (g_player._36_4_ + 1);\n  if (999999 < g_score) {\n    g_score = 999999;\n  }\n  return;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 66108,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66112,
+    "size": 4,
+    "mnemonic": "lw v0,0x1024(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66116,
+    "size": 4,
+    "mnemonic": "addiu v0,v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66120,
+    "size": 4,
+    "mnemonic": "mult a0,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66124,
+    "size": 4,
+    "mnemonic": "mflo a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66128,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66132,
+    "size": 4,
+    "mnemonic": "lw v0,0x13ac(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66136,
+    "size": 4,
+    "mnemonic": "lui v1,0xf",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66140,
+    "size": 4,
+    "mnemonic": "ori v1,v1,0x423f",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66144,
+    "size": 4,
+    "mnemonic": "addu v0,v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66148,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66152,
+    "size": 4,
+    "mnemonic": "sw v0,0x13ac(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66156,
+    "size": 4,
+    "mnemonic": "slt v0,v1,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66160,
+    "size": 4,
+    "mnemonic": "beq v0,zero,0x00010280",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66164,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66168,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66172,
+    "size": 4,
+    "mnemonic": "sw v1,0x13ac(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66176,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66180,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 66108,
+    "end": 66167,
+    "successors": [
+     66176,
+     66168
+    ]
+   },
+   {
+    "start": 66168,
+    "end": 66175,
+    "successors": [
+     66176
+    ]
+   },
+   {
+    "start": 66176,
+    "end": 66183,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 66112,
+    "kind": "data",
+    "target": 69668,
+    "value": ""
+   },
+   {
+    "address": 66132,
+    "kind": "data",
+    "target": 70572,
+    "value": "null"
+   },
+   {
+    "address": 66152,
+    "kind": "data",
+    "target": 70572,
+    "value": "null"
+   },
+   {
+    "address": 66160,
+    "kind": "data",
+    "target": 66176,
+    "value": ""
+   },
+   {
+    "address": 66172,
+    "kind": "data",
+    "target": 70572,
+    "value": "null"
+   }
+  ],
+  "types": [
+   {
+    "name": "add_score",
+    "signature": "undefined add_score(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f66184": {
+  "key": "game.o\u001fram\u001f.text\u001f66184",
+  "name": "lerp",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 66184,
+  "block_offset": 648,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    66184,
+    66207
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nfloat lerp(float param_1,float param_2,undefined4 param_3,undefined4 param_4,float param_5)\n\n{\n  return param_1 + (param_2 - param_1) * param_5;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 66184,
+    "size": 4,
+    "mnemonic": "sub.S S f0,f14,f12",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66188,
+    "size": 4,
+    "mnemonic": "mtc1 a2,f2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66192,
+    "size": 4,
+    "mnemonic": "nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66196,
+    "size": 4,
+    "mnemonic": "mul.S f0,f0,f2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66200,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66204,
+    "size": 4,
+    "mnemonic": "_add.S f0,f12,f0",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 66184,
+    "end": 66207,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [],
+  "types": [
+   {
+    "name": "lerp",
+    "signature": "undefined lerp(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "empty",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f66208": {
+  "key": "game.o\u001fram\u001f.text\u001f66208",
+  "name": "checksum_save",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 66208,
+  "block_offset": 672,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    66208,
+    66259
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nint checksum_save(byte *param_1,int param_2)\n\n{\n  byte bVar1;\n  byte *pbVar2;\n  int iVar3;\n  \n  iVar3 = 0x1234;\n  if (0 < param_2) {\n    pbVar2 = param_1 + param_2;\n    do {\n      bVar1 = *param_1;\n      param_1 = param_1 + 1;\n      iVar3 = iVar3 * 0x21 + (uint)bVar1;\n    } while ((int)param_1 < (int)pbVar2);\n  }\n  return iVar3;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 66208,
+    "size": 4,
+    "mnemonic": "blez a1,0x000102cc",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66212,
+    "size": 4,
+    "mnemonic": "_li a2,0x1234",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66216,
+    "size": 4,
+    "mnemonic": "addu a1,a1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66220,
+    "size": 4,
+    "mnemonic": "lbu v0,0x0(a0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66224,
+    "size": 4,
+    "mnemonic": "addiu a0,a0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66228,
+    "size": 4,
+    "mnemonic": "sll v1,a2,0x5",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66232,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66236,
+    "size": 4,
+    "mnemonic": "addu a2,v1,v0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66240,
+    "size": 4,
+    "mnemonic": "slt v0,a0,a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66244,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x000102ac",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66248,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66252,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66256,
+    "size": 4,
+    "mnemonic": "_move v0,a2",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 66208,
+    "end": 66215,
+    "successors": [
+     66252,
+     66216
+    ]
+   },
+   {
+    "start": 66216,
+    "end": 66219,
+    "successors": [
+     66220
+    ]
+   },
+   {
+    "start": 66220,
+    "end": 66251,
+    "successors": [
+     66220,
+     66252
+    ]
+   },
+   {
+    "start": 66252,
+    "end": 66259,
+    "successors": []
+   }
+  ],
+  "calls": [],
+  "references": [
+   {
+    "address": 66208,
+    "kind": "data",
+    "target": 66252,
+    "value": ""
+   },
+   {
+    "address": 66244,
+    "kind": "data",
+    "target": 66220,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "checksum_save",
+    "signature": "undefined checksum_save(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "empty",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f66260": {
+  "key": "game.o\u001fram\u001f.text\u001f66260",
+  "name": "entity_collides",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 66260,
+  "block_offset": 724,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    66260,
+    66411
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nbool entity_collides(int param_1,int param_2)\n\n{\n  int iVar1;\n  bool bVar2;\n  \n  iVar1 = abs_s32(*(int *)(param_1 + 4) - *(int *)(param_2 + 4));\n  bVar2 = false;\n  if (iVar1 < ((int)*(short *)(param_1 + 0x14) + (int)*(short *)(param_2 + 0x14)) / 2) {\n    iVar1 = abs_s32(*(int *)(param_1 + 8) - *(int *)(param_2 + 8));\n    bVar2 = iVar1 < ((int)*(short *)(param_1 + 0x16) + (int)*(short *)(param_2 + 0x16)) / 2;\n  }\n  return bVar2;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 66260,
+    "size": 4,
+    "mnemonic": "addiu sp,sp,-0x20",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66264,
+    "size": 4,
+    "mnemonic": "sw s0,0x10(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66268,
+    "size": 4,
+    "mnemonic": "move s0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66272,
+    "size": 4,
+    "mnemonic": "sw s1,0x14(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66276,
+    "size": 4,
+    "mnemonic": "move s1,a1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66280,
+    "size": 4,
+    "mnemonic": "lw v0,0x4(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66284,
+    "size": 4,
+    "mnemonic": "lw a0,0x4(s1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66288,
+    "size": 4,
+    "mnemonic": "sw ra,0x1c(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66292,
+    "size": 4,
+    "mnemonic": "sw s2,0x18(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66296,
+    "size": 4,
+    "mnemonic": "jal 0x00010024",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66300,
+    "size": 4,
+    "mnemonic": "_subu a0,v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66304,
+    "size": 4,
+    "mnemonic": "lh v1,0x14(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66308,
+    "size": 4,
+    "mnemonic": "lh a0,0x14(s1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66312,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66316,
+    "size": 4,
+    "mnemonic": "srl a0,v1,0x1f",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66320,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66324,
+    "size": 4,
+    "mnemonic": "sra v1,v1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66328,
+    "size": 4,
+    "mnemonic": "slt v0,v0,v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66332,
+    "size": 4,
+    "mnemonic": "beq v0,zero,0x00010350",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66336,
+    "size": 4,
+    "mnemonic": "_clear s2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66340,
+    "size": 4,
+    "mnemonic": "lw v0,0x8(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66344,
+    "size": 4,
+    "mnemonic": "lw a0,0x8(s1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66348,
+    "size": 4,
+    "mnemonic": "jal 0x00010024",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66352,
+    "size": 4,
+    "mnemonic": "_subu a0,v0,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66356,
+    "size": 4,
+    "mnemonic": "lh v1,0x16(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66360,
+    "size": 4,
+    "mnemonic": "lh a0,0x16(s1)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66364,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66368,
+    "size": 4,
+    "mnemonic": "srl a0,v1,0x1f",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66372,
+    "size": 4,
+    "mnemonic": "addu v1,v1,a0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66376,
+    "size": 4,
+    "mnemonic": "sra v1,v1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66380,
+    "size": 4,
+    "mnemonic": "slt s2,v0,v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66384,
+    "size": 4,
+    "mnemonic": "move v0,s2",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66388,
+    "size": 4,
+    "mnemonic": "lw ra,0x1c(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66392,
+    "size": 4,
+    "mnemonic": "lw s2,0x18(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66396,
+    "size": 4,
+    "mnemonic": "lw s1,0x14(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66400,
+    "size": 4,
+    "mnemonic": "lw s0,0x10(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66404,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66408,
+    "size": 4,
+    "mnemonic": "_addiu sp,sp,0x20",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 66260,
+    "end": 66339,
+    "successors": [
+     65572,
+     66384,
+     66340
+    ]
+   },
+   {
+    "start": 66340,
+    "end": 66383,
+    "successors": [
+     65572,
+     66384
+    ]
+   },
+   {
+    "start": 66384,
+    "end": 66411,
+    "successors": []
+   }
+  ],
+  "calls": [
+   {
+    "address": 66296,
+    "target": 65572,
+    "name": "abs_s32",
+    "indirect": false
+   },
+   {
+    "address": 66348,
+    "target": 65572,
+    "name": "abs_s32",
+    "indirect": false
+   }
+  ],
+  "references": [
+   {
+    "address": 66264,
+    "kind": "data",
+    "target": -16,
+    "value": ""
+   },
+   {
+    "address": 66272,
+    "kind": "data",
+    "target": -12,
+    "value": ""
+   },
+   {
+    "address": 66288,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66292,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   },
+   {
+    "address": 66332,
+    "kind": "data",
+    "target": 66384,
+    "value": ""
+   },
+   {
+    "address": 66388,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66392,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   },
+   {
+    "address": 66396,
+    "kind": "data",
+    "target": -12,
+    "value": ""
+   },
+   {
+    "address": 66400,
+    "kind": "data",
+    "target": -16,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "entity_collides",
+    "signature": "undefined entity_collides(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "ok",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ },
+ "game.o\u001fram\u001f.text\u001f66412": {
+  "key": "game.o\u001fram\u001f.text\u001f66412",
+  "name": "game_tick",
+  "namespace": "Global",
+  "module": "game.o",
+  "section": ".text",
+  "space": "ram",
+  "entry": 66412,
+  "block_offset": 876,
+  "file_offset": null,
+  "section_offset": null,
+  "vaddr": null,
+  "body_ranges": [
+   [
+    66412,
+    66619
+   ]
+  ],
+  "classification": "normal",
+  "thunk_of": null,
+  "boundary_status": "unknown",
+  "pseudocode": {
+   "status": "ok",
+   "text": "\nvoid game_tick(void)\n\n{\n  int iVar1;\n  undefined1 *puVar2;\n  int iVar3;\n  \n  g_frame_count = g_frame_count + 1;\n  if (0 < (short)g_player._32_2_) {\n    g_player._32_2_ = g_player._32_2_ + -1;\n  }\n  iVar3 = 0;\n  puVar2 = g_entities;\n  do {\n    if ((*(ushort *)((int)puVar2 + 2) & 1) != 0) {\n      entity_update_physics(puVar2);\n      iVar1 = entity_collides(puVar2,g_player);\n      if (iVar1 != 0) {\n        if (*(short *)puVar2 == 5) {\n          add_score(10);\n          *(short *)((int)puVar2 + 2) = 0;\n        }\n        else {\n          player_take_damage(1);\n        }\n      }\n    }\n    iVar3 = iVar3 + 1;\n    puVar2 = (undefined1 *)((int)puVar2 + 0x1c);\n  } while (iVar3 < 0x20);\n  return;\n}\n\n",
+   "warnings": [],
+   "limits": []
+  },
+  "instructions": [
+   {
+    "address": 66412,
+    "size": 4,
+    "mnemonic": "lui v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66416,
+    "size": 4,
+    "mnemonic": "lw v0,0x13b0(v0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66420,
+    "size": 4,
+    "mnemonic": "addiu sp,sp,-0x28",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66424,
+    "size": 4,
+    "mnemonic": "lui a0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66428,
+    "size": 4,
+    "mnemonic": "addiu a0,a0,0x1020",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66432,
+    "size": 4,
+    "mnemonic": "sw ra,0x24(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66436,
+    "size": 4,
+    "mnemonic": "sw s2,0x20(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66440,
+    "size": 4,
+    "mnemonic": "sw s1,0x1c(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66444,
+    "size": 4,
+    "mnemonic": "sw s0,0x18(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66448,
+    "size": 4,
+    "mnemonic": "lh v1,0x0(a0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66452,
+    "size": 4,
+    "mnemonic": "addiu v0,v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66456,
+    "size": 4,
+    "mnemonic": "lui at,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66460,
+    "size": 4,
+    "mnemonic": "sw v0,0x13b0(at)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66464,
+    "size": 4,
+    "mnemonic": "blez v1,0x000103b0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66468,
+    "size": 4,
+    "mnemonic": "_move v0,v1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66472,
+    "size": 4,
+    "mnemonic": "addiu v0,v0,-0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66476,
+    "size": 4,
+    "mnemonic": "sh v0,0x0(a0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66480,
+    "size": 4,
+    "mnemonic": "clear s1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66484,
+    "size": 4,
+    "mnemonic": "li s2,0x5",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66488,
+    "size": 4,
+    "mnemonic": "lui s0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66492,
+    "size": 4,
+    "mnemonic": "addiu s0,s0,0x102c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66496,
+    "size": 4,
+    "mnemonic": "lhu v0,0x2(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66500,
+    "size": 4,
+    "mnemonic": "andi v0,v0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66504,
+    "size": 4,
+    "mnemonic": "beql v0,zero,0x00010418",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66508,
+    "size": 4,
+    "mnemonic": "_addiu s1,s1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66512,
+    "size": 4,
+    "mnemonic": "jal 0x000100f4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66516,
+    "size": 4,
+    "mnemonic": "_move a0,s0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66520,
+    "size": 4,
+    "mnemonic": "lui a1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66524,
+    "size": 4,
+    "mnemonic": "addiu a1,a1,0x1000",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66528,
+    "size": 4,
+    "mnemonic": "jal 0x000102d4",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66532,
+    "size": 4,
+    "mnemonic": "_move a0,s0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66536,
+    "size": 4,
+    "mnemonic": "beql v0,zero,0x00010418",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66540,
+    "size": 4,
+    "mnemonic": "_addiu s1,s1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66544,
+    "size": 4,
+    "mnemonic": "lh v0,0x0(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66548,
+    "size": 4,
+    "mnemonic": "bne v0,s2,0x0001040c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66552,
+    "size": 4,
+    "mnemonic": "_nop",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66556,
+    "size": 4,
+    "mnemonic": "jal 0x0001023c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66560,
+    "size": 4,
+    "mnemonic": "_li a0,0xa",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66564,
+    "size": 4,
+    "mnemonic": "j 0x00010414",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66568,
+    "size": 4,
+    "mnemonic": "_sh zero,0x2(s0)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66572,
+    "size": 4,
+    "mnemonic": "jal 0x00010038",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66576,
+    "size": 4,
+    "mnemonic": "_li a0,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66580,
+    "size": 4,
+    "mnemonic": "addiu s1,s1,0x1",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66584,
+    "size": 4,
+    "mnemonic": "slti v0,s1,0x20",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66588,
+    "size": 4,
+    "mnemonic": "bne v0,zero,0x000103c0",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66592,
+    "size": 4,
+    "mnemonic": "_addiu s0,s0,0x1c",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66596,
+    "size": 4,
+    "mnemonic": "lw ra,0x24(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66600,
+    "size": 4,
+    "mnemonic": "lw s2,0x20(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66604,
+    "size": 4,
+    "mnemonic": "lw s1,0x1c(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66608,
+    "size": 4,
+    "mnemonic": "lw s0,0x18(sp)",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66612,
+    "size": 4,
+    "mnemonic": "jr ra",
+    "operands": "",
+    "bytes_hex": ""
+   },
+   {
+    "address": 66616,
+    "size": 4,
+    "mnemonic": "_addiu sp,sp,0x28",
+    "operands": "",
+    "bytes_hex": ""
+   }
+  ],
+  "blocks": [
+   {
+    "start": 66412,
+    "end": 66471,
+    "successors": [
+     66480,
+     66472
+    ]
+   },
+   {
+    "start": 66472,
+    "end": 66479,
+    "successors": [
+     66480
+    ]
+   },
+   {
+    "start": 66480,
+    "end": 66495,
+    "successors": [
+     66496
+    ]
+   },
+   {
+    "start": 66496,
+    "end": 66511,
+    "successors": [
+     66584,
+     66512
+    ]
+   },
+   {
+    "start": 66512,
+    "end": 66543,
+    "successors": [
+     65780,
+     66260,
+     66584,
+     66544
+    ]
+   },
+   {
+    "start": 66544,
+    "end": 66555,
+    "successors": [
+     66572,
+     66556
+    ]
+   },
+   {
+    "start": 66556,
+    "end": 66571,
+    "successors": [
+     66108,
+     66580
+    ]
+   },
+   {
+    "start": 66572,
+    "end": 66579,
+    "successors": [
+     65592,
+     66580
+    ]
+   },
+   {
+    "start": 66580,
+    "end": 66583,
+    "successors": [
+     66584
+    ]
+   },
+   {
+    "start": 66584,
+    "end": 66595,
+    "successors": [
+     66496,
+     66596
+    ]
+   },
+   {
+    "start": 66596,
+    "end": 66619,
+    "successors": []
+   }
+  ],
+  "calls": [
+   {
+    "address": 66512,
+    "target": 65780,
+    "name": "entity_update_physics",
+    "indirect": false
+   },
+   {
+    "address": 66528,
+    "target": 66260,
+    "name": "entity_collides",
+    "indirect": false
+   },
+   {
+    "address": 66556,
+    "target": 66108,
+    "name": "add_score",
+    "indirect": false
+   },
+   {
+    "address": 66572,
+    "target": 65592,
+    "name": "player_take_damage",
+    "indirect": false
+   }
+  ],
+  "references": [
+   {
+    "address": 66416,
+    "kind": "data",
+    "target": 70576,
+    "value": "null"
+   },
+   {
+    "address": 66432,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66436,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   },
+   {
+    "address": 66440,
+    "kind": "data",
+    "target": -12,
+    "value": ""
+   },
+   {
+    "address": 66444,
+    "kind": "data",
+    "target": -16,
+    "value": ""
+   },
+   {
+    "address": 66448,
+    "kind": "data",
+    "target": 69664,
+    "value": ""
+   },
+   {
+    "address": 66460,
+    "kind": "data",
+    "target": 70576,
+    "value": "null"
+   },
+   {
+    "address": 66464,
+    "kind": "data",
+    "target": 66480,
+    "value": ""
+   },
+   {
+    "address": 66476,
+    "kind": "data",
+    "target": 69664,
+    "value": ""
+   },
+   {
+    "address": 66496,
+    "kind": "data",
+    "target": 69678,
+    "value": ""
+   },
+   {
+    "address": 66496,
+    "kind": "data",
+    "target": 69706,
+    "value": ""
+   },
+   {
+    "address": 66504,
+    "kind": "data",
+    "target": 66584,
+    "value": ""
+   },
+   {
+    "address": 66516,
+    "kind": "data",
+    "target": 69704,
+    "value": ""
+   },
+   {
+    "address": 66524,
+    "kind": "data",
+    "target": 69632,
+    "value": "null"
+   },
+   {
+    "address": 66532,
+    "kind": "data",
+    "target": 69704,
+    "value": ""
+   },
+   {
+    "address": 66536,
+    "kind": "data",
+    "target": 66584,
+    "value": ""
+   },
+   {
+    "address": 66544,
+    "kind": "data",
+    "target": 69704,
+    "value": ""
+   },
+   {
+    "address": 66548,
+    "kind": "data",
+    "target": 66572,
+    "value": ""
+   },
+   {
+    "address": 66564,
+    "kind": "data",
+    "target": 66580,
+    "value": ""
+   },
+   {
+    "address": 66568,
+    "kind": "data",
+    "target": 69706,
+    "value": ""
+   },
+   {
+    "address": 66588,
+    "kind": "data",
+    "target": 66496,
+    "value": ""
+   },
+   {
+    "address": 66596,
+    "kind": "data",
+    "target": -4,
+    "value": ""
+   },
+   {
+    "address": 66600,
+    "kind": "data",
+    "target": -8,
+    "value": ""
+   },
+   {
+    "address": 66604,
+    "kind": "data",
+    "target": -12,
+    "value": ""
+   },
+   {
+    "address": 66608,
+    "kind": "data",
+    "target": -16,
+    "value": ""
+   }
+  ],
+  "types": [
+   {
+    "name": "game_tick",
+    "signature": "undefined game_tick(void)",
+    "origin": "decompiler",
+    "complete": false
+   }
+  ],
+  "pcode": null,
+  "coverage": {
+   "pseudocode": "ok",
+   "instructions": "ok",
+   "blocks": "ok",
+   "calls": "ok",
+   "references": "ok",
+   "types": "ok",
+   "pcode": "unknown"
+  },
+  "warnings": []
+ }
+}

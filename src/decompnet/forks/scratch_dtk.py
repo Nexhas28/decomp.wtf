@@ -29,7 +29,6 @@ import tempfile
 from pathlib import Path
 
 from .. import toolchains
-from ..limits import capped
 from .project import ForkError, ForkProject
 
 GC_DEFAULT, WII_DEFAULT = "GC/1.3.2", "Wii/1.0"
@@ -111,7 +110,7 @@ def _dtk() -> str:
 def _vfs_read(disc: Path, inner: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="decompwtf-disc-") as tmp:
         out = Path(tmp) / Path(inner).name
-        res = subprocess.run(capped([_dtk(), "vfs", "cp", f"{disc}:{inner}", str(out)]), capture_output=True, text=True,
+        res = subprocess.run([_dtk(), "vfs", "cp", f"{disc}:{inner}", str(out)], capture_output=True, text=True,
                              timeout=600, encoding="utf-8", errors="replace")
         if res.returncode != 0 or not out.exists():
             raise ForkError(f"couldn't read {inner} from the disc image: {(res.stderr or res.stdout).strip()[-300:]}")
@@ -137,7 +136,7 @@ def vfs_copy(disc: Path, inner: list[str], dest: Path) -> None:
     """Copy files (paths inside the disc, like files/dll/m699Dll.rel) out of a disc image into `dest`."""
     dest.mkdir(parents=True, exist_ok=True)
     for i in range(0, len(inner), 64):
-        res = subprocess.run(capped([_dtk(), "vfs", "cp", "-q", *[f"{disc}:{x}" for x in inner[i:i + 64]], f"{dest}{os.sep}"]),
+        res = subprocess.run([_dtk(), "vfs", "cp", "-q", *[f"{disc}:{x}" for x in inner[i:i + 64]], f"{dest}{os.sep}"],
                              capture_output=True, text=True, timeout=1800, encoding="utf-8", errors="replace")
         if res.returncode != 0:
             raise ForkError(f"couldn't copy files out of the disc image: {(res.stderr or res.stdout).strip()[-400:]}")
@@ -145,7 +144,7 @@ def vfs_copy(disc: Path, inner: list[str], dest: Path) -> None:
 
 def vfs_list(disc: Path) -> list[str]:
     """Every file in a disc image (paths like files/dll/m302Dll.rel)."""
-    res = subprocess.run(capped([_dtk(), "vfs", "ls", "-r", "-s", f"{disc}:"]), capture_output=True, text=True,
+    res = subprocess.run([_dtk(), "vfs", "ls", "-r", "-s", f"{disc}:"], capture_output=True, text=True,
                          timeout=600, encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ForkError(f"couldn't list the disc image's files: {(res.stderr or res.stdout).strip()[-300:]}")
@@ -242,7 +241,7 @@ def tool_args() -> list[str]:
     args = ["--dtk", str(toolchains.binary("dtk")), "--binutils", str(toolchains.path("gc-wii-binutils")),
             "--compilers", str(toolchains.path("mwcc")), "--objdiff", str(toolchains.binary("objdiff-cli")),
             "--sjiswrap", str(toolchains.binary("sjiswrap"))]
-    if toolchains.get("wibo").supported and os.name != "nt":  # configure.py has --wrapper only off Windows
+    if toolchains.get("wibo").supported:
         args += ["--wrapper", str(toolchains.binary("wibo"))]
     return args
 
@@ -414,7 +413,7 @@ def _differing(root: Path, game_id: str, log_tail: str) -> list[str] | None:
         return None
     if any(e != f"build/{game_id}/ok" for e in re.findall(r"^FAILED: (?:\[code=\d+\] )?(\S+)", log_tail, re.M)):
         return None  # another step failed (what's on disk may be from an earlier build)
-    res = subprocess.run(capped([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"]), cwd=root, capture_output=True,
+    res = subprocess.run([_dtk(), "shasum", "-c", f"config/{game_id}/build.sha1"], cwd=root, capture_output=True,
                          text=True, timeout=600, encoding="utf-8", errors="replace")
     lines = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in (res.stdout + res.stderr).splitlines()]
     results = [re.match(r"^(\S+\.(?:dol|rel)): (OK|FAILED)$", ln) for ln in lines]
@@ -513,7 +512,7 @@ def _dtk_sections(dol: bytes) -> list[tuple[str, int, int]]:
     """(name, address, size) of the program's sections, named as dtk names them."""
     with tempfile.TemporaryDirectory(prefix="decompwtf-dol-") as tmp:
         (Path(tmp) / "main.dol").write_bytes(dol)
-        res = subprocess.run(capped([_dtk(), "dol", "info", str(Path(tmp) / "main.dol")]), capture_output=True,
+        res = subprocess.run([_dtk(), "dol", "info", str(Path(tmp) / "main.dol")], capture_output=True,
                              text=True, timeout=600, encoding="utf-8", errors="replace")
     table = res.stdout.split("Sections:", 1)[-1].split("\n\n", 1)[0]
     return [(m.group(1), int(m.group(2), 16), int(m.group(3), 16))

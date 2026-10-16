@@ -1,0 +1,5 @@
+# Benchmark holdout (plan P0.2 / P10.5): never used to tune mutation or retrieval weights.
+# One function name per line. retrieval.feedback.load_holdout_answers reads this file.
+entity_collides
+checksum_save
+lerp

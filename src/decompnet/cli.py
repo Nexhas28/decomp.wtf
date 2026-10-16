@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("import", help="import or refresh a project directory (containing project.toml)")
     i.add_argument("path", type=Path)
 
+    cf = sub.add_parser("config", help="validate a project directory's project.toml and print its effective configuration")
+    cf.add_argument("path", type=Path)
+
     a = sub.add_parser("agent", help="manage agents")
     asub = a.add_subparsers(dest="agent_cmd", required=True)
     add = asub.add_parser("add", help="register an agent and print its token")
@@ -97,7 +100,6 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("out", type=Path)
 
     args = ap.parse_args(argv)
-    __import__("decompnet").utf8_output()
     if args.cmd == "toolchain":
         return toolchain_cmd(args)
     if args.cmd == "worker":
@@ -106,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         from .permuter import worker
         worker(args.server, args.token, args.minutes, args.jobs)
+        return 0
+    if args.cmd == "config":
+        from .project import effective_config, format_effective_config, load_config
+        try:
+            print(format_effective_config(effective_config(load_config(args.path))))
+        except ProjectRejected as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         return 0
     if args.cmd == "local":
         from . import local

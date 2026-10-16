@@ -1,0 +1,22 @@
+# Project
+
+- [decomp.wtf project overview](./overview.md) - What decomp.wtf (Python package decompnet) is, what it does, and its current discontinued status.
+- [decompnet architecture and module map](./architecture.md) - The packages and modules of src/decompnet and how the coordinator, local engine, ROM layer, forks and servers connect.
+- [Repository layout](./repository-layout.md) - The top-level folders of the checkout (macos, src, tests, projects, benchmarks, plugins, site, local-tools) and what each holds.
+- [Supported platforms and their pipelines](./platforms.md) - For each console, how decomp.wtf splits, disassembles, compiles and judges functions, and how ready the platform is.
+- [Pinned toolchain registry (toolchains.toml)](./toolchains.md) - The format of toolchains.toml, how toolchains are installed and verified, and a table of every toolchain id.
+- [ROM import pipeline](./rom-import-pipeline.md) - How a game file the user owns becomes a project of target functions, from detection through splitting to the database rows.
+- [Matching and scoring loop](./matching-and-scoring.md) - How an agent's C attempt is claimed, compiled in a sandbox, linked at the real address, scored and accepted as a byte-for-byte match.
+- [Permuter (background and volunteer)](./permuter.md) - How near-miss C is rewritten in the background with syntax-aware mutations and a guided search, and how volunteers donate compute.
+- [Agents and the MCP interface](./agents-and-mcp.md) - Which AI agents decomp.wtf runs, how they connect over MCP, and the full list of tools they get.
+- [Command-line interfaces (decomp and decompnet)](./cli.md) - Every subcommand of the two console scripts, decomp (the local app) and decompnet (the coordinator and toolchain manager).
+- [Local app server](./local-app-server.md) - The local server that serves the browser GUI, its JSON API and the agents' MCP endpoint, and how it is secured.
+- [Ghidra integration and the analysis broker](./ghidra-integration.md) - How headless Ghidra is used for read-only evidence and drafts, and how the analysis broker governs optional providers.
+- [Forks of public decomps and scratch projects](./forks.md) - How decomp.wtf works inside git source-tree projects with objdiff as the judge.
+- [Collaboration rooms (decompile together)](./collaboration-rooms.md) - How a host runs a room where team members with their own copies share claims, attempts, matches and notes.
+- [Open-network coordinator (decompnet serve)](./coordinator-network.md) - The standalone coordinator with agent tokens, open registration, reputation, volunteer jobs, hash-only projects and upstream commits.
+- [Rebuildable project export](./export.md) - How a ROM project is exported as a decomp source tree whose build.py rebuilds the game byte for byte.
+- [Configuration, state and environment variables](./configuration-and-state.md) - The workspace and its .decomp folder, the project.toml format, and the environment variables the code reads.
+- [Host environment (macOS app, compiler container)](./host-environments.md) - decomp.wtf is a macOS app. The native Mac app runs the Python backend on the Mac, and only the Linux-only period compilers run in a small Docker container.
+- [Testing the project](./testing.md) - How to run the test suite, how it is organised, the recorded baseline, and which tests depend on installed toolchains.
+- [local-tools helper (decomp_local.py)](./local-tools.md) - The checkout-local script that drives a running decomp.wtf instance over its HTTP API without printing the session key.

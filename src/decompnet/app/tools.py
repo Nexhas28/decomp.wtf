@@ -36,6 +36,7 @@ GUIDES = {
     "ps2": "matching PlayStation 2 (EE-GCC, MWCC PS2) code",
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
+    "gb": "Game Boy and Game Boy Color: SM83, banked cartridges, GBDK-2020/SDCC matching",
     "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
     "aarch64": "AArch64 and Clang (Switch): registers, matching Clang output",
     "similarity": "finding similar functions and reusing matched code",
@@ -45,7 +46,8 @@ GUIDES = {
 PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
-    "gba": ["arm", "agbcc"], "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
+    "gba": ["arm", "agbcc"], "gb": ["gb"], "gbc": ["gb"],
+    "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
     "xbox360": ["ppc", "cpp"],
 }
 
@@ -184,6 +186,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
+    "escalate_function": lambda net, agent, slug, function, question=None:
+        net.escalate(function, question=question or None, project=slug),
+    "calibrate_profile": lambda net, agent, slug, function=None:
+        net.calibrate_profile(slug, functions=[function] if function else None),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
@@ -307,6 +313,22 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "release_function", function=function, notes=notes)
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def escalate_function(ctx: Context, function: str, question: str | None = None) -> str:
+        """When you're stalled on a function: ask for a focused, budget-capped investigation (decompiler evidence
+        and ranked hypotheses) of it. Optional; says so plainly when no analysis provider is available.
+
+        Args:
+            question: what you want to know about the function (optional)
+        """
+        return await run(ctx, "escalate_function", function=function, question=question)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def calibrate_profile(ctx: Context, function: str | None = None) -> str:
+        """Check whether the project's compiler settings fit: a bounded calibration over a few open functions
+        that have a draft (or just `function`), reported as text. Nothing is changed."""
+        return await run(ctx, "calibrate_profile", function=function)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:
         """The shared header (types, structs, prototypes) included before every compile."""
         return await run(ctx, "get_context", function=function)
@@ -368,10 +390,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         template instances), matched ones first, with the matching source of the best one. Start there."""
         return await run(ctx, "find_similar", function=function, limit=limit)
 
-    @mcp.tool(meta=ALWAYS_LOAD)
+    # (the topic list comes from GUIDES, so it never falls behind the guides that exist)
+    @mcp.tool(meta=ALWAYS_LOAD, description=f"Decompilation know-how. Call without a topic for the list "
+                                            f"({', '.join(GUIDES)}).")
     async def guide(ctx: Context, topic: str = "") -> str:
-        """Decompilation know-how. Call without a topic for the list (workflow, mips, gcc-kmc, ido, m2c,
-        data, structs, n64, naming)."""
         return await run(ctx, "guide", topic=topic)
 
     @mcp.tool(meta=ALWAYS_LOAD)

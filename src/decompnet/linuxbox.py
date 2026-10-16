@@ -6,13 +6,16 @@ one long-lived container made from linuxbox.Dockerfile: bare Debian with the 32-
 The toolchain folder is mounted read-only and the compile folders read-write, both at the same path as on the Mac,
 so a command line means the same thing on either side. The container has no network and is resource-limited.
 
-Same shape as wsl.py: `wanted`, `status`, `run`. The shell script that stages and runs a compile is wsl.script.
+Commands go to the container as a small shell script on its standard input (`script`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
+import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,8 +23,6 @@ import threading
 import time
 from importlib import resources
 from pathlib import Path
-
-from . import wsl
 
 IMAGE = "decomp-wtf-compiler"
 NAME = "decomp-wtf-compiler"
@@ -129,6 +130,32 @@ def _ensure() -> None:
         _ready = want
 
 
+def stage_dir() -> str:
+    """A new folder in the container's own file system, for run(stage=...)."""
+    return f"/tmp/decompnet-{secrets.token_hex(8)}"
+
+
+def script(here: str, argv: list[str], *, outputs: list[str] | None = None, inputs: list[str] | None = None,
+           stage: str | None = None) -> str:
+    """The shell script that runs `argv` in `here` (a folder as the container sees it). With `outputs`, it runs in
+    `stage` (a folder in the container's own file system, a new one by default) instead: `inputs` (paths relative to
+    `here`, all of it by default) are copied in first and `outputs` copied back after. The old 32-bit compilers need
+    that: a Docker Desktop shared folder's file IDs don't fit in their inode numbers, so every file they look up
+    there fails with "Value too large for defined data type"."""
+    q = shlex.quote
+    if outputs is None:
+        return f"cd {q(here)} || exit 1\nexec {shlex.join(argv)}\n"
+    stage = stage or stage_dir()
+    lines = [f"rm -rf {q(stage)} && mkdir -p {q(stage)} || exit 1", f"trap {q('rm -rf ' + q(stage))} EXIT"]
+    for i in inputs if inputs is not None else ["."]:
+        into = posixpath.join(stage, posixpath.dirname(i))
+        lines.append(f"mkdir -p {q(into)} && cp -R {q(posixpath.join(here, i))} {q(into + '/')} || exit 1")
+    lines += [f"mkdir -p {q(posixpath.join(stage, posixpath.dirname(o)))} || exit 1" for o in outputs]
+    lines += [f"cd {q(stage)} || exit 1", shlex.join(argv), "rc=$?"]
+    lines += [f"[ ! -e {q(o)} ] || cp {q(o)} {q(posixpath.join(here, o))} || rc=1" for o in outputs]
+    return "\n".join([*lines, 'exit "$rc"', ""])
+
+
 def _inside(p: Path, folder: Path) -> bool:
     return p.resolve().is_relative_to(folder.resolve())
 
@@ -137,8 +164,8 @@ def run(argv: list[str], cwd: Path, timeout: float, *, outputs: list[str] | None
         inputs: list[str] | None = None, stage: str | None = None) -> subprocess.CompletedProcess:
     """Run `argv` in the container in `cwd` (the same path there). A folder outside the compile area (an exported
     project being built) gets a throwaway container of its own with it mounted. With `outputs` the compile runs on a
-    copy in the container's own file system, see wsl.script."""
-    body = wsl.script(str(cwd), argv, outputs=outputs, inputs=inputs, stage=stage)
+    copy in the container's own file system, see `script`."""
+    body = script(str(cwd), argv, outputs=outputs, inputs=inputs, stage=stage)
     guard = ["timeout", "-k", "2", str(max(1, int(timeout))), "sh", "-s"]
     if _inside(cwd, work_root()):
         _ensure()

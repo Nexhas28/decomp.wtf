@@ -1,6 +1,6 @@
 ---
 name: decompile
-description: Decompile a game the user owns (ROM, disc image, ISO, executable) into matching C with decomp.wtf. Use when the user asks to decompile, decomp, reverse engineer, port or mod a game, or to match a game's functions byte for byte (N64, PlayStation 1 and 2, GameCube, Wii, Game Boy Advance, DS, or a public decomp of any platform).
+description: Decompile a game the user owns (ROM, disc image, ISO, executable) into matching C with decomp.wtf. Use when the user asks to decompile, decomp, reverse engineer a game's code, rebuild its source for a port or mod, or to match a game's functions byte for byte (N64, PlayStation 1 and 2, GameCube, Wii, Game Boy, Game Boy Color, Game Boy Advance, DS, or a public decomp of any platform).
 ---
 
 # Decompiling a game with decomp.wtf
@@ -9,9 +9,13 @@ decomp.wtf runs on the user's computer and gives you everything matching decompi
 compiler, a judge that compiles your C and compares it with the game byte for byte, free matches from machine
 drafts, helper agents working in parallel, and a live view for the user. Its tools come from the `decomp` MCP server.
 
-1. **decomp.wtf installed?** If the `decomp` tools are unavailable, ask the user whether to install decomp.wtf
-   (free, open source, local): `curl -fsSL https://decomp.wtf/install.sh | bash` on Linux, or
-   `irm https://decomp.wtf/install.ps1 | iex` in PowerShell. Then restart this session so the tools load.
+1. **decomp.wtf installed?** The `decomp` tools may be deferred: search for them (e.g. ToolSearch `decomp
+   import_game`) before deciding they're missing. If they are, ask the user whether to set up decomp.wtf (free,
+   open source, local). It's a Mac app (macOS 14 or newer) and needs [uv](https://docs.astral.sh/uv/), a copy of
+   the source (`git clone https://github.com/Nexhas28/decomp.wtf`) and, for some compilers, Docker Desktop. The Mac
+   app comes from https://github.com/Nexhas28/decomp.wtf/releases/latest or is built from `macos/` in that copy.
+   Then, in that copy, `uv run decomp connect claude` gives this agent the tools; restart this session so they load.
+   decomp.wtf only runs on macOS: on another system, say so instead of installing anything.
 2. **The game.** Work only with the user's own copy. Never download games or point to download sites. Ask the user
    to confirm the file is their own legally obtained copy, then `import_game(path, own_copy=true)`. If the game is
    already there, `list_projects()` and `open_project()`.
