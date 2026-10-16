@@ -441,8 +441,8 @@ def test_sources_with_compiler_comments_are_judged_by_the_host(judged):
     src = "/* decomp-assembler: maspsx-2.79-div */\nvoid shop_open(void) {}"
     answer["host"] = {"score": 12, "matched": False}
     res = guest.attempt(agent, "shop_open", src, "test")
-    assert res["score"] == 12 and not res["matched"] and "this copy scored 40" in res["text"]
-    assert _fn(guest)["best_score"] == 12
+    assert res["score"] == 12 and not res["matched"] and "only the host applies" in res["text"]
+    assert _fn(guest)["best_score"] == 12 and _last_attempt(guest) == 12  # the host's score, everywhere
     answer["host"] = {"score": 0, "matched": True}  # this copy can't match it, the host can
     res = guest.attempt(agent, "shop_open", src + " ", "test")
     assert res["matched"] and _fn(guest)["status"] == "matched" and _fn(guest)["matched_source"] == src + " "
@@ -471,3 +471,22 @@ def test_the_first_sync_reopens_matches_the_host_never_confirmed(pair):
                    "WHERE name='shop_open'", (local.id,))
     link.sync()  # later syncs leave matches alone: only the first one carries the host's full list
     assert _fn(guest)["status"] == "matched"
+
+
+def _last_attempt(guest):
+    return guest.store.one("SELECT score FROM attempts ORDER BY id DESC LIMIT 1")["score"]
+
+
+def test_one_attempt_asks_the_host_once(judged):
+    """Exact here AND carrying compiler comments: both reasons to ask the host, still one question, and the
+    reply, the stored attempt and the best all show the host's score."""
+    guest, link, agent, answer, asked = judged
+    answer["host"] = {"score": 760, "matched": False}
+    src = "/* decomp-compiler: gcc-2.7.2-psx */ /* decomp-cflags: -O2 */ void shop_open(void) {} /* MATCHES */"
+    res = guest.attempt(agent, "shop_open", src, "test")
+    assert len(asked) == 1 and asked[0][1] == src  # sent as written: no prelude, nothing stripped
+    assert res["score"] == 760 and not res["matched"]
+    assert _last_attempt(guest) == 760 and _fn(guest)["best_score"] == 760 and _fn(guest)["status"] == "open"
+    answer["host"] = {"score": 0, "matched": True}
+    res = guest.attempt(agent, "shop_open", src + " ", "test")
+    assert res["matched"] and len(asked) == 2 and _fn(guest)["status"] == "matched"

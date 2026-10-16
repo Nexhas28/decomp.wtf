@@ -234,7 +234,6 @@ class RomNetwork(Network):
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
         self.rooms: dict = {}  # slug -> collab.Room, for projects this computer shares
         self._remote_ids: dict[str, int] = {}
-        self._room_verdicts: dict[tuple[int, int], dict] = {}  # (function id, agent id) -> the host's last say
         self._ops: dict[int, dict] = {}  # project id -> look-alike index
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
@@ -1799,28 +1798,25 @@ class RomNetwork(Network):
         link = self._link(project)
         if link is None:
             return super().attempt(agent, function, source, project)
-        # In a room the host is the judge: an exact result here is only accepted once the host confirms it
-        # (_second_judge, asked from inside the normal acceptance path), so a match the host rejects never lands.
+        # In a room the host is the judge: _second_judge asks it from inside the normal acceptance path, at most
+        # once per attempt, so a match it rejects never lands and its score is the one recorded
         fn = self._function(function, project)
-        self._room_verdicts.pop((fn["id"], agent.id), None)
         res = super().attempt(agent, function, source, project)
-        verdict = self._room_verdicts.pop((fn["id"], agent.id), None)
-        if verdict is not None:
-            if verdict["matched"] and res["matched"]:
-                res["text"] += "\nShared with the room: the host confirmed the match."
-            return res
-        if res["score"] is None or fn["status"] == "matched":  # didn't compile, or a scratch compile
-            return res
-        if _DIRECTIVE.search(source):
-            return self._host_judged(link, agent, fn, source, res)
-        if fn["best_score"] is None or res["score"] < fn["best_score"]:
+        if res["matched"]:
+            res["text"] += "\nShared with the room: the host confirmed the match."
+        elif (res["score"] is not None and fn["status"] != "matched" and not _DIRECTIVE.search(source)
+              and (fn["best_score"] is None or res["score"] < fn["best_score"])):
             threading.Thread(target=lambda: self._report(link, agent, fn["name"], source, res["score"]),
                              daemon=True).start()
         return res
 
-    def _second_judge(self, agent: Agent, fn, source: str) -> dict | None:
-        """A room's host has the last word on every match (it may compile with settings or decomp-* comments this
-        copy can't apply): asked before a local exact result is accepted."""
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+        """A room's host has the last word (it may compile with settings or decomp-* comments this copy can't
+        apply): asked about every exact result here, and about every source with decomp-compiler/-assembler/
+        -cflags comments, whose score here means little (the host's per-member rate limit bounds how often)."""
+        directives = bool(_DIRECTIVE.search(source))
+        if not exact and not directives:
+            return None
         slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
         link = self.links.get(slug)
         if link is None or link.fork:
@@ -1828,51 +1824,20 @@ class RomNetwork(Network):
         try:
             got = link.attempt(agent, fn["name"], source)
         except NetworkError as e:
-            verdict = {"matched": False, "score": None,
-                       "text": f"⚠️ This copy scored 0, but the room's host couldn't be reached to confirm it ({e}). "
-                               "NOT saved as a match: compile it again once the host is back."}
-        else:
-            if got.get("matched"):
-                verdict = {"matched": True, "score": 0, "text": ""}
-            else:
-                verdict = {"matched": False, "score": got.get("score"), "text": _host_refused(got.get("score"))}
-        self._room_verdicts[(fn["id"], agent.id)] = verdict
-        return verdict
-
-    def _host_judged(self, link, agent: Agent, fn, source: str, res: dict) -> dict:
-        """A source with decomp-compiler/-assembler/-cflags comments: this copy's score means little, so the host
-        judges every one (its own per-member rate limit bounds how often). The host's score is the result."""
-        try:
-            got = link.attempt(agent, fn["name"], source)
-        except NetworkError as e:
-            res["text"] += (f"\n⚠️ This source has decomp-* compiler comments that only the room's host can apply, "
-                            f"and the host couldn't be reached ({e}): the score above is this copy's, not the room's.")
-            return res
+            if exact:
+                return {"matched": False, "score": None,
+                        "text": f"⚠️ This copy scored 0, but the room's host couldn't be reached to confirm it ({e}). "
+                                "NOT saved as a match: compile it again once the host is back."}
+            return None  # unreachable: judged here as usual (this copy's score, nothing accepted on it alone)
         if got.get("matched"):
-            if (why := self._accept_host_match(agent, fn["name"], fn["project_id"], source)):
-                return {"text": f"✅ MATCH on the room's host (it applies this source's decomp-* comments); kept "
-                                f"there, but not here: {why}.", "score": 0, "matched": True}
-            return {"text": f"✅ MATCH! The room's host matched {fn['name']} with this source's decomp-* comments "
-                            f"(this copy can't apply them). Credited to {agent.name}; your claim is released.",
-                    "score": 0, "matched": True}
+            return {"matched": True, "score": 0, "text": ""}
         host = got.get("score")
-        if host:  # the host's score replaces this copy's where this source is the best so far
-            with self.store.tx() as db:
-                db.execute("UPDATE functions SET best_score=? WHERE id=? AND status='open' AND best_source=?",
-                           (host, fn["id"], source))
-        return {"text": (f"score {host} on the room's host" if host is not None else "❌ doesn't compile on the room's host")
-                        + f" (this copy scored {res['score']} but can't apply the decomp-* comments; the host's "
-                          "score is what counts).\n" + res["text"], "score": host, "matched": False}
-
-    def _accept_host_match(self, agent: Agent, name: str, project_id: int, source: str) -> str | None:
-        """Record a match the host made with a source this copy can't compile the same way. Returns why it
-        wasn't recorded, or None."""
-        fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", project_id, name)
-        proj = self.store.one("SELECT * FROM projects WHERE id=?", project_id)
-        ctx = self._context(project_id, fn["unit"])
-        snap = snapshots.capture(fn, proj, ctx, symbols_digest=snapshots.symbol_table_digest(self.store, project_id))
-        return self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, via="room",
-                            snapshot=snap)
+        if exact:
+            return {"matched": False, "score": host, "text": _host_refused(host)}
+        return {"matched": False, "score": host,
+                "text": (f"score {host} on the room's host" if host is not None else "❌ doesn't compile on the room's host")
+                        + " (this source has decomp-* compiler comments that only the host applies, so this copy's "
+                          "score doesn't count; the host's does). Keep iterating."}
 
     def reopen_unconfirmed(self, slug: str, host_matched: set[int]) -> list[str]:
         """Member side, first sync with the room: matches made here (by this copy's agents, not mirrored from
@@ -2532,6 +2497,11 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            judged = self._second_judge(agent, fn, source, d.bytes_match) if d.bytes_match else None
+            if judged is not None and not judged["matched"]:  # a room's host has the last word here too
+                self._record(fn, agent, judged["score"] or None, source, ctx["version"], compiled=True, snapshot=snap,
+                             via=via)
+                return {"matched": False, "score": judged["score"]}
             refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
                                    via=via, object_digest=cand.fingerprint() if d.bytes_match else None)
             return {"matched": d.bytes_match and not refused, "score": d.score}

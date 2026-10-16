@@ -1118,9 +1118,9 @@ class Network:
 
         return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
 
-    def _second_judge(self, agent: Agent, fn, source: str) -> dict | None:
-        """Another judge an exact result must also pass before it is accepted here (RomNetwork: a room's host).
-        None: there is none. Otherwise {"matched", "score", "text"}; "text" explains a refusal."""
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+        """The judge whose say counts over this copy's, asked before a result is recorded (RomNetwork: a room's
+        host). None: there is none for this result. Otherwise {"matched", "score", "text"}; "text" explains a no."""
         return None
 
     def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool,
@@ -1175,12 +1175,22 @@ class Network:
                                f"and call resume_acceptance('{proj['slug']}'), then re-run."),
                     "score": score, "matched": False}
 
-        if matched_now and (judged := self._second_judge(agent, fn, source)) is not None and not judged["matched"]:
-            # exact here, but the judge that counts (a room's host) says otherwise: kept as an attempt with that
-            # judge's score (none when it couldn't say), the function stays open and the claim is kept
+        judged = None if scratch else self._second_judge(agent, fn, source, matched_now)
+        if judged is not None and not judged["matched"]:
+            # the judge that counts (a room's host) says no: recorded with ITS score (none when it couldn't say),
+            # so the reply, the attempt and the best agree; the function stays open and the claim is kept
             self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False, compiled=True,
                          snapshot=snap)
             return {"text": judged["text"], "score": judged["score"], "matched": False}
+        if judged is not None and not matched_now:
+            # ...or it matched a source this copy can't build the same way (decomp-* compiler comments)
+            refused = self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, snapshot=snap,
+                                   via="room")
+            if refused:
+                return {"text": _refused_text(fn, "matches on the room's host", refused), "score": 0, "matched": False}
+            return {"text": f"✅ MATCH! The room's host matched {fn['name']} with this source's compiler comments "
+                            f"(this copy can't apply them). Credited to {agent.name}; your claim is released.",
+                    "score": 0, "matched": True}
 
         if self._hash_only(fn):
             refused = self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
