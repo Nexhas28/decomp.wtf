@@ -136,3 +136,21 @@ def test_an_autopilot_the_lockdown_refuses_ends_with_the_reason(net, home):
     net._autopilot_run("fixture", [], state, 1)
     assert state["state"] == "error" and "fleet lockdown" in state["error"] and state.get("finished_at")
     assert "fleet lockdown" in net.autopilot_status("fixture")["error"]
+
+
+def test_a_permuter_the_lockdown_refuses_ends_with_the_reason(net, home):
+    """local_agent ran outside the permuter loop's try: the refusal killed its thread silently."""
+    from decompnet.app.permute import State
+
+    set_settings(home, lockdown=True)
+    st = net.permuter.jobs["fixture"] = State()
+    net.permuter._loop("fixture", st)  # (the thread's body, run here)
+    assert st.state == "error" and "fleet lockdown" in st.error
+    assert "fleet lockdown" in net.permuter.status("fixture")["error"]
+
+
+def test_a_twins_pass_the_lockdown_refuses_ends_with_the_reason(net, home):
+    set_settings(home, lockdown=True)
+    job = net.twins.full_pass("fixture")
+    assert job.state == "error" and "fleet lockdown" in job.error
+    assert job.ordered.is_set()  # agents waiting for the claim order are not left hanging

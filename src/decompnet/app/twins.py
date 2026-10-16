@@ -196,6 +196,7 @@ class Job:
     tried: int = 0
     matched: int = 0
     asm: int = 0  # hand-written assembly (twins of asm functions, code no compiler makes), out of agents' way
+    error: str = ""  # why it couldn't run (state "error"), e.g. the fleet lockdown refused its identity
     started_at: float = field(default_factory=time.time)
     stop: threading.Event = field(default_factory=threading.Event)
     ordered: threading.Event = field(default_factory=threading.Event)  # assembly set aside, claim order stored
@@ -677,7 +678,12 @@ class Twins:
         if only is None:  # (a pass after a match runs beside the full one: the overview shows the full one)
             self.jobs[slug] = job
             job.ordered.set()
-        agent, _ = self.net.local_agent("autopilot")
+        try:
+            agent, _ = self.net.local_agent("autopilot")
+        except NetworkError as e:  # the fleet lockdown refuses the identity: end with the reason, not silently
+            job.state, job.error = "error", str(e)
+            log.warning("twins on %s: %s", slug, e)
+            return job
         if self.net.fork_slug(slug):
             workers = min(workers, 2)  # each try builds a file
         seen: set[tuple[int, int]] = set()

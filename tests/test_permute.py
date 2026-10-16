@@ -400,3 +400,64 @@ def test_p12_evaluate_failure_is_counted_and_compiled_turns_are_not_refunded(net
     row = net.store.one("SELECT turns_used, compiled_turns, improved_turns, infra_failures FROM search_budgets "
                         "WHERE function_id=2")
     assert (row["turns_used"], row["compiled_turns"], row["improved_turns"], row["infra_failures"]) == (1, 1, 0, 0)
+
+
+def test_a_match_record_refuses_is_not_a_permuter_match(net, monkeypatch):
+    """_record can refuse a byte-identical result (acceptance paused, the validity guard, a stale snapshot):
+    the permuter must not report or count it as a match, locally or in a fork project."""
+    import decompnet.app.permute as permute
+
+    proj = make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    perm = Permuter(net)
+    run = SimpleNamespace(portfolio=SimpleNamespace(best=SimpleNamespace(score=2)))
+    monkeypatch.setattr(permute.snapshots, "capture", lambda fn, proj, ctx: {})
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: SimpleNamespace(ok=True, obj=b"o"))
+    monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (object(), None, []))
+    monkeypatch.setattr(net, "_target_obj", lambda fn, proj: None)
+    monkeypatch.setattr(permute.scoring, "score_only", lambda target, cand: SimpleNamespace(
+        bytes_match=True, score=0, counts={}, candidate=SimpleNamespace(normalised_fingerprint="fp")))
+    recorded = []
+    monkeypatch.setattr(net, "_record", lambda *a, **kw: recorded.append(kw) or "new acceptance is paused")
+    stats = TurnStats()
+    out = perm._make_evaluator(alice, proj, fn, None, run, stats)("int func_002(void) { return 2; }")
+    assert recorded and recorded[0]["matched"] is True
+    assert out.score is None and not out.bytes_match and out.kind == "evaluate_failure"
+    assert stats.refused == "new acceptance is paused" and not stats.improved and stats.infra == 0
+
+    # a fork project: the fork engine says score 0 but not matched (refused)
+    net.forks = SimpleNamespace(attempt=lambda *a, **kw: {"score": 0, "matched": False, "text": "⚠ NOT ACCEPTED"})
+    stats = TurnStats()
+    out = perm._make_evaluator(alice, proj, fn, "fixture", run, stats)("int func_002(void) { return 2; }")
+    assert out.score is None and not out.bytes_match and stats.refused == "⚠ NOT ACCEPTED"
+
+
+def test_a_refused_match_ends_the_turn_without_counting_a_match(net, monkeypatch):
+    import decompnet.app.permute as permute
+
+    proj = make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    monkeypatch.setattr(net, "fork_slug", lambda slug: "fixture", raising=False)
+    calls = []
+
+    def attempt(*a, **kw):
+        calls.append(1)
+        return {"score": 0, "matched": False, "text": "⚠ NOT ACCEPTED: paused"}
+
+    net.forks = SimpleNamespace(attempt=attempt)
+    st = State()
+    perm = Permuter(net)
+    monkeypatch.setattr(perm, "_probe", lambda proj, fn, fork: (None, "unknown", None))
+
+    def step(run, evaluate):  # every step finds the same identical candidate
+        out = evaluate("int func_002(void) { return 2; }")
+        return SimpleNamespace(operator="op", kind="matched" if out.score == 0 else out.kind)
+
+    monkeypatch.setattr(permute, "step", step)
+    perm._permute(alice, proj, fn, st)
+    assert len(calls) == 1  # no more mutations once the match was refused
+    assert st.matched == 0 and st.refused == "func_002: ⚠ NOT ACCEPTED: paused"
+    assert perm._load_checkpoint(2) is None  # a resumed run must not remember the refused source as a failure
+    assert net.store.one("SELECT status FROM functions WHERE id=2")["status"] == "open"
