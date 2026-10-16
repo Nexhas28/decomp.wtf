@@ -139,6 +139,7 @@ MIGRATIONS = [
     ("search_budgets", "compiled_turns", "INTEGER NOT NULL DEFAULT 0"),   # turns that produced a compiled candidate
     ("search_budgets", "improved_turns", "INTEGER NOT NULL DEFAULT 0"),   # turns that improved the best score
     ("search_budgets", "infra_failures", "INTEGER NOT NULL DEFAULT 0"),   # turns lost to infrastructure failures
+    ("functions", "best_triage", "TEXT"),                      # one-line verdict on the best attempt's diff (the brief opens with it)
 ]
 
 

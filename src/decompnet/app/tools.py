@@ -74,6 +74,8 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
 3. Write the C functions (same names as the assembly) and judge them: compile_and_diff(function="a, b, c",
    source=all the definitions) for a batch, one name for one. Read the diff: '<' '>' missing/extra
    instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure first, registers last.
+   Each result ends with an Evidence section: a one-line verdict on the diff and, when the structure or
+   the operands are wrong, the drafts or the matched look-alike's source that verdict calls for.
    The workflow and {compiler_guide} guides are below. find_similar(function) shows look-alike functions;
    a matched one is the best starting point.
 4. Score 0 = matched and saved. Before moving on, share what you learned: edit_context for prototypes and

@@ -30,3 +30,25 @@ Calls and prototypes
 switch
 - Dense cases become a jump table (`jtbl_` in .rodata, `jr $reg`); sparse ones become compare chains.
   Your jump table must equal the ROM's, so case values and order matter.
+
+## Worked examples (typical; one change, then recompile)
+Loop counter in the wrong register (`r` on every loop line): declare it first, or pin the hot one.
+```
+r  addu $v1,$v1,$a0  vs  addu $v0,$v0,$a0      int i; s32 sum;  ->  s32 sum; int i;
+```
+Sign extension (`|` sll/sra vs nothing, or andi): the target keeps a 16-bit value.
+```
+| sll $v0,$a0,16 / sra $v0,$v0,16  vs  (none)     int x = p->hp;  ->  s16 x = p->hp;
+```
+Extra `sw`/`lw` pair around a call (`>`): the target keeps the value in a saved register, so mimic that with a temporary.
+```
+> sw $v0,0x18($sp) ... > lw $v0,0x18($sp)         f(g(a), g(a));  ->  t = g(a); f(t, t);
+```
+Magic multiply in the target (`lui 0x6666` / `mult`): the original is plain division.
+```
+< lui $at,0x6666 / mult ...   vs  yours: div     x / 10  (use s32; u32 gives a different sequence)
+```
+Missing branch-likely or loop shape (`<` `beql`, `|` at loop top): try `do { } while` or a `for` with a different test.
+```
+| beql $v0,$zero,L  vs  beq + nop                for (i = 0; i < n; i++)  ->  i = 0; do { ... } while (++i < n);
+```

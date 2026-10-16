@@ -30,6 +30,14 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
 - "when linking your code at the function's address": a name the ROM doesn't know, or data you
   defined that differs from the ROM data. Fix these first.
 
+## Triage first
+1. Compare instruction counts (`Target X insns, yours Y`); if they differ, only `<` `>` `|` matter.
+2. Take the first marker present, in order: `<` `>` `|` → `o` → `i` → `s` → `r`.
+3. `<` add the missing statement; `>` remove the extra one; `|` fix type, sign or operator.
+4. `o` reorder statements; `i` fix constant, offset or type size; `s` reorder or retype locals.
+5. `r` last: declaration order, a temporary, loop shape. It often fixes itself.
+6. Make that one change, compile, keep it only if the score drops. No idea left: release with notes.
+
 ## Priorities
 Get the instruction count and control flow right first, then operands, then register allocation.
 Plausible original code beats contortions: games were written by people, quickly.
