@@ -84,3 +84,36 @@ FINAL INTEGRATED RUN (16 Oct 2026, this host): 388 passed / 19 failed / 117 skip
 The 19 failures = 17 baseline environment lanes (Linux gcc/objdiff/ninja fixtures, network-dependent
 update tests) + 2 GitHub-reachability update tests; the 30 errors are byte-identical to the baseline
 environment set. Every plan PR-01..PR-30 is committed above the reviewed base 575b4a30.
+
+## Wave-3 (post-plan follow-ons) close-out
+
+Beyond the plan's PR-01..PR-30, this wave closed the gaps the plan left as follow-ons, plus the
+defects three production perf-test runs found. Status per item (details in `ROADMAP.md`).
+
+| Item | Plan ref | State | Evidence |
+| --- | --- | --- | --- |
+| Model routing (configurable identities, benchmark-gated) | P11.5 | landed, opt-in | `tests/test_model_routing.py` 12 |
+| Broker/escalation into the live stall path | P8.4 | landed | `tests/test_escalation_wiring.py` 12 |
+| Calibration admission + held-out validation | P4.1 | landed, refuses to commit blind | `tests/test_calibration_commit.py` 17 |
+| Multi-seed stats + grouped-vs-single drafting + holdout recall | P12.2/P4.5 | landed | `tests/test_ablate_harness.py` 7; `benchmarks/harness/{stats,draft_compare,holdout_recall}.py` |
+| Section 20 stragglers (O-02, O-04..O-08, W-02/03/06) | §20 | landed | `tests/test_operations.py`, `tests/test_scheduler.py` 19 |
+| Retrieval acceptance feedback + holdout leakage gate | P6.5/P10.5 | landed | `tests/test_retrieval_feedback.py` 12 |
+| maspsx load-delay-nop drop (spike, opt-in, off by default) | C.2 | landed, flag-gated | `tests/test_maspsx.py` 17 (2 real byte-level) |
+| Boundary merge execution | P8.6 | landed | `tests/test_merge.py` 7; **fixed a real bug**: `propose_merge`/`merge_function` disagreed on adjacency direction, so proposals could never execute |
+| `claim closest` size cap | field finding | landed | `tests/test_wave3_lead.py` |
+| Bridge identity split-brain (suffixed rows after restarts) | field finding | landed | `tests/test_wave3_lead.py`; stable `agents.bridge` client id |
+| Downgrade/rollback safety | P12.3 | landed | `tests/test_downgrade.py` 4 + runbook 24.7 |
+| Approvals: upstream permuter / REA / BSim corpus | P5.7/P9/P10 | **awaiting human signature** | `benchmarks/APPROVALS.md` |
+| Live-agent benchmark | P0.4 | harness only (endpoint + cost approval) | `benchmarks/harness/replay.py` |
+| `%hi`-fold operator | C.3 | **deferred** (aspsx assembler work) | `ROADMAP.md` |
+
+Perf-test outcome (three runs, `work/perf-test/`): the serving/compile infrastructure is fast and
+stable (median judge round-trip ≈0.08 s under a 36-worker fleet, no outages), while the C-only
+frontier is saturated by compiler/assembler walls. PR-31 responded with legacy-best verification
+flags, wall-aware claiming/registry and merge proposals; C.1's blanket `context.h` sdata-initializer
+edit was correctly **rejected** by the regression gate (it breaks two matched functions), leaving the
+documented per-function-file recipe as the supported route.
+
+FINAL WAVE-3 RUN (16 Oct 2026, this host): **546 passed / 17 failed / 116 skipped / 30 errors** —
+the failures/errors are the same environment lanes as the baseline (Linux toolchains, network);
+zero in-scope failures.
