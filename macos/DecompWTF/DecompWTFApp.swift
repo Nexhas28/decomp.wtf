@@ -88,6 +88,7 @@ struct AppCommands: Commands {
             Button("Compilers & Tools") { web.go("#/tools") }
             Button("Settings") { web.go("#/settings") }
                 .keyboardShortcut(",")
+            Button("Anthropic API Key…") { web.openAPIKeySetting() }
             Divider()
             Button("Show Projects Folder in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([Backend.home])

@@ -20,7 +20,7 @@ enum MacSkin {
       --mac-ring: rgba(0, 122, 255, .45);
       --mac-tint: rgba(0, 122, 255, .10);
     }
-    @supports (color: AccentColor) { html[data-shell=mac] { --mac-accent: AccentColor; --mac-accent-ink: AccentColorText; } }
+    @supports (color: AccentColor) { html[data-shell=mac] { --mac-accent: AccentColor; } }
     @media (prefers-color-scheme: dark) { html[data-shell=mac]:not([data-theme=light]) {
       --mac-fill: rgba(255, 255, 255, .055); --mac-fill-strong: rgba(255, 255, 255, .09);
       --mac-control: rgba(255, 255, 255, .10); --mac-control-hover: rgba(255, 255, 255, .15);
@@ -127,6 +127,81 @@ enum MacSkin {
       border-color: var(--mac-accent); background: var(--mac-tint);
     }
     html[data-shell=mac] .popover, html[data-shell=mac] .tip, html[data-shell=mac] .toast { border-radius: 10px; }
+
+    /* What the app draws itself never shows, not even while a page loads: the page's sidebar and narrow-window bar,
+       and its project overview (the app's own screen covers it; switching tabs must not flash it). */
+    html[data-shell=mac] #nav, html[data-shell=mac] #navShade, html[data-shell=mac] .mbar { display: none !important; }
+    html[data-shell=mac] .app { grid-template-columns: minmax(0, 1fr) !important; }
+    html[data-shell=mac] section.ptab[data-pane="overview"] { display: none !important; }
+
+    /* ---- Liquid Glass: the window's own background, Apple's text colours, frosted glass cards and capsule buttons */
+    html[data-shell=mac] {
+      --bg: #f5f5f7; --ink: #1d1d1f; --ink-2: #3a3a3c; --muted: #6e6e73; --faint: #aeaeb2;
+      --line: rgba(0, 0, 0, .10); --line-soft: rgba(0, 0, 0, .06); --bg-alt: rgba(0, 0, 0, .04);
+      --panel: rgba(255, 255, 255, .62); --raise: rgba(250, 250, 252, .86); --code-bg: rgba(0, 0, 0, .035);
+      --glass-edge: rgba(255, 255, 255, .75);
+      --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 1px 2px rgba(0, 0, 0, .06), 0 12px 32px -14px rgba(0, 0, 0, .22);
+      --r: 18px;
+    }
+    @media (prefers-color-scheme: dark) { html[data-shell=mac]:not([data-theme=light]) {
+      --bg: #1c1c1e; --ink: #f5f5f7; --ink-2: #d1d1d6; --muted: #98989d; --faint: #636366;
+      --line: rgba(255, 255, 255, .12); --line-soft: rgba(255, 255, 255, .07); --bg-alt: rgba(255, 255, 255, .05);
+      --panel: rgba(72, 72, 76, .38); --raise: rgba(44, 44, 46, .88); --code-bg: rgba(0, 0, 0, .25);
+      --glass-edge: rgba(255, 255, 255, .14);
+      --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .10), 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px -14px rgba(0, 0, 0, .7);
+    } }
+    html[data-shell=mac][data-theme=dark] {
+      --bg: #1c1c1e; --ink: #f5f5f7; --ink-2: #d1d1d6; --muted: #98989d; --faint: #636366;
+      --line: rgba(255, 255, 255, .12); --line-soft: rgba(255, 255, 255, .07); --bg-alt: rgba(255, 255, 255, .05);
+      --panel: rgba(72, 72, 76, .38); --raise: rgba(44, 44, 46, .88); --code-bg: rgba(0, 0, 0, .25);
+      --glass-edge: rgba(255, 255, 255, .14);
+      --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .10), 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px -14px rgba(0, 0, 0, .7);
+    }
+    html[data-shell=mac] body, html[data-shell=mac] .app, html[data-shell=mac] .main { background: transparent; }
+
+    html[data-shell=mac] .card, html[data-shell=mac] .kpi, html[data-shell=mac] .cat-card, html[data-shell=mac] .tool-card,
+    html[data-shell=mac] .start-card, html[data-shell=mac] .start-card.accent, html[data-shell=mac] .panel,
+    html[data-shell=mac] .check, html[data-shell=mac] .autopilot, html[data-shell=mac] .autopilot.on,
+    html[data-shell=mac] .next, html[data-shell=mac] .popover, html[data-shell=mac] .drop {
+      background: var(--panel); border: 1px solid var(--glass-edge); border-radius: var(--r);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
+    }
+    html[data-shell=mac] .drop { border-style: dashed; border-color: var(--line); }
+    html[data-shell=mac] .card:hover, html[data-shell=mac] .cat-card:hover, html[data-shell=mac] .start-card:hover {
+      background: var(--raise); border-color: var(--glass-edge);
+    }
+    html[data-shell=mac] .panel-head { border-bottom-color: var(--line-soft); }
+    html[data-shell=mac] .phead { background: color-mix(in srgb, var(--bg) 70%, transparent); }
+    html[data-shell=mac] .drawer { background: rgba(0, 0, 0, .25); }
+    html[data-shell=mac] .drawer-card {
+      background: var(--raise); border-left: 1px solid var(--glass-edge);
+      -webkit-backdrop-filter: blur(40px) saturate(180%); backdrop-filter: blur(40px) saturate(180%);
+    }
+
+    /* capsule buttons: blue glass for the main action, clear glass for the rest */
+    html[data-shell=mac] .primary, html[data-shell=mac] .ghost, html[data-shell=mac] .chip,
+    html[data-shell=mac] .pill-btn { border-radius: 999px; }
+    html[data-shell=mac] .ghost.icon { border-radius: 999px; }
+    html[data-shell=mac] .primary {
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 6px 16px -8px var(--mac-accent);
+    }
+    /* white text on every accent-coloured (blue) background, like the system's prominent buttons */
+    html[data-shell=mac] .primary, html[data-shell=mac] .primary *, html[data-shell=mac] .nav-new,
+    html[data-shell=mac] .chip.on, html[data-shell=mac] .chip.on span, html[data-shell=mac] a.primary {
+      color: #fff !important; fill: #fff;
+    }
+    html[data-shell=mac] .ghost, html[data-shell=mac] .chip:not(.on) {
+      background: var(--panel); border: 1px solid var(--glass-edge); box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: blur(20px) saturate(180%); backdrop-filter: blur(20px) saturate(180%);
+    }
+    html[data-shell=mac] .ghost.icon.sm { background: transparent; border-color: transparent; box-shadow: none; }
+    html[data-shell=mac] .seg { border-radius: 999px; background: var(--bg-alt); }
+    html[data-shell=mac] .seg button { border-radius: 999px; }
+    html[data-shell=mac] .field select, html[data-shell=mac] .field input, html[data-shell=mac] .field textarea,
+    html[data-shell=mac] .list-tools .search, html[data-shell=mac] input[type=text], html[data-shell=mac] input[type=search],
+    html[data-shell=mac] input[type=password], html[data-shell=mac] input[type=number] { border-radius: 12px; }
+    html[data-shell=mac] .fn-table th { background: var(--raise); }
     """
 
     /// A user script that adds the skin before the page draws (no flash of the old look).

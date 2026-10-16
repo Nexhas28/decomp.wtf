@@ -76,8 +76,7 @@ struct FunctionMap: View {
                 .overlay(alignment: .topLeading) { tooltip(g) }
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 12).fill(MapPalette.panel(scheme)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(MapPalette.line(scheme)))
+        .glassCard()
     }
 
     private var legend: some View {

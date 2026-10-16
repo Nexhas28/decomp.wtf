@@ -19,6 +19,7 @@
 		C0CA835B8764C06A81060805 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F68C2226496E6F9DA21F4A01 /* WebView.swift */; };
 		E7D9A068D1D3C0D3DA34B86A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E79CEEEC355ECE1B059336B1 /* Assets.xcassets */; };
 		EF10B5839CFFD454EE06C811 /* DecompWTFApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3D952781223173D9B7ECEFE /* DecompWTFApp.swift */; };
+		EF9BE11034E3CBD6DDF4FC81 /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		E79CEEEC355ECE1B059336B1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		EA14ACA1C785D74F2CE208FE /* MacSkin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSkin.swift; sourceTree = "<group>"; };
 		F68C2226496E6F9DA21F4A01 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
+		FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -67,6 +69,7 @@
 				370FD69C84D613FACEDC2100 /* DecompWTF.entitlements */,
 				A3D952781223173D9B7ECEFE /* DecompWTFApp.swift */,
 				373D8F05FC8B6596684CE4DD /* FunctionMap.swift */,
+				FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */,
 				3B5A0B83DE406535F3455711 /* Info.plist */,
 				EA14ACA1C785D74F2CE208FE /* MacSkin.swift */,
 				E3FDEEE44323427126ECEC7B /* NativeViews.swift */,
@@ -153,6 +156,7 @@
 				4B31F641C817689BFF2C573B /* ContentView.swift in Sources */,
 				EF10B5839CFFD454EE06C811 /* DecompWTFApp.swift in Sources */,
 				A7CDF86706098F3ECE87424D /* FunctionMap.swift in Sources */,
+				EF9BE11034E3CBD6DDF4FC81 /* Glass.swift in Sources */,
 				96A4F609453434A2E55B3C78 /* MacSkin.swift in Sources */,
 				4FD72E33E23FE1F7327A7D75 /* NativeViews.swift in Sources */,
 				29A4609BDA4D4736BB9DAFE4 /* Projects.swift in Sources */,

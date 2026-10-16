@@ -17,6 +17,7 @@ struct MainSplitView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
         } detail: {
             ZStack {
+                Color(nsColor: .windowBackgroundColor)  // under the page too: it draws no background of its own
                 // Always there, under the overview: switching tabs doesn't reload the page.
                 WebView(url: url, controller: web, onQuit: onQuit, onRoute: { projects.route = Route(hash: $0) })
                     .opacity(projects.showsNativeOverview ? 0 : 1)
@@ -24,7 +25,7 @@ struct MainSplitView: View {
                     .accessibilityHidden(projects.showsNativeOverview)
                 if projects.showsNativeOverview {
                     OverviewView()
-                        .background(Color(nsColor: Appearance.pageBackground))
+                        .background(Color(nsColor: .windowBackgroundColor))
                 }
             }
             .navigationTitle(title)
@@ -79,7 +80,9 @@ private struct Sidebar: View {
                     // Already in this project (on another tab): back to its overview.
                     route = .project(slug, tab: "overview")
                 }
-                projects.route = route
+                // A page screen shows once the page says it's there (its route), so the overview never gives way
+                // to whatever the page showed before; the native overview can show at once.
+                if route.isNativeOverview { projects.route = route }
                 web.go(route.hash)
             })
     }
@@ -216,7 +219,6 @@ private struct OverviewView: View {
                         if !projects.map.isEmpty {
                             FunctionMap(cells: projects.map, working: projects.working, flashes: projects.flashes,
                                         isFork: ov.isFork) { name in
-                                projects.route = .project(ov.slug, tab: "functions")
                                 web.openFunction(ov.slug, name)
                             }
                         }
@@ -264,14 +266,15 @@ private struct OverviewView: View {
                 }
                 if !ov.needsSetup {
                     Button {
-                        projects.route = .project(ov.slug, tab: "agents")
                         web.startAgents(ov.slug)
                     } label: {
                         Label((summary?.working ?? 0) > 0 ? "Add Agents…" : "Start Agents…", systemImage: "play.fill")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .glassButton(prominent: true)
+                    OpusButton(slug: ov.slug)
                 }
                 Button { projects.openFolder() } label: { Image(systemName: "folder") }
+                    .glassButton()
                     .help("Open the project folder")
                     .accessibilityLabel("Open the project folder")
             }
@@ -300,12 +303,12 @@ private struct OverviewView: View {
             Spacer()
             Button(ov.isFork ? "Give Them Source Files…" : "Set Up the Compiler…") {
                 // The page's own notice, above its Functions tab, has the button that does it.
-                projects.route = .project(ov.slug, tab: "functions")
                 web.go("#/p/\(ov.slug)/functions")
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.orange.opacity(0.12)))
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 18).fill(.orange.opacity(0.10)))
+        .glassCard()
     }
 
     private func progress(_ ov: ProjectOverview) -> some View {
@@ -346,8 +349,7 @@ private struct OverviewView: View {
     }
 
     private func autopilot(_ ov: ProjectOverview, _ ap: AutopilotText) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Image(systemName: ap.running ? "bolt.fill" : "bolt")
                         .foregroundStyle(ap.running ? .orange : .secondary)
@@ -359,33 +361,35 @@ private struct OverviewView: View {
                     }
                     Spacer()
                     Button(ap.button) { projects.toggleAutopilot() }
+                        .glassButton()
                         .disabled(projects.busy)
                 }
                 if let bar = ap.bar {
                     ProgressView(value: bar, total: 1)
                 }
-            }
-            .padding(6)
         }
+        .padding(14)
+        .glassCard()
     }
 
+    /// The project's other screens: a glass bar that floats over the content once it's pinned to the top.
     private func tabs(_ ov: ProjectOverview) -> some View {
-        HStack(spacing: 8) {
-            ForEach(Self.tabs, id: \.0) { tab in
-                Button {
-                    projects.route = .project(ov.slug, tab: tab.0)
-                    web.go("#/p/\(ov.slug)/\(tab.0)")
-                } label: {
-                    Label(tab.1, systemImage: tab.2)
+        GlassGroup {
+            HStack(spacing: 8) {
+                ForEach(Self.tabs, id: \.0) { tab in
+                    Button {
+                        web.go("#/p/\(ov.slug)/\(tab.0)")
+                    } label: {
+                        Label(tab.1, systemImage: tab.2)
+                    }
+                    .glassButton()
                 }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
         }
         .controlSize(.large)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: Appearance.pageBackground))
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder private var activity: some View {
@@ -429,8 +433,8 @@ private struct Stat: View {
             Text(detail).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.6)))
+        .padding(14)
+        .glassCard()
     }
 }
 
@@ -497,5 +501,129 @@ private struct AutopilotText {
             button = "Run Autopilot"
             bar = nil
         }
+    }
+}
+
+
+// MARK: Claude Opus on API credits
+
+/// Starts a Claude Code helper running Opus 5.5 (medium effort) billed to the user's Anthropic API key: their API
+/// credits, not their Claude plan. Asks for the key the first time.
+private struct OpusButton: View {
+    let slug: String
+    @EnvironmentObject private var backend: Backend
+    @EnvironmentObject private var projects: Projects
+    @EnvironmentObject private var web: WebController
+    @State private var askKey = false
+    @State private var pending = false
+    @State private var message: String?
+
+    private struct Settings: Decodable { let anthropic_key: String? }
+    private struct State: Decodable { let settings: Settings }
+    private struct Started: Decodable { let started: [String]? }
+
+    var body: some View {
+        Button { launch() } label: {
+            Label("Opus 5.5 on Credits", systemImage: "sparkles")
+        }
+        .glassButton()
+        .help("Claude Opus 5.5 at medium effort, billed to your Anthropic API key (API credits)")
+        .fixedSize()
+        .sheet(isPresented: $askKey) {
+            KeySheet { key in
+                Task { await save(key) }
+            }
+        }
+        .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    private func launch() {
+        guard let api = backend.api else { return }
+        Task {
+            let state: State? = try? await api.get("/api/state")
+            if (state?.settings.anthropic_key ?? "").isEmpty {
+                pending = true
+                askKey = true
+                return
+            }
+            await start(api)
+        }
+    }
+
+    private func start(_ api: DecompAPI) async {
+        let body: [String: Any] = ["kind": "claude", "slug": slug, "count": 1,
+                                   "options": ["model": "claude-opus-5-5", "effort": "medium", "billing": "api"]]
+        do {
+            let _: Started = try await api.post("/api/agents/start", body)
+            web.go("#/p/\(slug)/agents")
+            projects.refreshList()
+            message = "Claude Code (Opus 5.5) started on your API credits. Its progress is on the Agents tab."
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func save(_ key: String) async {
+        guard let api = backend.api else { return }
+        struct OK: Decodable {}
+        do {
+            let _: [String: AnyDecodable] = try await api.post("/api/settings", ["anthropic_api_key": key])
+            if pending { pending = false; await start(api) }
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+}
+
+/// Decodes and ignores any JSON value (for answers whose content isn't needed).
+private struct AnyDecodable: Decodable {
+    init(from decoder: Decoder) throws {}
+}
+
+private struct KeySheet: View {
+    let save: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var key = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Your Anthropic API key").font(.title2.weight(.semibold))
+            Text("Opus 5.5 helpers are billed to this key, so they use your API credits instead of your Claude plan. "
+                 + "Get one at platform.claude.com > API keys (it starts with sk-ant-api). It's kept on this Mac, in "
+                 + "decomp.wtf's settings.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                SecureField("Paste your key here (sk-ant-api…)", text: $key)
+                    .textFieldStyle(.roundedBorder)
+                Button("Paste") {
+                    key = (NSPasteboard.general.string(forType: .string) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .help("Paste the key you copied")
+            }
+            if !key.isEmpty && !key.trimmingCharacters(in: .whitespaces).hasPrefix("sk-ant-api") {
+                Text(key.hasPrefix("sk-ant-")
+                     ? "That key is tied to your Claude plan, so it would use the plan's limits, not API credits. Use an API key (sk-ant-api…)."
+                     : "That doesn't look like an Anthropic API key: they start with sk-ant-api.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Open platform.claude.com") {
+                    NSWorkspace.shared.open(URL(string: "https://platform.claude.com/settings/keys")!)
+                }
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Save") {
+                    save(key.trimmingCharacters(in: .whitespacesAndNewlines))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!key.trimmingCharacters(in: .whitespaces).hasPrefix("sk-ant-api"))
+            }
+        }
+        .padding(24)
+        .frame(width: 480)
     }
 }

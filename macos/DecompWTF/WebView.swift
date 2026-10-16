@@ -65,6 +65,14 @@ final class WebController: ObservableObject {
         """)
     }
 
+    /// Settings, with the Anthropic API key box ready to paste into.
+    func openAPIKeySetting() {
+        run("""
+        location.hash = "#/settings";
+        setTimeout(() => { const f = document.getElementById("anthropicKeySet"); if (f) { f.scrollIntoView({block: "center"}); f.focus(); } }, 500);
+        """)
+    }
+
     func openDemo() {
         run("""
         location.hash = "#/";
