@@ -31,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from .. import compiler_profiles as profiles
 from .. import toolchains
 from ..network import Agent, NetworkError, _hash_token
 from ..rom.symbols import AUTO_NAME
@@ -219,8 +220,9 @@ class Room:
             return Agent(aid, name, member.name, True)
         return Agent(row["id"], name, member.name, True)
 
-    def state(self, e: int, a: int, ctx_version: int, member: Agent) -> dict:
-        """What changed since the guest's cursors: work product only, never ROM-derived data."""
+    def state(self, e: int, a: int, ctx_version: int, member: Agent, compiler: str = "") -> dict:
+        """What changed since the guest's cursors: work product only, never ROM-derived data. `compiler`: the digest
+        of the member's compiler settings; the host's come along whenever they differ."""
         if self.fork:
             return self._fork_state(e, member)
         pid = self.proj["id"]
@@ -260,6 +262,11 @@ class Room:
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
             "ON a.id=c.agent_id WHERE f.project_id=?", pid)]
         out["members"] = self.members()
+        # every member compiles with exactly the host's settings: the host re-checks each match with them
+        settings = profiles.shared(self.cfg)
+        out["compiler_digest"] = profiles.digest(settings)
+        if compiler != out["compiler_digest"]:
+            out["compiler_settings"] = settings
         return out
 
     def _fork_state(self, e: int, member: Agent) -> dict:
@@ -344,7 +351,8 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
             return {"room": room.slug, **forkroom.hello(net, room.slug), "functions": ov["functions"],
                     "matched": ov["matched"], "members": len(room.members()), **room.settings}
         return {"room": room.slug, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
-                "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"],
+                "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": profiles.shared(cfg)["compiler"],
+                "compiler_settings": profiles.shared(cfg),
                 "functions": ov["functions"], "matched": ov["matched"], "members": len(room.members()),
                 **room.settings}
 
@@ -358,7 +366,7 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return {"name": member.name, "room": room.slug}
 
     def state(room, member, q):
-        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member)
+        return room.state(int(q.get("e") or 0), int(q.get("a") or 0), int(q.get("v") or 0), member, str(q.get("c") or ""))
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
@@ -578,7 +586,10 @@ class Link:
 
     def sync(self) -> None:
         with self._lock:
-            st = self._req("GET", "/collab/state", self.cursor)
+            params = dict(self.cursor)
+            if not self.fork:  # measured from the project itself every time: any drift here brings the host's back
+                params["c"] = profiles.digest(profiles.shared(json.loads(self.net.project_row(self.slug)["config"])))
+            st = self._req("GET", "/collab/state", params)
             self.apply(st)
 
     def apply(self, st: dict) -> None:
@@ -590,11 +601,17 @@ class Link:
         mine = f"{self.member}."
         if st.get("symbols") is not None or st.get("functions") is not None:
             net.apply_remote_layout(slug, st.get("functions") or [], st.get("symbols") or [])
+        if st.get("compiler_settings"):  # before matches: they are re-compiled here with these settings
+            self.follow_compiler(st["compiler_settings"])
         if st.get("context"):
             net.apply_remote_context(slug, st["context"]["header"], st["context"]["version"])
             self.cursor["v"] = st["context"]["version"]
+        if self.cursor["e"] == 0 and st.get("matched") is not None:
+            # the first sync carries every match the host has: a match made here that it doesn't have was
+            # never confirmed by the room's judge (an older copy accepted it locally)
+            net.reopen_unconfirmed(slug, st["matched"])
         for m in st.get("matched") or []:
-            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host")
+            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"))
         for b in st.get("best") or []:
             net.apply_remote_best(slug, b["vram"], b["score"], b["source"])
         for n in st.get("notes") or []:
@@ -605,6 +622,15 @@ class Link:
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
         self.cursor["e"], self.cursor["a"] = st.get("e", self.cursor["e"]), st.get("a", self.cursor["a"])
+
+    def follow_compiler(self, settings: dict) -> None:
+        """Use the host's compiler settings. If this copy can't (a compiler this version doesn't know), the sync
+        stops with that error rather than compiling with different settings than the host's."""
+        try:
+            self.net.apply_remote_compiler(self.slug, settings)
+        except NetworkError as e:
+            self.error = str(e)
+            raise
 
     def _apply_fork(self, st: dict) -> None:
         """A git project's room: follow the host's commits, then mirror matches, notes, events, claims."""
@@ -745,6 +771,11 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
         raise NetworkError(joined.get("error", "couldn't join"))
     slug = net.import_rom(rom, toolchain=hello["compiler"]["toolchain"], flags=hello["compiler"]["flags"],
                           confirmed=True, log=log)
+    if hello.get("compiler_settings"):  # an older host only sends toolchain and flags
+        try:
+            net.apply_remote_compiler(slug, hello["compiler_settings"])
+        except NetworkError as e:  # linked anyway: every sync (and so every claim) then stops with this error
+            log(str(e))
     net.link_project(slug, {"url": url, "room": hello["room"], "token": joined["token"], "member": joined["name"],
                             "host_title": hello["title"]}, client=client, start=start)
     log(f"linked as {joined['name']}: your agents now work with the room")

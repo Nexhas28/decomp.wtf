@@ -94,6 +94,17 @@ _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 # 0x-prefixed: any width (2-4 digits on Game Boy); bare: the full 8 digits only, so names that happen to be
 # hex words ("add", "dead", "cafe") still resolve as names
 _ADDRESS = re.compile(r"^(?:0x([0-9A-Fa-f]{1,8})|([0-9A-Fa-f]{8}))$", re.I)
+# per-function compiler comments some hosts' builds honour (this one doesn't): only the room's host can judge them
+ROOM_CLAIM_TRIES = 6  # host offers this copy can't take, given back before a room claim gives up
+_HOST_HOLDS = re.compile(r"^you already hold (\S+?);")
+_DIRECTIVE = re.compile(r"/\*\s*decomp-(?:compiler|assembler|cflags)\s*:")
+
+
+def _host_refused(score) -> str:
+    return (f"❌ NOT A MATCH YET: your copy scored 0, but the room's host scored "
+            f"{score if score is not None else 'it as not compiling'}. The host uses its own compiler settings and "
+            "honors decomp-compiler/decomp-assembler/decomp-cflags comments that this copy can't check: keep "
+            "iterating, the host's score is what counts. Your claim is kept.")
 
 
 def _address(text: str) -> int | None:
@@ -1646,16 +1657,53 @@ class RomNetwork(Network):
             return super().claim(agent, project, function, strategy)
         if function:
             function = self._function(function, project)["name"]
-        if function is None and strategy in ("quick", "close"):
-            # a Focus in a room: the host may not know these strategies, so pick here and ask for it by name
-            name = self._room_focus_claim(link, agent, project, strategy)
-        else:
-            name = link.claim(agent, function, strategy)
-        if name is None:
-            return "Nothing left to claim in this room — every open function is matched or someone is on it. 🎉"
-        link.sync()
-        fn = self.claim_row(agent, project, name, strategy)
-        return self._brief(fn, agent, header="CLAIMED")
+        # The host hands out the claim, this copy has to be able to take it too: a BIOS stub or hand-written
+        # assembly here, or something this copy has as matched, is given straight back on the host, so the two
+        # never disagree about who holds what (an older host can't be told what to skip: ask it again).
+        refused, retried = [], False
+        for _ in range(ROOM_CLAIM_TRIES):
+            try:
+                if function is None and strategy in ("quick", "close"):
+                    # a Focus in a room: the host may not know these strategies, so pick here and ask for it by name
+                    name = self._room_focus_claim(link, agent, project, strategy)
+                else:
+                    name = link.claim(agent, function, strategy)
+            except NetworkError as e:
+                held = _HOST_HOLDS.match(str(e))
+                if held is None or retried or self._holds(agent, held.group(1), project):
+                    raise
+                self._release_on_host(link, agent, held.group(1))  # a claim this copy never got: let it go
+                retried = True
+                continue
+            if name is None:
+                return "Nothing left to claim in this room — every open function is matched or someone is on it. 🎉"
+            link.sync()
+            try:
+                fn = self.claim_row(agent, project, name, strategy)
+            except NetworkError as e:
+                self._release_on_host(link, agent, name)
+                if function or str(e).startswith("you already hold"):
+                    raise
+                refused.append(f"{name} ({e})")
+                continue
+            return self._brief(fn, agent, header="CLAIMED")
+        raise NetworkError("the room's host kept offering functions this copy can't take ("
+                           + ("; ".join(refused[-3:]) or "it says you hold one this copy doesn't")
+                           + "); they were given back. Call claim_function again, or name a function.")
+
+    def _holds(self, agent: Agent, name: str, project: str | None) -> bool:
+        try:
+            fid = self._function(name, project)["id"]
+        except NetworkError:
+            return False
+        return self.store.one("SELECT 1 FROM claims WHERE function_id=? AND agent_id=?", fid, agent.id) is not None
+
+    @staticmethod
+    def _release_on_host(link, agent: Agent, name: str) -> None:
+        try:
+            link.call("/collab/release", agent, function=name, notes="")
+        except NetworkError:
+            pass  # not held there any more (or unreachable: the host's claim expires on its own)
 
     def _room_focus_claim(self, link, agent: Agent, project: str | None, strategy: str) -> str | None:
         """The first open function by `strategy` in this copy of the room that the host lets the agent have."""
@@ -1833,21 +1881,87 @@ class RomNetwork(Network):
         if (fork := self.fork_slug(project)):
             return self.forks.attempt(agent, fork, function, source)
         link = self._link(project)
-        before = self._function(function, project)["best_score"] if link else None
+        if link is None:
+            return super().attempt(agent, function, source, project)
+        # In a room the host is the judge: _second_judge asks it from inside the normal acceptance path, at most
+        # once per attempt, so a match it rejects never lands and its score is the one recorded
+        fn = self._function(function, project)
         res = super().attempt(agent, function, source, project)
-        if link is None or res["score"] is None:
-            return res
-        name = self._function(function, project)["name"]
         if res["matched"]:
-            verdict = link.attempt(agent, name, source)
-            if not verdict.get("matched"):
-                res["text"] += ("\n⚠️ The room's host could not confirm this match on their copy (score "
-                                f"{verdict.get('score')}). Check that both of you use the same compiler settings.")
-            else:
-                res["text"] += "\nShared with the room: the host confirmed the match."
-        elif before is None or res["score"] < before:
-            threading.Thread(target=lambda: self._report(link, agent, name, source, res["score"]), daemon=True).start()
+            res["text"] += "\nShared with the room: the host confirmed the match."
+        elif (res["score"] is not None and fn["status"] != "matched" and not _DIRECTIVE.search(source)
+              and (fn["best_score"] is None or res["score"] < fn["best_score"])):
+            threading.Thread(target=lambda: self._report(link, agent, fn["name"], source, res["score"]),
+                             daemon=True).start()
         return res
+
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+        """A room's host has the last word (it may compile with settings or decomp-* comments this copy can't
+        apply): asked about every exact result here, and about every source with decomp-compiler/-assembler/
+        -cflags comments, whose score here means little (the host's per-member rate limit bounds how often)."""
+        directives = bool(_DIRECTIVE.search(source))
+        if not exact and not directives:
+            return None
+        slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
+        link = self.links.get(slug)
+        if link is None or link.fork:
+            return None
+        try:
+            got = link.attempt(agent, fn["name"], source)
+        except NetworkError as e:
+            if "isn't reachable" not in str(e):  # the host answered, with a refusal
+                known = not str(e).startswith("no function")
+                return {"matched": False, "score": None, "text": (
+                    f"❌ The room's host didn't take this attempt ({e}). NOT saved as a match." if known else
+                    f"❌ The room's host has no function {fn['name']} (this copy splits or names this part of the "
+                    "game differently), so the room can't judge or keep a match for it. Work on another function "
+                    "(claim_function), or ask the host to split or name it the same way.")}
+            if exact:
+                return {"matched": False, "score": None,
+                        "text": f"⚠️ This copy scored 0, but the room's host couldn't be reached to confirm it ({e}). "
+                                "NOT saved as a match: compile it again once the host is back."}
+            return None  # unreachable: judged here as usual (this copy's score, nothing accepted on it alone)
+        if got.get("matched"):
+            return {"matched": True, "score": 0, "text": ""}
+        host = got.get("score")
+        if exact:
+            return {"matched": False, "score": host, "text": _host_refused(host)}
+        return {"matched": False, "score": host,
+                "text": (f"score {host} on the room's host" if host is not None else "❌ doesn't compile on the room's host")
+                        + " (this source has decomp-* compiler comments that only the host applies, so this copy's "
+                          "score doesn't count; the host's does). Keep iterating."}
+
+    def reopen_unconfirmed(self, slug: str, host_matched: list[dict]) -> list[str]:
+        """Member side, first sync with the room: the host's full list of matches arrives, and a match here that
+        isn't on it was never confirmed by the judge that counts. That covers this copy's own agents' matches
+        (an older copy accepted them locally) and matches credited to the room that the room doesn't have (an
+        older copy applied a host match to the wrong overlay at the same address). Reopen them, their source
+        kept as the best so far. Compared by name; by address only where neither side has two functions there
+        (overlays reuse addresses, and names for them can differ between copies). Returns their names."""
+        names = {m["name"] for m in host_matched if m.get("name")}
+        host_at: dict[int, int] = {}
+        for m in host_matched:
+            host_at[m["vram"]] = host_at.get(m["vram"], 0) + 1
+        proj = self._project(slug)
+        here = {r["vram"]: r["n"] for r in self.store.all(
+            "SELECT vram, COUNT(*) AS n FROM functions WHERE project_id=? GROUP BY vram", proj["id"])}
+        rows = self.store.all("SELECT id, name, vram FROM functions WHERE project_id=? AND status='matched'", proj["id"])
+        rows = [r for r in rows if r["name"] not in names
+                and not (host_at.get(r["vram"]) == 1 and here.get(r["vram"]) == 1)]
+        if not rows:
+            return []
+        with self.store.tx() as db:
+            for r in rows:
+                db.execute("DELETE FROM verification_receipts WHERE function_id=?", (r["id"],))
+                db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=matched_source, "
+                           "best_agent_id=matched_agent_id, matched_source=NULL, matched_agent_id=NULL, "
+                           "matched_at=NULL, revision=revision+1 WHERE id=?", (r["id"],))
+            db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (proj["id"],))
+            self._event(db, proj["id"], None, "collab",
+                        f"reopened {len(rows)} match{'es' if len(rows) != 1 else ''} the room's host doesn't have "
+                        f"(their code is kept as the best so far): " + ", ".join(r["name"] for r in rows[:10])
+                        + (", ..." if len(rows) > 10 else ""))
+        return [r["name"] for r in rows]
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
@@ -1893,9 +2007,23 @@ class RomNetwork(Network):
         if (fork := self.fork_slug(project)):
             return self.forks.release(agent, fork, function, notes)
         link = self._link(project)
-        if link is not None:
-            link.call("/collab/release", agent, function=self._function(function, project)["name"], notes=notes)
-        return super().release(agent, function, notes, project)
+        if link is None:
+            return super().release(agent, function, notes, project)
+        # always tell the host, even when this copy has no claim: the host's claim is the one that blocks
+        name = self._function(function, project)["name"]
+        try:
+            link.call("/collab/release", agent, function=name, notes=notes)
+            on_host = True
+        except NetworkError as e:
+            if "don't hold a claim" not in str(e):
+                raise
+            on_host = False
+        try:
+            return super().release(agent, function, notes, project)
+        except NetworkError:
+            if not on_host:
+                raise
+            return f"Released {name} in the room (this copy had no claim on it). Call claim_function for a new one."
 
     def edit_context(self, agent: Agent, project: str | None, old: str, new: str, message: str,
                      function: str | None = None) -> str:
@@ -1935,16 +2063,21 @@ class RomNetwork(Network):
             db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
                        (project_id, aid, kind, detail, created_at))
 
-    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str) -> None:
+    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str, name: str | None = None) -> None:
         """Member side: the room's host reports this function matched. A remote report is never accepted on
         its own (plan X-01): the reported source is recompiled against the CURRENT local context and
         evaluated against the local target; only a real local match goes through the normal acceptance
-        path (_record: receipt, matched_epoch). A forged or stale report is recorded as historical."""
+        path (_record: receipt, matched_epoch). When this copy can't reproduce it (the host compiled with
+        decomp-* comments or a compiler this copy lacks) the attempt is kept as historical evidence, and in a
+        linked room, where the host is the judge, the function is still marked matched as the host's (no
+        receipt: nothing was verified here). Found by name (overlays reuse addresses), else by a unique address."""
         proj = self._project(slug)
-        same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
-        if len(same) != 1:  # none, or several Game Boy banks at that address: never guess which one matched
-            return
-        fn = same[0]
+        fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", proj["id"], name) if name else None
+        if fn is None:
+            same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
+            if len(same) != 1:  # none, or several overlays/banks at that address: never guess which one matched
+                return
+            fn = same[0]
         if fn["status"] == "matched":
             return
         ctx = self._context(proj["id"], fn["unit"])
@@ -1952,10 +2085,14 @@ class RomNetwork(Network):
             return
         agent = Agent(self._remote_agent(agent_name), "@" + agent_name, "room", True)
         snap = snapshots.capture(fn, proj, ctx)
-        result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        try:
+            result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        except Exception:  # a compiler this copy lacks: not reproducible here
+            result, cand, d = None, None, None
+        compiled = bool(result is not None and result.ok and cand is not None)
         matched_now = False
         score = None
-        if result.ok and cand is not None:
+        if compiled:
             if self._hash_only(fn):
                 matched_now = cand.fingerprint() == fn["fingerprint"]
                 score = 0 if matched_now else None
@@ -1963,13 +2100,32 @@ class RomNetwork(Network):
                 matched_now = d.bytes_match
                 score = d.score
         ok, why = snapshots.check_current(self, proj, fn, snap)
-        if matched_now and ok:
-            self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap,
-                         object_digest=cand.fingerprint())
-        else:
-            self._record(fn, agent, score, source, ctx["version"], matched=False,
-                         compiled=result.ok and cand is not None, via="room", snapshot=snap,
-                         stale_reason=why or "remote match failed local verification")
+        if matched_now and ok and self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True,
+                                               via="room", snapshot=snap, object_digest=cand.fingerprint()) is None:
+            return
+        self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=compiled, via="room",
+                     snapshot=snap, stale_reason=why or "remote match failed local verification")
+        if self.cfg(proj).get("link"):
+            self._mark_host_match(fn["id"], agent, source)
+
+    HOST_ONLY = ("matched on the room's host, which judges the room; this copy can't rebuild it (decomp-* compiler "
+                 "comments or a compiler it lacks), so it carries no local receipt")
+
+    def _mark_host_match(self, function_id: int, agent: Agent, source: str) -> None:
+        """A room's match this copy can't reproduce: matched, credited to the host's agent, its source kept, and
+        meta.host_only saying why there is no verification receipt."""
+        with self.store.tx() as db:
+            row = db.execute("SELECT project_id, status, meta FROM functions WHERE id=?", (function_id,)).fetchone()
+            if row is None or row["status"] == "matched":
+                return
+            meta = json.loads(row["meta"] or "{}")
+            meta["host_only"] = self.HOST_ONLY
+            db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
+                       "best_score=0, best_source=?, meta=? WHERE id=?",
+                       (source, agent.id, time.time(), source, json.dumps(meta), function_id))
+            db.execute("DELETE FROM claims WHERE function_id=?", (function_id,))
+            db.execute("DELETE FROM search_budgets WHERE function_id=?", (function_id,))
+            db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (row["project_id"],))
 
     def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
         """A git project's room: who matched a function (the code itself arrives with the host's commits)."""
@@ -2068,7 +2224,9 @@ class RomNetwork(Network):
                 db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, sym["name"]))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, sym["name"], sym["address"], sym["size"], sym["kind"]))
-                db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
+                at = db.execute("SELECT COUNT(*) FROM functions WHERE project_id=? AND vram=?", (pid, sym["address"])).fetchone()[0]
+                if at == 1:  # several overlays at this address: which one the host means is unknown, rename none
+                    db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
                 for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
                                     "(matched_source IS NOT NULL OR best_source IS NOT NULL)", (pid,)).fetchall():
                     db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
@@ -2482,6 +2640,11 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+            judged = self._second_judge(agent, fn, source, d.bytes_match) if d.bytes_match else None
+            if judged is not None and not judged["matched"]:  # a room's host has the last word here too
+                self._record(fn, agent, judged["score"] or None, source, ctx["version"], compiled=True, snapshot=snap,
+                             via=via)
+                return {"matched": False, "score": judged["score"]}
             refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
                                    via=via, object_digest=cand.fingerprint() if d.bytes_match else None)
             return {"matched": d.bytes_match and not refused, "score": d.score}
@@ -2728,6 +2891,9 @@ class RomNetwork(Network):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
         cfg = json.loads(proj["config"])
+        if cfg.get("link"):  # the saved link, not self.links: also before restore_links() ran
+            raise NetworkError("this project follows the room host's compiler settings (the host re-checks every "
+                               "match with them): ask the host to change them")
         before = toolchains.profile_of(proj)
         before_digest = snapshots.compiler_digest(proj)
         label: list[str] = []
@@ -2758,6 +2924,10 @@ class RomNetwork(Network):
                 "SELECT name FROM functions WHERE project_id=?", proj["id"])})
         except (ValueError, toolchains.ToolchainError) as e:
             raise NetworkError(str(e))
+        self._save_compiler(proj, cfg, change, before_digest, "compiler", '; '.join(label) or 'compiler')
+
+    def _save_compiler(self, proj, cfg: dict, change, before_digest: str, kind: str, label: str) -> None:
+        """Save a validated compiler change, drop what was made for the old compiler and record it."""
         # the compiler digest also covers keys the profile doesn't model (cmd, include_dirs, ...)
         identity_changed = change.is_identity_change or \
             snapshots.compiler_digest({"config": json.dumps(cfg)}) != before_digest
@@ -2773,13 +2943,59 @@ class RomNetwork(Network):
                     "AND function_id IN (SELECT id FROM functions WHERE project_id=?)",
                     (f"profile-{change.after_identity[:16]}", time.time(), proj["id"]))
             # The event carries the P4.1 invalidation contract: provenance, identity, what it invalidates.
-            detail = (f"{'; '.join(label) or 'compiler'} (provenance {change.provenance[0]} -> "
+            detail = (f"{label} (provenance {change.provenance[0]} -> "
                       f"{change.provenance[1]}; identity {change.before_identity[:12]} -> "
                       f"{change.after_identity[:12]}")
             if identity_changed:
                 detail += f"; invalidated: {', '.join(change.invalidates or toolchains.INVALIDATED)}"
             detail += ")"
-            self._event(db, proj["id"], None, "compiler", detail)
+            self._event(db, proj["id"], None, kind, detail)
+
+    def apply_remote_compiler(self, slug: str, settings: dict) -> bool:
+        """Member side: compile with exactly the room host's compiler settings (compiler_profiles.shared). The host
+        re-compiles every match with its own, so any difference (flags, assembler, a range or function override)
+        turns a local match into a rejected one. This machine's own keys (include paths, sandbox, ...) are kept.
+        Returns whether anything changed. A toolchain that isn't installed here is still applied: compiles then
+        say so, instead of quietly using another compiler."""
+        if not isinstance(settings, dict) or not isinstance(settings.get("compiler"), dict) or not settings["compiler"]:
+            raise NetworkError("the room's host sent no compiler settings")
+        proj = self._project(slug)
+        cfg = json.loads(proj["config"])
+        theirs = profiles.shared({"compiler": settings["compiler"], **{k: settings.get(k) for k in profiles.KEYS}})
+        if profiles.shared(cfg) == theirs:
+            return False
+        before = toolchains.profile_of(proj)
+        before_digest = snapshots.compiler_digest(proj)
+        mine = {k: v for k, v in (cfg.get("compiler") or {}).items() if k in snapshots.COMPILE_KEYS}
+        if theirs["compiler"].get("toolchain") != (cfg.get("compiler") or {}).get("toolchain"):
+            mine.pop("cmd", None)  # a custom command template belongs to the old compiler (as in set_compiler)
+        cfg["compiler"] = {**mine, **theirs["compiler"]}
+        for key in profiles.KEYS:
+            if theirs[key]:
+                cfg[key] = theirs[key]
+            else:
+                cfg.pop(key, None)
+        try:
+            profile = toolchains.profile_from(cfg["compiler"])
+            if profile.toolchain:
+                toolchains.get(profile.toolchain)
+            # function names aren't checked: the host did, and a rename may reach this copy a sync later
+            profiles.validate(cfg)
+        except (ValueError, TypeError, toolchains.ToolchainError) as e:
+            raise NetworkError(f"can't use the room host's compiler settings here ({e}): "
+                               "updating decomp.wtf to the host's version may help") from None
+        missing = sorted({t for t in [profile.toolchain, *(p.get("toolchain") for p in theirs["compiler_profiles"].values())]
+                          if t and toolchains.installed(t) is None})
+        n = {k: len(theirs[k]) for k in profiles.KEYS}
+        label = (f"compiler settings updated from the room's host: {profile.toolchain or 'command'} "
+                 f"{' '.join(profile.flags)}".rstrip()
+                 + (f", wrapper {theirs['compiler']['wrapper']}" if theirs["compiler"].get("wrapper") not in (None, "cc") else "")
+                 + (f"; {n['compiler_profiles']} profiles, {n['compiler_ranges']} ranges, "
+                    f"{n['compiler_functions']} function overrides" if any(n.values()) else "")
+                 + (f"; not installed here yet: {', '.join(missing)} (install from Setup)" if missing else ""))
+        self._save_compiler(proj, cfg, toolchains.profile_diff(before, profile, note="room host"), before_digest,
+                            "collab", label)
+        return True
 
     def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
