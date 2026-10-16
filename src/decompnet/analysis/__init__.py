@@ -17,6 +17,7 @@ from .contracts import (BUNDLE_STATUSES, SESSION_STATES, BrokerError, Budget, Ca
                         ProviderRequest, ProviderResult, Snapshot, StaleEvidenceError, TargetError)
 from .escalation import (Action, CandidatePortfolio, EscalationInputs, EscalationPolicy, RULE_KINDS,
                          build_investigation, changes_from, run_investigation)
+from .rea import ReaProvider, available as rea_available
 
 __all__ = [
     "Broker", "DirectGhidraProvider", "MetricsLedger", "Provider", "ProviderError", "independent_sources",
@@ -26,4 +27,5 @@ __all__ = [
     "ProviderResult", "Snapshot", "StaleEvidenceError", "TargetError",
     "Action", "CandidatePortfolio", "EscalationInputs", "EscalationPolicy", "RULE_KINDS",
     "build_investigation", "changes_from", "run_investigation",
+    "ReaProvider", "rea_available",
 ]
