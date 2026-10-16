@@ -27,8 +27,8 @@ from pathlib import Path
 from .. import compiler_profiles as profiles
 from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
-from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent, Network,
-                       NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
+from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, SKIP_MAX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent,
+                       Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -1674,17 +1674,23 @@ class RomNetwork(Network):
             return super().claim(agent, project, function, strategy)
         if function:
             function = self._function(function, project)["name"]
-        # The host hands out the claim, this copy has to be able to take it too: a BIOS stub or hand-written
-        # assembly here, or something this copy has as matched, is given straight back on the host, so the two
-        # never disagree about who holds what (an older host can't be told what to skip: ask it again).
-        refused, retried = [], False
+        # The host hands out the claim, this copy has to be able to take it too. The host is told what this copy
+        # set aside (BIOS calls, hand-written assembly): its strategy claims leave those out unless a person gave
+        # them back to agents there. A function this copy can't take anyway (an older host, which ignores the
+        # list, or something matched here) is given straight back on the host, so the two never disagree about
+        # who holds what, and from then on this copy picks by the strategy itself and asks for it by name: an
+        # older host would only offer the next set-aside stub.
+        proj = self._project(project)
+        self._set_aside_once(proj)
+        skip = self.set_aside_names(proj)
+        refused, retried, pick_here = [], False, False
         for _ in range(ROOM_CLAIM_TRIES):
             try:
-                if function is None and strategy in ("quick", "close"):
+                if function is None and (pick_here or strategy in ("quick", "close")):
                     # a Focus in a room: the host may not know these strategies, so pick here and ask for it by name
                     name = self._room_focus_claim(link, agent, project, strategy)
                 else:
-                    name = link.claim(agent, function, strategy)
+                    name = link.claim(agent, function, strategy, skip=skip)
             except NetworkError as e:
                 held = _HOST_HOLDS.match(str(e))
                 if held is None or retried or self._holds(agent, held.group(1), project):
@@ -1702,6 +1708,7 @@ class RomNetwork(Network):
                 if function or str(e).startswith("you already hold"):
                     raise
                 refused.append(f"{name} ({e})")
+                pick_here = True
                 continue
             return self._brief(fn, agent, header="CLAIMED")
         raise NetworkError("the room's host kept offering functions this copy can't take ("
@@ -1722,6 +1729,23 @@ class RomNetwork(Network):
         except NetworkError:
             pass  # not held there any more (or unreachable: the host's claim expires on its own)
 
+    def set_aside_names(self, proj) -> list[str]:
+        """The functions this copy set aside as BIOS calls or hand-written assembly, smallest first (what a room
+        member's claims ask the host to leave out)."""
+        return [r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=? AND status='asm' "
+                                                  "ORDER BY n_insns, vram LIMIT ?", proj["id"], SKIP_MAX)]
+
+    def follow_give_back(self, slug: str, name: str) -> None:
+        """The room's host gave `name` back to agents by hand: this copy follows, so its helpers can take it too."""
+        fn = self.store.one("SELECT id, status, meta FROM functions WHERE project_id=? AND name=?",
+                            self._project(slug)["id"], name)
+        if fn is None or fn["status"] != "asm":
+            return
+        meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
+        meta["for_agents"] = True
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'", (json.dumps(meta), fn["id"]))
+
     def _room_focus_claim(self, link, agent: Agent, project: str | None, strategy: str) -> str | None:
         """The first open function by `strategy` in this copy of the room that the host lets the agent have."""
         proj = self._project(project)
@@ -1730,7 +1754,7 @@ class RomNetwork(Network):
             f"""SELECT f.name FROM functions f WHERE f.project_id=? AND f.status='open'
                 AND f.id NOT IN (SELECT function_id FROM claims WHERE agent_id<>?)
                 AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, "")}
-                ORDER BY {STRATEGIES[strategy]} LIMIT 12""", proj["id"], agent.id, cap, cap)
+                ORDER BY {STRATEGIES.get(strategy) or STRATEGIES["easiest"]} LIMIT 12""", proj["id"], agent.id, cap, cap)
         for r in rows:
             try:
                 return link.claim(agent, r["name"], "easiest")
@@ -2638,13 +2662,14 @@ class RomNetwork(Network):
             cfg["priority"] = ([fn["name"]] + items) if on else items
         return self._update_cfg(slug, change)["priority"]
 
-    def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
+    def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest",
+                  skip: list[str] | tuple = ()):
         self._yield_autopilot(function, project)
         with self.store.lock:
             proj = self._project(project) if project or function is None else self.store.one(
                 "SELECT * FROM projects WHERE id=?", self._function(function, project)["project_id"])
             self._require_not_rescanning(proj["id"])
-            return self._claim_row_available(agent, project, function, strategy)
+            return self._claim_row_available(agent, project, function, strategy, skip)
 
     def released_since(self, agent_id: int, project_id: int, names: list[str], since: float) -> set[str]:
         """Which of `names` this agent gave back (release_function) since `since`: it found them not worth doing."""
@@ -2652,7 +2677,7 @@ class RomNetwork(Network):
             "SELECT 1 FROM events WHERE project_id=? AND agent_id=? AND kind='release' AND detail=? AND created_at>=?",
             project_id, agent_id, n, since)}
 
-    def _claim_row_available(self, agent, project, function, strategy):
+    def _claim_row_available(self, agent, project, function, strategy, skip=()):
         if project and not self.fork_slug(project):
             proj = self._project(project)
             names = self.cfg(proj).get("priority", [])
@@ -2663,16 +2688,17 @@ class RomNetwork(Network):
             if function is None and agent.id not in self.focus:  # a Focus picks by its own rule, stars included
                 # a starred-only helper that released a star (data, not code...) doesn't get it handed back again
                 given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id]) if only else set()
+                skipped = set(self._skippable(proj, skip)) if skip else set()  # set aside in a room member's copy
                 for name in names:
                     row = self.store.one("SELECT f.id, f.status FROM functions f WHERE f.project_id=? AND f.name=?", proj["id"], name)
-                    if row and row["status"] == "open" and name not in given_up and not held and not self.store.one(
+                    if row and row["status"] == "open" and name not in given_up and row["id"] not in skipped and not held and not self.store.one(
                             "SELECT 1 FROM claims WHERE function_id=?", row["id"]):
                         function = name
                         break
                 if only and function is None and not held:
                     raise NetworkError("no ★ Next in line function is left for you: the rest are done, released by you "
                                        "or being worked on by others. Stop here: this session ends by itself.")
-        return Network.claim_row(self, agent, project, function, strategy)
+        return Network.claim_row(self, agent, project, function, strategy, skip)
 
     # ------------------------------------------------------------------ autopilot
 
