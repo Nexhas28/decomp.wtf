@@ -187,3 +187,4 @@ def test_the_autopilot_skips_bios_calls(ps1, monkeypatch):
              "phase": "twins", "stop": threading.Event()}
     net._autopilot_run(slug, ids, state, 1, try_one=lambda agent, proj, fid: tried.append(fid) or "fail")
     assert tried and stub not in tried and net._function("func_80401000", slug)["status"] == "asm"
+

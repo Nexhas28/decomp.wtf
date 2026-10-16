@@ -3,6 +3,7 @@ coordinator whose expensive work (compiling) happens outside the lock."""
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -179,8 +180,29 @@ class Store:
                 DROP TABLE gave_up;
                 INSERT INTO settings(key, value) VALUES('abandons_recounted', '1');
                 COMMIT;""")
+        self.heal_statuses(self.conn)
         self.backfill_identities(self.conn)
         self.lock = threading.RLock()
+
+    # A status is a short word (open, matched, asm, nosource). On 16 October 2026 something writing straight to a
+    # PS1 project's database put functions' assembly in it instead: they showed as "to do" but no strategy claim
+    # ever picked them. A garbled status is put right on opening, and a new one is refused (with the culprit's
+    # error) instead of stored.
+    _BAD_STATUS = "(status = '' OR length(status) > 24 OR status GLOB '*[^a-z_]*')"
+
+    @classmethod
+    def heal_statuses(cls, db) -> int:
+        """Functions whose status isn't a status word go back to matched (they have matched source) or open."""
+        n = db.execute(f"UPDATE functions SET status = CASE WHEN matched_source IS NOT NULL THEN 'matched' "
+                       f"ELSE 'open' END WHERE {cls._BAD_STATUS}").rowcount
+        if n:
+            logging.getLogger("decomp.wtf").warning("put right %d functions whose status was garbled", n)
+        bad = cls._BAD_STATUS.replace("status", "NEW.status")
+        for event in ("INSERT", "UPDATE OF status"):
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS functions_status_{event.split()[0].lower()} BEFORE {event} "
+                       f"ON functions WHEN {bad} BEGIN SELECT RAISE(ABORT, 'a function status must be a short word "
+                       f"like open or matched'); END")
+        return n
 
     @staticmethod
     def backfill_identities(db) -> None:
