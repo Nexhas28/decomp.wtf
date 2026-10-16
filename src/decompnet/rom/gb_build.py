@@ -90,13 +90,19 @@ def _run(argv: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
     return res.returncode, (res.stdout or "") + (res.stderr or "")
 
 
-def _equates(symbols: dict[str, int] | None) -> str:
-    """`.equ` lines so SDCC's references resolve to the ROM's own addresses (absolute mode)."""
+def _equates(symbols: dict[str, int] | None, defined: set[str] | None = None) -> str:
+    """`.equ` lines so SDCC's references resolve to the ROM's own addresses (absolute mode).
+
+    Symbols the candidate itself defines are skipped: an `.equ` for a name the assembly also labels
+    (the function being compiled is in the project's own symbol table) is a duplicate definition and
+    makes the assembler report "label location changing between passes"."""
     if not symbols:
         return ""
     lines = []
     for name, addr in sorted(symbols.items()):
         if not _SYM_FIX.match(name):
+            continue
+        if defined and (name in defined or f"_{name}" in defined):
             continue
         symbol = name if name.startswith("_") else f"_{name}"
         lines.append(f"\t.equ {symbol}, 0x{int(addr) & 0xFFFF:04X}")
@@ -182,7 +188,8 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
 
         # inject the ROM's addresses, then assemble to a listing (label offsets + instruction bytes)
         asm_text = (work / "func.asm").read_text(encoding="utf-8", errors="replace")
-        equates = _equates(symbols)
+        defined = set(re.findall(r"^\s*(_[\w.$]+)::", asm_text, re.M))  # labels this candidate defines
+        equates = _equates(symbols, defined)
         if equates:
             lines = asm_text.splitlines()
             for i, line in enumerate(lines):

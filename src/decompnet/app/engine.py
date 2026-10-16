@@ -365,6 +365,8 @@ class RomNetwork(Network):
     def _target_obj(self, fn, proj):
         if not self.is_rom(proj):
             return super()._target_obj(fn, proj)
+        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
+            return FunctionObj(fn["name"], "sm83", False, fn["target"], [])
         if self.cfg(proj).get("platform") == "gba":
             return FunctionObj(fn["name"], "thumb", False, fn["target"], [])
         return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"]))
@@ -372,6 +374,16 @@ class RomNetwork(Network):
     def _evaluate(self, fn, proj, obj: bytes):
         if not self.is_rom(proj):
             return super()._evaluate(fn, proj, obj)
+        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
+            # The Game Boy lane compiles in absolute mode (the ROM's own symbol addresses are injected),
+            # so the candidate's bytes can be compared with the target's directly — no relocations to mask.
+            from ..elfobj import function_from_payload
+
+            cand = function_from_payload(obj, fn["name"])
+            if cand is None:
+                return None, None, [f"the candidate didn't define {fn['name']}"]
+            exact = cand.code == fn["target"]
+            return cand, exact, ([] if exact else ["the compiled bytes differ from the ROM's"])
         if self.cfg(proj).get("platform") == "gba":
             from ..rom import match_arm
 
@@ -563,17 +575,26 @@ class RomNetwork(Network):
         judge a candidate yet. When the toolchain lands they become `open` (see benchmarks/ROADMAP.md)."""
         from ..rom import gb
 
+        from ..rom import gb_build
+
         info = picked.info
         fns = gb.split(workdir / picked.filename, workdir, log=log)
+        # The matching lane is live when the pinned GBDK-2020 toolchain is installed: then functions are
+        # claimable (agents compile through rom/gb_build) and the profile names it. Without it the project
+        # stays readable-only, which is the honest state rather than handing out work nobody can judge.
+        matchable = gb_build.available()
+        compiler = ({"toolchain": gb_build.TOOLCHAIN, "flags": ["--opt-code-speed"], "timeout": 120,
+                     "wrapper": "cc", "provenance": "explicit",
+                     "note": "SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)"}
+                    if matchable else
+                    {"toolchain": "", "flags": [], "timeout": 20, "wrapper": "cc",
+                     "provenance": "unavailable",
+                     "note": "the Game Boy C toolchain (GBDK-2020) is not installed: run `decomp setup`"})
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": "sm83",
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": [{"name": "rom", "rom_start": 0, "rom_end": info["size"], "vram": 0}],
-            # no compiler profile is claimed: the honest state is "none available for this platform yet"
-            "compiler": {"toolchain": "", "flags": [], "timeout": 20, "wrapper": "cc",
-                         "provenance": "unavailable",
-                         "note": "Game Boy C toolchain (SDCC/GBDK) is not supported yet: reading and "
-                                 "disassembly work, matching does not"},
+            "compiler": compiler,
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -596,15 +617,38 @@ class RomNetwork(Network):
                     "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (pid, name, f.size, f.n_insns, f.code, json.dumps([list(r) for r in f.refs or []]),
-                     f.asm, None, "rom", f.vram, f.rom, "asm"))
+                     f.asm, None, "rom", f.vram, f.rom, "open" if matchable else "asm"))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                            (pid, name, f.vram, f.size, "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
-        log(f"ready: {len(fns)} functions disassembled. Game Boy matching needs a C toolchain "
-            f"(SDCC/GBDK) that this app doesn't ship yet, so they are shown as assembly for now")
+        if matchable:
+            log(f"ready: {len(fns)} functions to decompile with SDCC/GBDK-2020 ({gb_build.TOOLCHAIN})")
+        else:
+            log(f"ready: {len(fns)} functions disassembled. The C toolchain (GBDK-2020) is not installed, "
+                f"so they are shown as assembly until it is")
         return slug
+
+    def _compile(self, proj, header: str, source: str):
+        """Game Boy candidates go through gb_build (SDCC + sdasgb) instead of the ELF pipeline: the
+        project's own symbol table is injected, so the candidate's call/jump addresses are the ROM's and
+        `_evaluate` can compare bytes directly. The payload carries every function the source defines;
+        `_evaluate` picks the one being judged by name."""
+        if self.is_rom(proj) and (self.cfg(proj).get("arch") or "").lower() == "sm83":
+            from ..compiler import CompileResult
+            from ..rom import gb_build
+
+            symbols = {n: sym.address for n, sym in self.symbols(proj["id"]).by_name.items()}
+            cfg = self.cfg(proj)
+            inc = tuple(str((Path(proj["root"]) / p).resolve()) for p in (cfg.get("compiler") or {}).get("include_dirs", []))
+            try:
+                payload = gb_build.build_payload(source, context_header=header, symbols=symbols,
+                                                 include_dirs=inc)
+            except Exception as e:  # a build failure is a compile failure, reported like any other
+                return CompileResult(False, None, f"{type(e).__name__}: {e}")
+            return CompileResult(True, payload, "")
+        return super()._compile(proj, header, source)
 
     def _community_layout(self, data: bytes | Path, name: str = "") -> Path | None:
         """The file, when the game starts as a community-layout project: a GameCube/Wii program (DOL) or disc image

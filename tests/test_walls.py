@@ -130,7 +130,7 @@ def test_legacy_best_marked_unverified_and_revalidated(net, alice, monkeypatch):
         def fingerprint(self):
             return "fp"
 
-    monkeypatch.setattr(net, "_compile", lambda proj, header, source: FakeResult())
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: FakeResult())
     monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (FakeCand(), None, []))
     with net.store.tx() as db:
         db.execute("UPDATE functions SET target=NULL, fingerprint='fp' WHERE id=3")

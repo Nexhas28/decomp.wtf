@@ -82,7 +82,7 @@ def test_attempt_records_its_snapshot(net, alice, monkeypatch):
         ok = False
         log = "fake compile error"
 
-    monkeypatch.setattr(net, "_compile", lambda proj, header, source: FakeResult())
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: FakeResult())
     out = net.attempt(alice, fn["name"], "int func_001(void) { return 1; }")
     assert "COMPILE ERROR" in out["text"]
     row = net.store.one(
