@@ -5,8 +5,6 @@ computer, so what's checked is what decomp.wtf asks Docker for: a long-lived con
 recreated when its mounts change, the compile folder inside the shared area, and a timeout the way coreutils reports it.
 """
 
-import sys
-
 import pytest
 
 from decompnet import compiler, linuxbox, toolchains
@@ -81,7 +79,6 @@ def test_a_compile_that_overruns_is_reported_as_a_timeout(box):
     assert not res.ok and "timed out" in res.log
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
 def test_without_docker_the_app_says_how_to_get_it(box, monkeypatch):
     monkeypatch.setenv("DECOMP_LINUXBOX", str(box / "missing-docker"))
     monkeypatch.setattr(linuxbox, "_status", None)

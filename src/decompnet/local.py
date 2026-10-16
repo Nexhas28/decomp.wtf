@@ -37,7 +37,7 @@ def diff(obj: Path, function: str, source: Path, toolchain: str, context: Path |
     compiler = {"toolchain": toolchains.get(toolchain).id, "include_dirs": [str(d.resolve()) for d in include_dirs]}
     if flags:
         compiler["flags"] = flags
-    cc = compiler_config(Path("."), {"compiler": compiler})  # on Windows, Linux-only toolchains go through WSL
+    cc = compiler_config(Path("."), {"compiler": compiler})  # Linux-only toolchains go through the compiler container
     res = compile_source(cc, context.read_text(encoding="utf-8") if context else "", source.read_text(encoding="utf-8"))
     if not res.ok:
         return f"COMPILE ERROR\n{res.log}"

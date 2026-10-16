@@ -1,3 +1,2 @@
-# shell scripts and the Dockerfile run on Linux: LF even in a checkout made by Git for Windows
+# shell scripts (macos/release.sh, local-tools): LF line endings in every checkout
 *.sh text eol=lf
-site/public/Dockerfile text eol=lf

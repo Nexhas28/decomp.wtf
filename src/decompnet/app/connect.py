@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agents import KINDS, _which, argv, kind_id
+from .agents import KINDS, _which, kind_id
 
 NAME = "decomp"
 LABEL = {"claude": "claude-code", "codex": "codex", "antigravity": "antigravity", "opencode": "opencode"}
@@ -25,8 +25,8 @@ def bridge_command() -> list[str]:
 
 
 def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
-    """Run an agent's own CLI (on Windows an npm .cmd through node, see agents.argv), reading its output as UTF-8."""
-    return subprocess.run(argv(cmd), capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    """Run an agent's own CLI, reading its output as UTF-8."""
+    return subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
@@ -54,7 +54,7 @@ def shown(kind: str) -> str:
     cmd = commands(kind)
     if cmd is None:
         return f"add {{\"mcp\": {{\"decomp\": {{\"type\": \"local\", \"command\": {json.dumps(bridge_command())}}}}}}} to {_opencode_config()}"
-    return subprocess.list2cmdline([Path(cmd[0]).stem if sys.platform == "win32" else Path(cmd[0]).name, *cmd[1:]])
+    return subprocess.list2cmdline([Path(cmd[0]).name, *cmd[1:]])
 
 
 def status(kind: str) -> bool:

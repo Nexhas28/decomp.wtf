@@ -382,7 +382,7 @@ async function pickFile(file) {
   $("romStatus").className = `plat-status ${level || ""}`;
   $("romStatus").innerHTML = level === "recommended"
     ? `<b>★ Recommended platform.</b> The most tested path to a full decomp you can port and mod.`
-    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/i12bp8/decomp.wtf/issues" target="_blank" rel="noopener">reporting</a>.`;
+    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/Nexhas28/decomp.wtf" target="_blank" rel="noopener">reporting</a>.`;
   setupCompilers(info);
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = false;
@@ -403,7 +403,7 @@ function setupCompilers(info) {
   }
   else if (p === "playstation") {
     $("compilerRow").hidden = true; note.hidden = false;
-    note.textContent = "The compiler is picked from the disc: PSY-Q-era GCC for PlayStation, EE-GCC for PlayStation 2. You can change it later.";
+    note.textContent = "The compiler is picked from the disc: PSY-Q-era GCC for PlayStation. You can change it later.";
   } else if (p === "nds") {
     select.innerHTML = `<optgroup label="Nintendo DS">${cw.ds.map((v) => `<option value="${esc(v)}" ${v === "DS/2.0/sp1p5" ? "selected" : ""}>CodeWarrior for DS ${esc(v.slice(3))}</option>`).join("")}</optgroup>`;
     note.hidden = false;
@@ -478,7 +478,7 @@ function importFailed(name, e, logText) {
   $("errLog").textContent = [log, job.trace].filter(Boolean).join("\n\n") || "(nothing was logged)";
   $("errCopy").onclick = async () => {
     const st = S.st || {};
-    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.runtime || st.platform || navigator.platform}`,
+    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.platform || navigator.platform}`,
       `Importing: ${name}`, `Error: ${e.message}`, "", "Log:", "```", log.split("\n").slice(-80).join("\n"), job.trace || "", "```"].join("\n");
     try { await navigator.clipboard.writeText(report); toast("Copied: paste it into a GitHub issue"); }
     catch { toast("Couldn't reach the clipboard: select the text under What happened instead", "err"); }
@@ -609,6 +609,7 @@ async function refreshMap(force = true) {
   S.map = data.rows.map((r) => { const f = {}; data.keys.forEach((k, i) => { f[k] = r[i]; }); return f; });
   S.byName = new Map(S.map.map((f, i) => [f.name, i]));
   S.map.forEach((f, i) => { f.i = i; });
+  $("legendBios").hidden = !S.map.some((f) => f.status === "bios");
   baseDirty = true;
   $("fnTabCount").textContent = S.map.length.toLocaleString();
   if (S.tab === "overview") layoutMap(); else applyClaims(false);
@@ -911,11 +912,9 @@ function renderStats(ov) {
   renderNext(ov);
 }
 
-/* Linux-only compilers need a Linux side: WSL 2 on Windows, the compiler container (Docker Desktop) on a Mac. */
-function linuxHint(side) {
-  return side === "wsl"
-    ? " It's a Linux program: on Windows it runs inside WSL 2 (one-time setup: <code>wsl --install</code> in an administrator PowerShell, then restart)."
-    : " It's a Linux program: on a Mac it runs in a small compiler-only container (needs Docker Desktop running; installing builds the container's image once).";
+/* Linux-only compilers run in the compiler container (Docker Desktop). */
+function linuxHint() {
+  return " It's a Linux program: on a Mac it runs in a small compiler-only container (needs Docker Desktop running; installing builds the container's image once).";
 }
 
 function renderCompilerNotice(ov) {
@@ -950,12 +949,12 @@ function renderCompilerNotice(ov) {
   n.className = "notice";
   n.innerHTML = ov.compiler.proprietary
     ? `<span><b>${esc(ov.compiler.name)}</b> isn't installed. It's proprietary software (recompiled by the decomp community); install it only if you accept that.</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install…</button>`
-    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.linux ? linuxHint(ov.compiler.linux_side) : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
+    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.linux ? linuxHint() : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
   $("tcInstall").onclick = () => installToolchain(ov.compiler.toolchain, ov.compiler.proprietary);
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0 };
+  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, bios: 0 };
   for (const f of S.map) c[fnState(f)]++;
   return c;
 }
@@ -965,10 +964,10 @@ function renderOverview() {
   if (!S.ov || S.tab !== "overview") return;
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k}"></i>` : "");
-  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
+  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("bios", "s-bios") + seg("open", "s-open");
   setWidths($("fnStack"));
   const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}`;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}${c.bios ? ` · ${c.bios} BIOS` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -1261,11 +1260,9 @@ function renderHost(box, info) {
   serviceRow(box.querySelector("#svcRow"), "The room is open while decomp.wtf runs.");
 }
 
-/* Start decomp.wtf with the computer (systemd user service, launchd, or a log-on task). */
+/* Start decomp.wtf with the computer (a launchd agent). */
 function serviceRow(row, offText) {
   if (!row) return;
-  if (S.st && S.st.runtime === "docker") { row.innerHTML = `<span class="muted small">Docker keeps decomp.wtf running in the background.</span>`; return; }
-  if (S.st && S.st.runtime === "wsl") { row.innerHTML = `<span class="muted small">decomp.wtf runs while its window is open (the Start menu's decomp.wtf).</span>`; return; }
   api("/api/service").then((sv) => {
     if (!row.isConnected) return;
     row.innerHTML = sv.installed ? `<span class="ok-mark">decomp.wtf starts with this computer</span><button class="ghost small-btn" data-svc="remove" type="button">Don't</button>`
@@ -1302,7 +1299,7 @@ function openJoin() {
     <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
     <label class="field"><span>Your name in the room</span><input id="jName" maxlength="24" placeholder="e.g. alex"></label>
     <label class="field"><span>Your copy of the game</span><input id="jRom" type="file"></label>
-    <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="${S.st && S.st.host_os === "windows" ? "C:\\Games\\game.rvz" : "/home/you/games/game.iso"}"></label>
+    <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="~/Games/game.iso"></label>
     <label class="check"><input type="checkbox" id="jOwn"><span>This is my own copy of this game, obtained legally. I'll keep what the room makes private.</span></label>
     <p class="muted small">A GameCube, Wii or DS project comes with its whole source tree from the host, and is then built here with your copy and your compilers: the first time takes a few minutes.</p>
     <div class="row"><button class="primary" id="jGo" type="button">Join</button></div><pre class="joblog" id="jLog" hidden></pre>`);
@@ -1550,7 +1547,7 @@ function cssColor(name) {
   return rgb;
 }
 function readColors() {
-  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), hi: cssColor("--match-hi"), ink: cssColor("--ink") };
+  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), bios: cssColor("--bios"), hi: cssColor("--match-hi"), ink: cssColor("--ink") };
 }
 const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -1577,7 +1574,7 @@ function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
   let changed = false;
   for (const f of S.map) {
-    const status = f.status === "matched" || f.status === "asm" ? f.status : working.has(f.name) ? "working" : "open";
+    const status = f.status === "matched" || f.status === "asm" || f.status === "bios" ? f.status : working.has(f.name) ? "working" : "open";
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -1599,6 +1596,7 @@ function applyAttempts(attempts) {
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
   if (f.status === "asm") return [colors.tried, 0.35];
+  if (f.status === "bios") return [colors.bios, 1];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
   return [colors.open, 1];
 }
@@ -2108,8 +2106,8 @@ function fnBadge(d = S.fnDetail) {
   if (!d) return;
   const working = S.claims.find((c) => c.name === d.name);
   const st = $("fnStatus");
-  st.className = "badge " + (d.status === "matched" ? "matched" : working ? "working" : "");
-  st.textContent = d.status === "matched" ? "matched" : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
+  st.className = "badge " + (d.status === "matched" ? "matched" : working ? "working" : d.status === "asm" && d.bios ? "bios" : "");
+  st.textContent = d.status === "matched" ? "matched" : d.status === "asm" ? (d.bios ? "BIOS" : "assembly") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
 }
 
 function showFnTab(tab) {
@@ -2209,6 +2207,7 @@ async function refreshFn(first) {
     $("fnPin").classList.toggle("on", pinned);
     $("fnPin").textContent = pinned ? "★ Next (on)" : "★ Next";
     $("fnPin").onclick = () => togglePrio(d.name, !pinned).then(() => refreshFn(false));
+    renderAside(d);
     $("noteAdd").onclick = async () => {
       const text = $("noteText").value.trim();
       if (!text) return;
@@ -2239,6 +2238,27 @@ async function refreshFn(first) {
     fnFirst = false;
     if (first) toast(esc(e.message), "err");
   }
+}
+
+/* Set aside (a BIOS call, hand-written assembly): why, and a person's say: give it to agents anyway, or back. */
+function renderAside(d) {
+  const box = $("fnAside"), aside = d.status === "asm", given = d.status === "open" && d.for_agents;
+  box.hidden = !(aside || given) || S.ov.room?.role === "guest";
+  if (box.hidden) return;
+  const why = d.bios || d.asm_reason;
+  $("fnAsideText").textContent = aside
+    ? (d.bios ? `This is BIOS code: ${d.bios}. Agents and the autopilot leave it alone.`
+              : `This is hand-written assembly${why ? ` (${why})` : ""}. Agents and the autopilot leave it alone.`)
+    : `You gave this to agents by hand${why ? ` (it had been set aside: ${why})` : ""}.`;
+  $("fnAsideBtn").textContent = aside ? "It's game code: give it to agents" : "Set it aside again";
+  $("fnAsideBtn").onclick = async () => {
+    try {
+      await api("/api/set-aside", { method: "POST", body: { slug: S.slug, name: d.name, set_aside: !aside } });
+      toast(aside ? `${esc(d.name)} is back on the agents' list.` : `${esc(d.name)} is set aside again.`);
+      refreshFn(false);
+      refreshMap(true);
+    } catch (e) { toast(esc(e.message), "err"); }
+  };
 }
 
 /* Editing a function yourself: a highlighted editor over a textarea, judged like an agent's attempt. */
@@ -2422,15 +2442,15 @@ $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["bios", "BIOS"]];
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" || f.status === "bios" ? f.status : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4, bios: 5 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, bios: 0 };
   for (const f of S.map) counts[fnState(f)]++;
-  $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
+  $("fnFilter").innerHTML = FILTERS.filter(([k]) => k !== "bios" || counts.bios || L.filter === "bios").map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
   let rows = S.map.filter((f) => (L.filter === "all" || fnState(f) === L.filter)
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
@@ -2444,11 +2464,11 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "bios" ? `<span class="st bios" title="just a call into the console's BIOS: no game code, so agents leave it (open it to see which call)">BIOS</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
     const pinned = (S.ov?.priority || []).includes(f.name);
     // ☆/★ right in the row: pin many functions for the agents without opening each one (not for done or fork ones)
-    const star = fork || st === "matched" || st === "asm" ? (pinned ? `<span class="star">★</span>` : "")
+    const star = fork || st === "matched" || st === "asm" || st === "bios" ? (pinned ? `<span class="star">★</span>` : "")
       : `<button type="button" class="star-btn ${pinned ? "on" : ""}" data-star="${esc(f.name)}" title="${pinned ? "Remove from Next in line" : "Agents take it next (★ Next in line)"}">${pinned ? "★" : "☆"}</button>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
       <td class="mono name">${star}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
@@ -2570,14 +2590,12 @@ async function connectRows(box) {
     return r;
   } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; }
 }
-const HOST_NAMES = { windows: "Windows", macos: "your Mac", linux: "this computer" };
 /* The example prompt: from a project, its own game file, so it can be copied and run as it is. */
 function askExample() {
   const path = !$("project").hidden && S.ov && S.ov.rom && S.ov.rom.path;
   return `decompile my game at ${path ? (/\s/.test(path) ? `"${path}"` : path) : "~/roms/game.z64"}`;
 }
 async function openConnect() {
-  if (S.st && S.st.runtime && S.st.runtime !== "native") return openHostConnect();
   const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
     ${cmdBox(askExample())}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
@@ -2586,23 +2604,6 @@ async function openConnect() {
       <p class="muted small">It starts decomp.wtf when needed; no token, nothing to update when the app restarts.</p></div>`);
   const r = await connectRows(body.querySelector("#connectRows"));
   if (r) body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
-}
-
-/* decomp.wtf in WSL (Windows) or in Docker: the agents you talk to run on the computer itself, so they're
-   connected from there, by the `decomp` command the installer put on it. */
-async function openHostConnect() {
-  const host = HOST_NAMES[S.st.host_os] || "your computer";
-  const shell = S.st.host_os === "windows" ? "PowerShell" : "a terminal";
-  const body = dialog("Use decomp.wtf from your AI agent", `<p>Run this once in ${esc(shell)} on ${esc(host)}: it connects Claude Code, Codex, Antigravity CLI and opencode there.</p>
-    ${cmdBox("decomp connect")}
-    <p>Then ask your agent, for example:</p>
-    ${cmdBox(S.st.host_os === "windows" ? "decompile my game at C:\\Games\\game.z64" : "decompile my game at ~/roms/game.z64")}
-    <p class="muted small">decomp.wtf runs in ${S.st.runtime === "wsl" ? "its own WSL 2 Linux on Windows" : "Docker"}; your agent reaches it through the command below. Anything it does shows up here as it happens.</p>
-    <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre></div>`);
-  try {
-    const r = await api("/api/connect");
-    body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
-  } catch (e) { body.querySelector("#bridgeJson").textContent = e.message; }
 }
 
 /* ------------------------------------------------------------------ steering: instructions, next in line */
@@ -2649,7 +2650,8 @@ function renderAutopilot(ov) {
   const twinsRunning = tw && tw.state === "running";
   box.classList.toggle("on", !!(running || twinsRunning));
   $("apBar").hidden = !running || ap.phase === "twins";
-  const perm = pm && (pm.tried || pm.state === "running")
+  const perm = pm && pm.state === "error" ? ` The permuter couldn't run: ${pm.error}.`
+    : pm && (pm.tried || pm.state === "running")
     ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.` : "";
   const twinsDone = (ap && ap.twins) || (tw && tw.matched) || 0;
   if (running && ap.phase === "twins") {
@@ -2669,7 +2671,9 @@ function renderAutopilot(ov) {
     if (twinsDone) parts.push(`${twinsDone.toLocaleString()} from identical code`);
     if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
     if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
-    $("apSub").textContent = (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
+    $("apSub").textContent = ap && ap.error ? `Autopilot couldn't run: ${ap.error}`
+      : tw && tw.error ? `Matching identical code couldn't run: ${tw.error}`
+      : (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
     $("apBtn").textContent = "Run again";
   } else {
     $("apTitle").textContent = "Free matches first";
@@ -2891,7 +2895,7 @@ function renderAgentsPage() {
 $("agRefresh").onclick = showAgentsPage;
 
 /* ------------------------------------------------------------------ compilers & tools page */
-const TOOL_GROUPS = [["", "All"], ["N64", "N64"], ["PS1", "PS1"], ["PS2", "PS2"], ["GBA", "GBA"], ["cw", "GameCube, Wii, DS"], ["tool", "Tools"]];
+const TOOL_GROUPS = [["", "All"], ["N64", "N64"], ["PS1", "PS1"], ["GBA", "GBA"], ["cw", "GameCube, Wii, DS"], ["tool", "Tools"]];
 let toolFilter = "";
 async function showToolsPage() {
   show("toolsPage");
@@ -2905,10 +2909,33 @@ function renderTools() {
   $("toolChips").querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => { toolFilter = b.dataset.g; renderTools(); }; });
   const rows = all.filter((t) => !toolFilter || group(t) === toolFilter);
   $("toolGrid").innerHTML = rows.map((t) => `<div class="tool-card ${t.installed ? "ok" : ""}">
-      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux ? `<span class="chip-s" title="A Linux program: ${esc(t.linux_side)}">${t.linux_side === "wsl" ? "WSL 2" : "Docker"}</span>` : ""}</div>
+      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux ? `<span class="chip-s" title="A Linux program: it runs in the compiler container">Docker</span>` : ""}</div>
       <p class="muted small">${esc(t.use)}</p>
       <div class="row">${!t.supported ? `<span class="muted small">not available for this computer</span>` : t.installed ? `<span class="ok-mark">✓ installed</span>` : `<button class="ghost small-btn" data-tc="${esc(t.id)}" data-prop="${t.license === "proprietary" ? 1 : ""}" type="button">Install</button>`}</div></div>`).join("");
   $("toolGrid").querySelectorAll("[data-tc]").forEach((b) => { b.onclick = () => { b.disabled = true; installToolchain(b.dataset.tc, !!b.dataset.prop).finally(() => { b.disabled = false; }); }; });
+  renderLocalTools();
+}
+
+/* The third-party tools in local-tools/: what each is, whether it's here, what agents can do with it. */
+const LT_STATE = { ready: "✓ ready", ghidra: "Ghidra extension", "not built": "not built here", failing: "doesn't work here yet" };
+function renderLocalTools() {
+  const all = S.st.local_tools || [];
+  $("localTools").hidden = !all.length;
+  $("localToolGrid").innerHTML = all.map((t) => `<div class="tool-card ${t.state === "ready" ? "ok" : ""}">
+      <div class="tc-top"><b>${esc(t.name)}</b><span class="chip-s">${esc(t.category.split(",")[0])}</span></div>
+      <p class="muted small">${t.agents.length ? `Agents can: ${t.agents.map((o) => esc(o.replace(/_/g, " "))).join(", ")}` : esc(t.people || t.why || "")}</p>
+      <div class="row"><span class="${t.state === "ready" ? "ok-mark" : "muted small"}" title="${esc(t.why)}">${LT_STATE[t.state] || esc(t.state)}</span><span class="grow"></span>
+        ${t.state === "not built" ? "" : `<button class="ghost small-btn" data-lt="${esc(t.name)}" type="button">Check</button>`}
+        ${t.repo ? `<a class="link small" href="${esc(t.repo)}" target="_blank" rel="noopener">source</a>` : ""}</div></div>`).join("");
+  $("localToolGrid").querySelectorAll("[data-lt]").forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = "Checking…";
+      try {
+        const r = await api("/api/localtools/test", { method: "POST", body: { tool: b.dataset.lt } });
+        toast(r.ok ? `${esc(b.dataset.lt)} works.` : `${esc(b.dataset.lt)}: its check failed.<br><code>${esc(r.log.slice(-300))}</code>`, r.ok ? "match" : "err");
+      } catch (e) { toast(esc(e.message), "err"); } finally { b.disabled = false; b.textContent = "Check"; }
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ settings page */
@@ -2931,14 +2958,13 @@ async function showSettingsPage() {
     <div class="field"><span>Appearance</span><div class="seg" id="themeSeg">${[["", "System"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-theme="${k}" class="${theme === k ? "on" : ""}">${l}</button>`).join("")}</div></div>
     <div class="field"><span>Start with this computer (keeps team rooms open, resumes agents)</span><div class="row" id="svcRow2"><span class="muted small">Checking…</span></div></div>
     <div class="field"><span>Projects live in</span>${cmdBox(st.home)}</div>`;
-  const where = { wsl: " (in its own WSL 2 Linux)", docker: " (in Docker)" }[st.runtime] || "";
   const inst = st.install || {};
-  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on decomp.wtf";
-  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
+  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on GitHub";
+  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
     <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
-    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "decomp.wtf which version is current"}; nothing about you or your projects is sent).</span></label>
+    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "GitHub which version is current"}; nothing about you or your projects is sent).</span></label>
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
-    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/i12bp8/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
+    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/Nexhas28/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
     $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";
@@ -3059,6 +3085,7 @@ $("quitBtn").onclick = async () => {
   document.body.innerHTML = `<main class="view"><p class="muted">decomp.wtf has stopped. You can close this tab.</p></main>`;
 };
 
+applyTheme(savedTheme());  // the Light/Dark choice from Settings, kept across reloads
 loadNav();
 route();
 setTimeout(() => checkUpdate(false, true), 4000);

@@ -79,7 +79,7 @@ def tool_args() -> list[str]:
         raise ForkError("DS games are built with CodeWarrior for DS, which is proprietary: install it in Setup "
                         "(CodeWarrior for DS) if you accept that, then try again")
     args = ["--dsd", str(toolchains.binary("dsd")), "--compilers", str(Path(toolchains.path("mwccarm")) / "mwccarm")]
-    if toolchains.get("wibo").supported and sys.platform != "win32":
+    if toolchains.get("wibo").supported:
         toolchains.ensure("wibo", log=lambda *_: None)
         args += ["--wibo", str(toolchains.binary("wibo"))]
     return args
@@ -112,9 +112,8 @@ typedef int BOOL;
 
 
 def _run(cmd: list[str], cwd: Path, what: str) -> None:
-    from ..limits import capped
 
-    res = subprocess.run(capped(cmd), cwd=cwd, capture_output=True, text=True, timeout=3600,
+    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=3600,
                          encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise ForkError(f"{what} failed:\n{(res.stdout + res.stderr).strip()[-1500:]}")

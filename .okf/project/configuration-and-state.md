@@ -37,9 +37,9 @@ sources:
   - id: cli
     resource: src/decompnet/cli.py
     title: decompnet env vars
-  - id: hostenv
-    resource: src/decompnet/hostenv.py
-    title: Runtime detection
+  - id: bridge
+    resource: src/decompnet/app/bridge.py
+    title: Background start for decomp mcp
 ---
 
 # Configuration, state and environment variables
@@ -54,7 +54,7 @@ The workspace (projects folder) is `DECOMP_HOME`, defaulting to `~/Decomp`[^appc
 | `.decomp/server.json` | `{port, secret, pid}` of the running app, chmod 600[^appcli] |
 | `.decomp/settings.json` | App settings, for example `autopilot_after_match`, `budget_usd`, `running_agents`, and the fleet `lockdown` / `allowed_agents`[^appserver][^engine] |
 | `.decomp/logs/decomp.log` | The app's job and error log[^appserver] |
-| `.decomp/app.log` | stdout/stderr when started without a console (pythonw)[^appcli] |
+| `.decomp/app.log` | stdout/stderr of an app that `decomp mcp` started in the background[^bridge] |
 | `.decomp/uploads/` | Uploaded GameCube/Wii/DS game files before scratch setup[^engine] |
 | `.decomp/catalog.json` | The cached decomp.dev catalog[^forkengine] |
 
@@ -84,12 +84,10 @@ ROM projects imported in the app store their config as JSON in the database inst
 | :-- | :-- |
 | `DECOMP_HOME` | Workspace folder (default `~/Decomp`)[^appcli] |
 | `DECOMP_PORT` | App port (default 6464)[^appcli] |
-| `DECOMP_BIND` | Bind address (default 127.0.0.1, or 0.0.0.0 in Docker)[^appcli] |
+| `DECOMP_BIND` | Bind address (default 127.0.0.1)[^appcli] |
 | `DECOMP_AGENT_NAME` | Name for `decomp mcp`[^appcli] |
-| `DECOMP_RUNTIME` | Forces `native`, `wsl` or `docker` detection[^hostenv] |
 | `DECOMP_LOCKDOWN` | Forces the fleet lockdown[^engine] |
 | `DECOMP_TELEMETRY=on` | Stage-level telemetry (off by default)[^telemetry] |
-| `DECOMP_COMPILER_AS_LIMIT` | Compiler address-space cap in bytes (default 2 GiB, `0` = none)[^compiler] |
 | `DECOMPNET_COMPILE_CACHE=0` | Disables the compile cache[^compiler] |
 | `DECOMPNET_CACHE_DIR` | Compile cache location (default `<tmp>/decompnet-cache`)[^compiler] |
 | `DECOMPNET_TOOLCHAINS` | Toolchain install root[^toolchains] |
@@ -98,7 +96,7 @@ ROM projects imported in the app store their config as JSON in the database inst
 | `DECOMPNET_STRUCTURAL_RERANK=1` | Structural rerank in search[^project] |
 | `DECOMPNET_REA_PROVIDER=1` | Optional REA analysis provider[^project] |
 
-Ghidra, WSL and Docker variables are covered in [Ghidra integration](/project/ghidra-integration.md) and [host environments](/project/host-environments.md).
+Ghidra and compiler-container (`DECOMP_LINUXBOX`) variables are covered in [Ghidra integration](/project/ghidra-integration.md) and [host environments](/project/host-environments.md).
 
 [^appcli]: src/decompnet/app/cli.py
 [^appserver]: src/decompnet/app/server.py
@@ -110,4 +108,4 @@ Ghidra, WSL and Docker variables are covered in [Ghidra integration](/project/gh
 [^telemetry]: src/decompnet/telemetry.py
 [^toolchains]: src/decompnet/toolchains.py
 [^cli]: src/decompnet/cli.py
-[^hostenv]: src/decompnet/hostenv.py
+[^bridge]: src/decompnet/app/bridge.py

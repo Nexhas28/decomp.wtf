@@ -25,7 +25,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://decomp.wtf"
-Source = "https://github.com/i12bp8/decomp.wtf"
+Source = "https://github.com/Nexhas28/decomp.wtf"
 
 [project.scripts]
 decompnet = "decompnet.cli:main"

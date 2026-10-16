@@ -55,6 +55,8 @@ M2C_TARGETS = {
     "ido-5.3": "mips-ido-c",
     "gcc-2.7.2-psx": "mipsel-gcc-c",
     "gcc-2.8.1-psx": "mipsel-gcc-c",
+    **{tc: "mipsel-gcc-c" for tc in ("gcc-2.5.7-psx", "gcc-2.6.0-psx", "gcc-2.6.3-psx", "gcc-2.7.2-cdk",
+                                     "gcc-2.8.0-psx", "gcc-2.91.66-psx", "gcc-2.95.2-psx")},
     "agbcc": "gba-gcc-c",
 }
 # What m2c's --valid-syntax output needs to compile: its unknown types and macros, defined the simplest way
@@ -748,10 +750,12 @@ def _draft_uncached(asm_text: str, name: str, target: str, prep: PreparedContext
                                  result.fallback or (context_attempted and prep is None),
                                  warnings, valid, deps, prep)
         if rc == -2:
-            result.outcome = "error"
+            # infrastructure, not a verdict on this function: "unavailable" is never cached
+            result.outcome = "unavailable"
             result.diagnostics.append(_diag("error", f"could not start m2c ({m2c})"))
             return result
-        result.outcome = "error"
+        # killed by a signal (OOM, crash) is transient too; only m2c's own rejection is deterministic
+        result.outcome = "unavailable" if rc < 0 else "error"
         result.diagnostics.append(_m2c_failure_diag(out, err, "m2c failed"))
         return result
 

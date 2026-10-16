@@ -346,7 +346,7 @@ def test_a_job_always_ends_and_says_why(tmp_path):
         return {}["missing"]
 
     def slow(log):
-        raise subprocess.TimeoutExpired(["/usr/bin/systemd-run", "--user", "--", "/x/luvdis", "disasm"], 1800)
+        raise subprocess.TimeoutExpired(["/x/luvdis", "disasm"], 1800)
 
     def failed(log):
         raise subprocess.CalledProcessError(2, ["ninja"], stderr=b"ld: undefined symbol foo")

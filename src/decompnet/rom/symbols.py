@@ -61,7 +61,9 @@ class SymbolTable:
         if sym is not None:
             return sym.address
         m = AUTO_NAME.match(name)
-        return int(m.group(1), 16) if m else None
+        if not m:
+            return None
+        return int(m.group(1) or m.group(3), 16)  # (Game Boy bank_cpu names: the CPU address)
 
     def name_at(self, address: int) -> tuple[str, int]:
         """(name, offset) for an address: an exact symbol, the symbol that contains it, or an automatic name."""

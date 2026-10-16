@@ -37,21 +37,18 @@ Each top-level TOML table is a toolchain id (for example `["gcc-2.7.2-kmc"]`)[^t
 
 **Verification.** Every part is downloaded from upstream and checked against its pinned sha256 before extraction. A mismatch raises `ToolchainError`. An empty sha256 means trust-on-first-use, and the installer records the digest[^toml][^py].
 
-**Platforms.** Parts list `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-arm64`, `windows-x86_64` or `wsl-x86_64`. A part with no `platforms` key applies everywhere: `parts_for` defaults to the current platform[^py]. A toolchain with only a Linux build runs through WSL 2 on Windows or the compiler container on macOS (`via_linux`). See [host environments](/project/host-environments.md)[^py].
+**Platforms.** Parts list `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-arm64`, `windows-x86_64` or `wsl-x86_64`. A Mac installs only the `macos-*` parts natively; Apple Silicon runs the x86_64 builds through Rosetta 2. The `linux-*` and `windows-*` parts stay listed because every part is part of a toolchain's identity, and removing one would make existing scores and drafts stale[^toml]. A part with no `platforms` key applies everywhere: `parts_for` defaults to the current platform[^py]. A toolchain with only a Linux build runs in the compiler container (`via_linux`). There a part tagged `wsl-x86_64` (Debian's build, `DEB_PLATFORM` in the code) replaces the Linux one. The tag keeps its old name so that profile identities do not change. See [host environments](/project/host-environments.md)[^py].
 
 **Proprietary entries** (`license = "proprietary"`) are never installed without `--accept-license`[^toml][^py].
 
 **Install location** (`toolchains.root()`) is chosen in this order[^py]:
 
 1. `$DECOMPNET_TOOLCHAINS`, if set.
-2. Otherwise `data_dir()/toolchains`. `data_dir()` is `$XDG_DATA_HOME/decompnet` if that is set, otherwise:
-   - Windows: `%LOCALAPPDATA%\decompnet`
-   - macOS: `~/Library/Application Support/decompnet`
-   - Linux: `~/.local/share/decompnet`
+2. Otherwise `data_dir()/toolchains`. `data_dir()` is `$XDG_DATA_HOME/decompnet` if that is set, otherwise `~/Library/Application Support/decompnet`.
 
-Linux-only builds go under `root()/linux/<id>`, or `root()/wsl/<id>` on Windows. Each install writes a `.decompnet-toolchain.json` manifest[^py].
+Linux-only builds go under `root()/linux/<id>`. Each install writes a `.decompnet-toolchain.json` manifest[^py].
 
-**CPU.** `unsupported_cpu()` refuses matching on non-x86_64 machines, because the period compilers are x86 programs[^py].
+**CPU.** The period compilers are x86 programs. `unsupported_cpu()` never refuses a Mac, which runs them on any processor: natively, through Rosetta 2, or emulated in the compiler container. It refuses matching only on other non-x86_64 machines[^py].
 
 **`decomp setup`** installs `gcc-2.7.2-kmc`, `m2c` and `objdiff-cli`. It leaves IDO for the user to accept in the app[^appcli].
 
@@ -91,7 +88,7 @@ Linux-only builds go under `root()/linux/<id>`, or `root()/wsl/<id>` on Windows.
 | `mgbdis` | tool | | MIT |
 | `rgbds` | tool | Game Boy / Game Boy Color / sm83 | MIT |
 
-All rows come from `toolchains.toml`[^toml]. `mwcc`, `mwcc-ps2` and `mwccarm` are Windows programs run through `wibo` on Linux and macOS[^toml]. For what each external tool does, see the [tool concepts](/tools/index.md).
+All rows come from `toolchains.toml`[^toml]. `mwcc`, `mwcc-ps2` and `mwccarm` are Windows programs run through the macOS build of `wibo`[^toml]. For what each external tool does, see the [tool concepts](/tools/index.md).
 
 [^toml]: src/decompnet/toolchains.toml
 [^py]: src/decompnet/toolchains.py

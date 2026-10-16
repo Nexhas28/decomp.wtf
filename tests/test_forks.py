@@ -472,3 +472,26 @@ def test_c_code_going_into_a_cpp_file_gets_c_linkage(tmp_path, monkeypatch):
     assert net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1", "c"), row("fn_1_BB34", "b"), source) is None  # C++ to C++
     static = source.replace("int fn_1_BB34", "static int fn_1_BB34")
     assert net.forks.c_linkage({"root": str(tmp_path)}, row("fn_1_1EE74", "a"), row("fn_1_BB34", "b"), static) is None
+
+
+@needs_tools
+def test_a_refused_match_is_not_committed_or_reported_as_a_match(fork):
+    """_record can refuse an identical result (here: acceptance paused). The fork engine used to commit
+    "Match ..." to git and say "✅ MATCH!" anyway."""
+    net, slug, agent = fork
+    root = Path(net.project_row(slug)["root"])
+    names = [r["name"] for r in net.function_map(slug) if r["status"] == "open" and _ref(r["name"])]
+    if not names:
+        pytest.skip("no open function left in this run")
+    name = names[0]
+    before = (root / "src" / "game.c").read_text()
+    net.pause_acceptance(slug, "checking a fixture")
+    try:
+        res = net.attempt(agent, name, _ref(name), slug)
+    finally:
+        net.resume_acceptance(slug)
+    assert not res["matched"] and "NOT ACCEPTED" in res["text"] and "MATCH!" not in res["text"], res["text"]
+    assert "acceptance is paused" in res["text"]
+    assert f"Match {name}" not in _git(root, "log", "--oneline", "decomp-wtf")
+    assert (root / "src" / "game.c").read_text() == before  # the change was undone
+    assert net.store.one("SELECT status FROM functions WHERE name=?", name)["status"] == "open"

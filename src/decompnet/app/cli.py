@@ -73,19 +73,17 @@ def replace_older(state_file: Path, log=print) -> dict | None:
 
 
 def _bind_address() -> str:
-    """127.0.0.1, except in decomp.wtf's Docker container: there the published port (127.0.0.1 on the computer
-    itself) arrives from outside the container. Host headers are still checked on every request (server.py)."""
-    return os.environ.get("DECOMP_BIND") or ("0.0.0.0" if hostenv.runtime() == "docker" else "127.0.0.1")
+    """127.0.0.1 unless DECOMP_BIND says otherwise. Host headers are still checked on every request (server.py)."""
+    return os.environ.get("DECOMP_BIND") or "127.0.0.1"
 
 
 def _listen(start: int, exact: bool = False) -> socket.socket:
     """A listening socket on the first free port from `start`, kept open and handed to the server: two decomp.wtf
     instances starting at the same moment can't both pick the same port. `exact`: that port or nothing (a restart
-    into an update keeps its port, so the open browser tab carries on; Docker publishes one port)."""
+    into an update keeps its port, so the open browser tab carries on)."""
     for port in range(start, start + (1 if exact else 50)):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if sys.platform != "win32":  # the previous run's connections may linger in TIME_WAIT for a minute
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # the previous run's connections may linger
         for attempt in range(50 if exact else 1):
             try:
                 sock.bind((_bind_address(), port))
@@ -141,8 +139,6 @@ def run(args) -> int:
     home = home_dir()
     internal = home / ".decomp"
     internal.mkdir(parents=True, exist_ok=True)
-    if sys.stdout is None:  # started without a console (pythonw: Windows' startup apps): what it says goes to app.log
-        sys.stdout = sys.stderr = open(internal / "app.log", "a", encoding="utf-8", buffering=1)
     state_file = internal / "server.json"
     restarted = _restart_state()
     prev = None if restarted else replace_older(state_file)
@@ -153,7 +149,7 @@ def run(args) -> int:
             print("open that address in your browser")
         return 0
 
-    sock = _listen(restarted["port"] if restarted else args.port, exact=bool(restarted) or _fixed_port())
+    sock = _listen(restarted["port"] if restarted else args.port, exact=bool(restarted))
     port = sock.getsockname()[1]
     secret = _secret_for(state_file, restarted)
     state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}), encoding="utf-8")
@@ -175,11 +171,6 @@ def run(args) -> int:
         manager.stop()
         manager.on_stop()
     return 0
-
-
-def _fixed_port() -> bool:
-    """Docker publishes exactly one port: decomp.wtf must listen on it, not on the next free one."""
-    return hostenv.runtime() == "docker" and bool(os.environ.get("DECOMP_PORT"))
 
 
 def url_cmd(args) -> int:
@@ -228,7 +219,7 @@ def update_cmd(args) -> int:
 
 
 def install_info(args) -> int:
-    """Remember how decomp.wtf was installed (by the installers): where its updates come from."""
+    """Remember how decomp.wtf was installed: where its updates come from."""
     from . import updates
 
     print(json.dumps(updates.record(args.channel, args.branch, args.commit, args.repo)))
@@ -428,10 +419,6 @@ def share(args) -> int:
 def shortcut(args) -> int:
     from .launcher import install_launcher
 
-    if hostenv.runtime() != "native":
-        print("the installer adds decomp.wtf to your computer's menu (this is decomp.wtf's own Linux)")
-        return 0
-
     print(install_launcher())
     return 0
 
@@ -447,11 +434,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("url", help="print the address that opens the app (starts it if needed)")
     up = sub.add_parser("update", help="install the newest decomp.wtf (the running app restarts into it)")
     up.add_argument("--check", action="store_true", help="only say whether there is one")
-    ii = sub.add_parser("install-info", help=argparse.SUPPRESS)  # the installers: where updates come from
+    ii = sub.add_parser("install-info", help=argparse.SUPPRESS)  # where updates come from
     ii.add_argument("--channel", choices=["release", "branch"], default="release")
     ii.add_argument("--branch", default="")
     ii.add_argument("--commit", default="")
-    ii.add_argument("--repo", default="i12bp8/decomp.wtf")
+    ii.add_argument("--repo", default="Nexhas28/decomp.wtf")
     c = sub.add_parser("connect", help="give your AI agents (Claude Code, Codex, Antigravity CLI, opencode) decomp.wtf's tools")
     c.add_argument("agents", nargs="*", metavar="agent", help="claude, codex, antigravity (agy) or opencode (default: every one installed)")
     c.add_argument("--list", action="store_true", help="only show which are connected")
@@ -480,7 +467,6 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--name", default=os.environ.get("DECOMP_AGENT_NAME") or "chat",
                    help="how this agent shows up in the app (e.g. claude-code; or set DECOMP_AGENT_NAME)")
     args = ap.parse_args(argv)
-    __import__("decompnet").utf8_output()
     if args.cmd == "mcp":
         from .bridge import main as bridge
         return bridge(args.name)

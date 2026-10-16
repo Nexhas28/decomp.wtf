@@ -126,9 +126,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
                             "import_game again with own_copy=true")
         game = hostenv.local_path(path)
         if not game.is_file():
-            hint = {"wsl": " (decomp.wtf runs in WSL: Windows drives are under /mnt, e.g. C:\\ is /mnt/c)",
-                    "docker": " (decomp.wtf runs in Docker and sees your home folder only)"}.get(hostenv.runtime(), "")
-            raise ToolError(f"no file at {game}{hint}")
+            raise ToolError(f"no file at {game}")
 
         def work(log):
             slug = net.import_rom(game, toolchain=compiler or None, confirmed=True, name=game.name, log=log)
@@ -178,8 +176,6 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         where = f"http://127.0.0.1:{port}/" + (f"#/p/{slug}" if slug else "")
         if ok:
             return f"Opened the live view in the user's browser ({where})."
-        if hostenv.runtime() == "docker":  # the container can't reach the user's browser: hand them the link
-            return f"Give the user this link to open the live view (it signs their browser in): {url}"
         return f"Couldn't open a browser here; the user can run `decomp` to open the app ({where})."
 
     @mcp.tool(meta=tools.ALWAYS_LOAD)
@@ -228,7 +224,8 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             out = [line(ov).lstrip("- ")]
             ap = ov.get("autopilot")
             if ap:
-                out.append(f"autopilot: {ap['state']}, {ap['tried']}/{ap['total']} drafts tried, {ap['matched']} matched")
+                out.append(f"autopilot: {ap['state']}, {ap['tried']}/{ap['total']} drafts tried, {ap['matched']} matched"
+                           + (f" ({ap['error']})" if ap.get("error") else ""))
             working = [f"{c['agent']} on {c['name']}" for c in live["claims"] if c["agent"] != "autopilot"]
             out.append("working now: " + (", ".join(working) if working else "nobody"))
             helpers = [f"{s.id} ({s.state})" for s in manager.sessions.values() if s.slug == slug]

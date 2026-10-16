@@ -30,7 +30,7 @@ from pathlib import Path
 
 from .. import scheduler
 from ..network import NetworkError
-from ..limits import capped, killed_for_memory
+from ..limits import killed_for_memory
 from . import objdiff
 
 STATE = ".decomp-wtf"
@@ -93,7 +93,7 @@ def _tool(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    local = Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
+    local = Path(sys.executable).parent / name
     return str(local) if local.exists() else None
 
 
@@ -290,7 +290,7 @@ class ForkProject:
         cmd = [shutil.which(cmd[0], path=env["PATH"]) or cmd[0], *cmd[1:]]
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
-            proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(cmd, cwd=self.root, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8")
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"

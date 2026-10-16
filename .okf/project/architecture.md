@@ -67,7 +67,7 @@ sources:
 | `analysis/` | Analysis broker over evidence providers: direct Ghidra, and an optional REA adapter[^analysis]. See [Ghidra integration](/project/ghidra-integration.md). |
 | `retrieval/` | Optional Function ID and BSim retrieval. It is off by default and returns candidates only, never verdicts[^retrieval]. |
 | `similarity.py`, `app/twins.py` | Look-alike functions and free matches from identical twins. |
-| `hostenv.py`, `wsl.py`, `linuxbox.py`, `limits.py` | Where the app runs, and how Linux-only compilers run elsewhere. See [host environments](/project/host-environments.md). |
+| `hostenv.py`, `linuxbox.py`, `limits.py` | Where the app runs (always natively on the Mac), and how Linux-only compilers run in the compiler container. See [host environments](/project/host-environments.md). |
 | `app/collab.py`, `app/forkroom.py` | Team rooms. See [collaboration rooms](/project/collaboration-rooms.md). |
 
 ## Data flow of one attempt

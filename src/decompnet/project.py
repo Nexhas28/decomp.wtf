@@ -11,7 +11,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from . import scoring, seeds, toolchains, wsl
+from . import scoring, seeds, toolchains
 from .compiler import CompilerConfig, compile_source
 from .elfobj import extract_function, function_locations, list_functions
 from .store import Store, hex_entry
@@ -242,13 +242,13 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     linux = False
     if "toolchain" in c:
         tc = toolchains.get(c["toolchain"])
-        linux = tc.via_linux  # Windows: run inside WSL 2; macOS: in the compiler container (both Linux-only builds)
+        linux = tc.via_linux  # a Linux-only build: runs in the compiler container
         if linux and not (ok := toolchains.side_status())[0]:
             raise toolchains.ToolchainError(f"{tc.name} is a Linux program: {ok[1]}")
         dirs = toolchains.runtime_dirs(tc.id)
-        tc_dir = wsl.path(dirs[0]) if linux else str(dirs[0])
+        tc_dir = str(dirs[0])
         ro_paths += [str(d) for d in dirs]
-        if "runtime-i386" in tc.requires and not linux:  # on a Linux side its programs bring the runtime themselves
+        if "runtime-i386" in tc.requires and not linux:  # the compiler container has its own 32-bit runtime
             runtime32 = str(toolchains.require("runtime-i386"))
         flags = c.get("flags", tc.flags)
         if c.get("cmd"):
@@ -260,7 +260,7 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
         cmd = [a.replace("{tc}", tc_dir) for a in base]
         for dep in tc.requires:  # {tc:<id>} is another toolchain this one needs
             where = toolchains.path(dep, linux)
-            cmd = [a.replace(f"{{tc:{dep}}}", wsl.path(where) if linux else str(where)) for a in cmd]
+            cmd = [a.replace(f"{{tc:{dep}}}", str(where)) for a in cmd]
     else:
         cmd = list(c["cmd"])
     return CompilerConfig(

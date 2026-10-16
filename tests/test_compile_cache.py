@@ -509,9 +509,11 @@ def test_bypass_when_the_key_cannot_be_described(tmp_path, monkeypatch):
     assert not objs.exists() or not any(objs.iterdir())
 
 
-def test_wsl_and_docker_modes_bypass_the_cache(tmp_path):
-    assert ccache.build_key(make_cfg(tmp_path, wsl=True), HEADER, SOURCE,
-                            mode="wsl", work_base=tmp_path) is None
+def test_container_and_docker_modes_bypass_the_cache(tmp_path):
+    for flag in ("linux", "wsl"):  # `wsl` is how configs written by older versions say it
+        assert ccache.build_key(make_cfg(tmp_path, **{flag: True}), HEADER, SOURCE, work_base=tmp_path) is None
+    assert ccache.build_key(make_cfg(tmp_path, linux=True), HEADER, SOURCE,
+                            mode="linux", work_base=tmp_path) is None
     assert ccache.build_key(make_cfg(tmp_path, sandbox="docker", image="img"), HEADER, SOURCE,
                             mode="docker", work_base=tmp_path) is None
 

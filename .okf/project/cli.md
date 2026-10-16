@@ -34,7 +34,7 @@ With no subcommand, `decomp` starts the app, or brings an already running one to
 | *(none)* | Runs the server (see [local app server](/project/local-app-server.md)). An older running version is stopped and replaced. |
 | `setup` | Installs `gcc-2.7.2-kmc`, `m2c` and `objdiff-cli`, and lists the agent CLIs it finds. |
 | `stop` | POSTs `/api/quit` to the running app. |
-| `shortcut` | Adds decomp.wtf to the apps menu or desktop. |
+| `shortcut` | Adds a small decomp.wtf app to `~/Applications`. |
 | `url` | Prints the signed-in address, starting the app if needed. |
 | `update [--check]` | Installs the newest version. A running app restarts into it. |
 | `connect [agents...] [--list]` | Registers `decomp mcp` with claude, codex, antigravity (agy) or opencode. |
@@ -43,9 +43,9 @@ With no subcommand, `decomp` starts the app, or brings an already running one to
 | `join <link> <game> --name N [--own-copy]` | Joins a room with your own copy. |
 | `service install\|remove\|status` | Runs the app in the background. |
 | `mcp [--name]` | Starts the stdio MCP bridge for the user's own agent. |
-| `install-info` | Hidden. The installers use it to record the update channel. |
+| `install-info` | Hidden. Records where updates come from (channel, branch, commit, repo) in `install.json`. |
 
-All rows are from `app/cli.py`[^appcli]. The background service is a systemd user service on Linux, a launchd agent on macOS, and a Run-key startup app on Windows, each running `decomp --no-browser`[^service].
+All rows are from `app/cli.py`[^appcli]. The background service is a launchd agent of this user that runs `decomp --no-browser`[^service].
 
 ## `decompnet`: coordinator and tools
 

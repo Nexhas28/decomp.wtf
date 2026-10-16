@@ -23,17 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import cache as ccache
-from . import linuxbox, scheduler, telemetry, wsl
+from . import linuxbox, scheduler, telemetry
 from .limits import killed_for_memory
 
 MAX_SOURCE_BYTES = 64 * 1024
-# Per-compile resource caps (address space, CPU seconds, output file size); the global concurrency
-# cap is the 'compiler' pool of scheduler.BUDGET (see _slot), so a hostile submission can't take the
-# host down with it.
-# DECOMP_COMPILER_AS_LIMIT (bytes, 0 = none): the old 32-bit compilers run emulated in a container on Apple
-# Silicon, and the emulator needs a 4 GiB guest address space, so a lower cap makes it fail.
-LIMITS = [*([f"--as={n}"] if (n := int(os.environ.get("DECOMP_COMPILER_AS_LIMIT", 2147483648))) else []),
-          "--cpu=30", "--fsize=67108864"]
+# The global concurrency cap is the 'compiler' pool of scheduler.BUDGET (see _slot), so a hostile submission can't
+# take the computer down with it; the compiler container has its own memory and process limits (linuxbox).
 
 
 @contextmanager
@@ -94,12 +89,12 @@ def check_source(source: str) -> None:
 class CompilerConfig:
     cmd: list[str]
     timeout: float = 15.0
-    sandbox: str = "auto"  # auto | bwrap | docker | none
+    sandbox: str = "auto"  # auto (= none) | docker | none
     image: str | None = None  # for sandbox = "docker"
     ro_paths: tuple[str, ...] = ()
     include_dirs: tuple[str, ...] = ()  # absolute paths of extra (static) header dirs
     runtime32: str | None = None  # 32-bit x86 C runtime for old i386 compiler binaries (see toolchains)
-    linux: bool = False  # a Linux-only toolchain: WSL 2 on Windows, the compiler container on macOS
+    linux: bool = False  # a Linux-only toolchain, run in the compiler container (linuxbox)
     wsl: bool = False  # kept for configs written by older versions (see project.py: either flag means linux)
     cache: bool = True  # content-addressed compile cache (plan P2.4-P2.6); False disables read+write
     cache_dir: str | None = None  # cache location; default: DECOMPNET_CACHE_DIR or <tmp>/decompnet-cache
@@ -122,7 +117,7 @@ class CompileResult:
 
 def _work_parent(cfg: CompilerConfig) -> str | None:
     """Where a compile's folder is made: in the compile area the compiler container shares, else temp."""
-    if _linux(cfg) and not wsl.wanted():
+    if _linux(cfg):
         linuxbox.work_root().mkdir(parents=True, exist_ok=True)
         return str(linuxbox.work_root())
     return None
@@ -136,21 +131,17 @@ def _linux(cfg: CompilerConfig) -> bool:
 def _sandbox_mode(cfg: CompilerConfig) -> str:
     if _linux(cfg):
         return "linux"
-    if cfg.sandbox != "auto":
-        return cfg.sandbox
-    return "bwrap" if shutil.which("bwrap") else "none"
+    return "none" if cfg.sandbox == "auto" else cfg.sandbox
 
 
 def _root(cfg: CompilerConfig, work: Path) -> str:
-    """How the compiler sees the work folder (on a Linux side it works on a copy, see wsl.script)."""
+    """How the compiler sees the work folder (in the compiler container it works on a copy, see linuxbox.script)."""
     mode = _sandbox_mode(cfg)
-    return "/work" if mode in ("bwrap", "docker") else wsl.stage_dir() if mode == "linux" else str(work)
+    return "/work" if mode == "docker" else linuxbox.stage_dir() if mode == "linux" else str(work)
 
 
-def _wrap(cfg: CompilerConfig, work: Path, argv: list[str], snapshot: Path | None = None) -> list[str]:
+def _wrap(cfg: CompilerConfig, work: Path, argv: list[str]) -> list[str]:
     mode = _sandbox_mode(cfg)
-    if mode in ("none", "bwrap") and shutil.which("prlimit"):
-        argv = ["prlimit", *LIMITS, "--", *argv]
     if mode == "none":
         return argv
     if mode == "docker":
@@ -158,46 +149,25 @@ def _wrap(cfg: CompilerConfig, work: Path, argv: list[str], snapshot: Path | Non
             raise RuntimeError("sandbox = 'docker' needs compiler.image")
         return ["docker", "run", "--rm", "--network", "none", "--memory", "512m", "--pids-limit", "64",
                 "-v", f"{work}:/work", "-w", "/work", cfg.image, *argv]
-    if mode == "bwrap":
-        # /tmp first, so read-only mounts of paths that live under /tmp are not hidden by it.
-        cmd = ["bwrap", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib64", "/lib64",
-               "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev"]
-        if cfg.runtime32:
-            # i386 binaries hardcode /lib/ld-linux.so.2; give them a private /lib with the pinned loader,
-            # and point the loader at the pinned 32-bit libraries. 64-bit tools ignore those libraries.
-            cmd += ["--dir", "/lib", "--ro-bind", f"{cfg.runtime32}/ld-linux.so.2", "/lib/ld-linux.so.2",
-                    "--ro-bind", cfg.runtime32, "/opt/rt32", "--setenv", "LD_LIBRARY_PATH", "/opt/rt32"]
-        else:
-            cmd += ["--symlink", "usr/lib", "/lib"]
-        for p in cfg.ro_paths:
-            cmd += ["--ro-bind", p, p]
-        cmd += ["--bind", str(work), "/work"]
-        if snapshot is not None:
-            # the shared immutable include snapshot, mounted read-only ON TOP of the writable
-            # work bind (P2.7: no attempt can mutate another attempt's inputs) -- mounts apply
-            # in command-line order, so this must come after the work bind.
-            cmd += ["--ro-bind", str(snapshot), "/work/include"]
-        cmd += ["--chdir", "/work", "--unshare-all", "--die-with-parent", "--new-session"]
-        return [*cmd, "--", *argv]
     raise RuntimeError(f"unknown sandbox mode {mode!r}")
 
 
-def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None, *,
-          snapshot: Path | None = None, **stage):
-    """`stage`: on a Linux side, run on a copy in its own file system (wsl.script's outputs/inputs/stage)."""
+def _exec(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float, cwd: Path | None = None, **stage):
+    """`stage`: in the compiler container, run on a copy in its own file system (linuxbox.script's
+    outputs/inputs/stage)."""
     if _sandbox_mode(cfg) == "linux":
-        return (wsl.run if wsl.wanted() else linuxbox.run)(argv, cwd or work, timeout, **stage)
+        return linuxbox.run(argv, cwd or work, timeout, **stage)
     # in the work folder, never in the app's own: KMC GCC's assembler (binutils 2.6) can't read its input when the
-    # current directory is / ("Bad file descriptor"), which it is for decomp.wtf started by a service or in Docker
-    return subprocess.run(_wrap(cfg, work, argv, snapshot), cwd=cwd or work, capture_output=True, text=True,
+    # current directory is / ("Bad file descriptor"), which it is for decomp.wtf started by a service
+    return subprocess.run(_wrap(cfg, work, argv), cwd=cwd or work, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 300, *,
            inputs: list[str] | None = None, outputs: list[str] | None = None) -> subprocess.CompletedProcess:
     """Run a toolchain command inside `work` (the sandbox's /work), e.g. to build a whole exported project.
-    Paths in `argv` must be relative to `work`. In WSL, naming the files it reads (`inputs`) and writes (`outputs`)
-    lets old 32-bit compilers work on a copy in the Linux side's own file system, which they need."""
+    Paths in `argv` must be relative to `work`. In the compiler container, naming the files it reads (`inputs`) and
+    writes (`outputs`) lets old 32-bit compilers work on a copy in the container's own file system, which they need."""
     return _exec(cfg, Path(work), argv, timeout, cwd=Path(work),
                  **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
@@ -302,7 +272,7 @@ def _compile_cached(cfg: CompilerConfig, context_header: str, source: str,
     """Run the compiler against the key's immutable include snapshot; writable outputs
     stay in a per-attempt directory."""
     mode = _sandbox_mode(cfg)
-    if mode != key.manifest["compiler"]["mode"] or mode not in ("bwrap", "none"):
+    if mode != key.manifest["compiler"]["mode"] or mode != "none":
         # the wrapper changed under us (or a mode the key builder never describes):
         # better an uncached compile than a mis-staged one
         raise ccache.CacheBypass("sandbox mode changed after the key was built")
@@ -310,16 +280,6 @@ def _compile_cached(cfg: CompilerConfig, context_header: str, source: str,
     try:
         snap_inc = cache.ensure_snapshot(key)
         unit = ccache.UNIT_PROLOGUE + source + "\n"
-        if mode == "bwrap":
-            # the snapshot is mounted read-only at /work/include by _wrap; the work dir
-            # only ever holds this attempt's writable files.
-            with tempfile.TemporaryDirectory(prefix="decompnet-", dir=_work_parent(cfg)) as tmp:
-                work = Path(tmp)
-                if _linux(cfg) and not wsl.wanted():
-                    work.chmod(0o777)  # the container's user isn't the Mac user
-                (work / "func.c").write_text(unit, encoding="utf-8", newline="\n")
-                root = _root(cfg, work)
-                return _run_attempt(cfg, work, _argv(cfg, root), root, snap_inc)
         # sandbox "none": the compiler sees physical paths, so the work dir is the key's
         # deterministic path (same __FILE__ for the same key) under a cross-process lease.
         work = Path(cache.root) / "work" / key.work_name
@@ -328,7 +288,7 @@ def _compile_cached(cfg: CompilerConfig, context_header: str, source: str,
             _stage_include(snap_inc, work / "include")
             (work / "func.c").write_text(unit, encoding="utf-8", newline="\n")
             root = _root(cfg, work)
-            return _run_attempt(cfg, work, _argv(cfg, root), root, None)
+            return _run_attempt(cfg, work, _argv(cfg, root), root)
     finally:
         cache.unpin_snapshot(key.dep_digest)
 
@@ -351,11 +311,10 @@ def _reset_work(work: Path) -> None:
     work.mkdir(parents=True)
 
 
-def _run_attempt(cfg: CompilerConfig, work: Path, argv: list[str], root: str,
-                 snapshot: Path | None) -> _Attempt:
+def _run_attempt(cfg: CompilerConfig, work: Path, argv: list[str], root: str) -> _Attempt:
     try:
         with _slot():
-            proc = _exec(cfg, work, argv, cfg.timeout, snapshot=snapshot,
+            proc = _exec(cfg, work, argv, cfg.timeout,
                          **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}))
     except subprocess.TimeoutExpired:
         return _Attempt(CompileResult(False, None, f"compiler timed out after {cfg.timeout}s"), "timeout", None)
@@ -389,8 +348,10 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
     from a normal compile is which assembler runs and what text it is handed."""
     from . import toolchains
 
-    with tempfile.TemporaryDirectory(prefix="decompnet-var-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="decompnet-var-", dir=_work_parent(cfg)) as tmp:
         work = Path(tmp)
+        if _linux(cfg):
+            work.chmod(0o777)  # the container's user isn't the Mac user
         inc = work / "include"
         inc.mkdir()
         for d in cfg.include_dirs:
@@ -417,12 +378,12 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
         compile_argv = [a.replace("{include}", subst["{include}"]) for a in compile_argv]
         if not saw_dash_s:
             compile_argv.insert(1, "-S")
-        if "{asm}" not in compile_argv:
+        if subst["{asm}"] not in compile_argv:  # placeholders are substituted already: look for the path
             compile_argv += ["-o", subst["{asm}"]]
-        wsl_extra = {"outputs": ["func.s", "func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}
+        staged = {"outputs": ["func.s", "func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}
         try:
             with _slot():
-                proc = _exec(cfg, work, compile_argv, cfg.timeout, **wsl_extra)
+                proc = _exec(cfg, work, compile_argv, cfg.timeout, **staged)
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")
@@ -457,7 +418,7 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
         asm_argv = [a.replace("{include}", asm_subst["{include}"]) for a in asm_argv]
         try:
             with _slot():
-                proc = _exec(cfg, work, asm_argv, cfg.timeout, **wsl_extra)
+                proc = _exec(cfg, work, asm_argv, cfg.timeout, **staged)
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"assembler timed out after {cfg.timeout}s")
         log += (proc.stdout + proc.stderr).replace(root + "/", "")
@@ -472,7 +433,7 @@ def _compile_legacy(cfg: CompilerConfig, context_header: str, source: str) -> Co
     every include directory copied in."""
     with tempfile.TemporaryDirectory(prefix="decompnet-", dir=_work_parent(cfg)) as tmp:
         work = Path(tmp)
-        if _linux(cfg) and not wsl.wanted():
+        if _linux(cfg):
             work.chmod(0o777)  # the container's user isn't the Mac user
         inc = work / "include"
         inc.mkdir()

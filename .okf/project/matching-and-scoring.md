@@ -50,8 +50,8 @@ sources:
 1. **Claim bookkeeping.** Claims are checked inside a transaction. Scoring someone else's claimed function is refused[^network].
 2. **Snapshot.** An immutable digest of the function, project, context and symbol table is captured before compiling. If any of these change during compilation, the result is kept only as historical evidence, never as a match[^snapshots][^network].
 3. **Compile.** `compiler.py` compiles untrusted agent C with the project's pinned toolchain. Agents never run their own compiler for anything that counts[^compiler].
-   - Sandbox modes are `auto | bwrap | docker | none`. `auto` uses bubblewrap when present, and `prlimit` caps resources[^compiler].
-   - Compilation goes through a content-addressed `CompilationKey` cache. WSL and docker modes bypass it[^cache].
+   - Sandbox modes are `auto | docker | none`, and `auto` means `none`. A Linux-only toolchain runs in the compiler container instead, which has its own memory and process limits. The `compiler` pool of the scheduler caps how many compiles run at once[^compiler].
+   - Compilation goes through a content-addressed `CompilationKey` cache. Only sandbox mode `none` is cached. The compiler container and docker modes bypass it[^cache].
 4. **Evaluate.** For ROM projects, the candidate object is *linked at the function's address*. Names resolve to addresses, and data the candidate defines (strings, floats, jump tables) is placed where the ROM keeps it and checked against the ROM bytes[^match]. Relocated byte ranges are masked, and relocations are compared symbolically[^elfobj].
 5. **Score.** `scoring.diff` aligns the instructions (decomp.me/asm-differ style). Lower is better. The penalties are: stack offset 1, register 5, operand 10, reorder 60, insertion 100, deletion 100[^scoring].
    - `_finalise` gives score 0 only when the bytes match. A textually identical but byte-different result scores at least 1[^scoring].

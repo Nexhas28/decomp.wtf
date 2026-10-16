@@ -34,9 +34,9 @@ def make_profile(**kw) -> toolchains.Profile:
 def write_manifest(tc_root, tid, sha):
     """A recorded installation manifest with different pinned binaries (no actual install).
 
-    The folder is where `toolchains.path` resolves the id: a Linux-only toolchain lives under the Linux
-    side's directory (`linux/` on a Mac with the compiler container, `wsl/` on Windows), so writing to a
-    flat path would leave the identity computation reading a manifest that isn't there."""
+    The folder is where `toolchains.path` resolves the id: a Linux-only toolchain lives under `linux/`
+    (it runs in the compiler container), so writing to a flat path would leave the identity computation
+    reading a manifest that isn't there. "wsl" is the manifest key older installs wrote."""
     d = toolchains.path(tid)  # exactly where the identity computation reads the manifest
     d.mkdir(parents=True, exist_ok=True)
     (d / toolchains.MANIFEST).write_text(json.dumps({
@@ -89,7 +89,8 @@ def test_reinstalled_toolchain_changes_profile_identity(tmp_path, monkeypatch):
     """Installing the toolchain, and reinstalling it with different pinned binaries, both
     change the profile identity; an identical reinstall does not."""
     monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
-    p = make_profile()
+    # a downloaded toolchain: for a bundled one (KMC on Apple Silicon) a manifest of a download is a stale install
+    p = make_profile(toolchain="ido-7.1")
     before = p.identity()
     write_manifest(tmp_path, p.toolchain, "1" * 64)
     first_install = p.identity()

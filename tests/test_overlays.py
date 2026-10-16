@@ -112,8 +112,9 @@ def _ps2_elf(base: int, count: int = 24) -> bytes:
     return bytes(elf + bytes(0x100 - len(elf)) + code)
 
 
-def test_a_ps2_dvd_iso_excludes_an_unrelated_elf_at_main_vram(tmp_path):
+def test_a_ps2_dvd_iso_excludes_an_unrelated_elf_at_main_vram(tmp_path, monkeypatch):
     """A large PS2 DVD is streamed; an independent ELF at the boot program's address isn't an overlay."""
+    monkeypatch.setattr(detect, "PS2", True)  # switched off in the app for now; the code stays tested
     boot = _ps2_elf(0x00100000)
     ntgui = _ps2_elf(0x00100000)
     game_overlay = _ps2_elf(0x007C4880)

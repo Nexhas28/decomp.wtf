@@ -25,9 +25,6 @@ sources:
   - id: readme
     resource: README.md
     title: Development section
-  - id: wsl
-    resource: src/decompnet/wsl.py
-    title: DECOMP_WSL hook
   - id: linuxbox
     resource: src/decompnet/linuxbox.py
     title: DECOMP_LINUXBOX hook
@@ -56,13 +53,13 @@ The operator-reported baseline for this checkout, recorded when this bundle was 
 
 ## Layout
 
-`tests/` holds 91 `test_*.py` modules, roughly one per feature area:
+`tests/` holds 93 `test_*.py` modules, roughly one per feature area:
 
 - platforms: `test_rom`, `test_psx`, `test_ps2`, `test_gba`, `test_gb`, `test_gc`, `test_ds`
 - forks: `test_forks`, `test_dtksplits`, `test_fork_rooms`
 - scoring and matching: `test_scoring`, `test_similarity`, `test_validity`
 - toolchains: `test_toolchains`, `test_toolchain_paths`
-- hosts: `test_wsl`, `test_wsl_windows`, `test_linuxbox`, `test_hostenv`
+- hosts: `test_linuxbox`, `test_hostenv`
 - servers: `test_app_server`, `test_http`, `test_endpoints`
 - permuter: `test_permute`, `test_permuter_ops`, `test_search`
 - `tests/solutions.py`: helper solutions
@@ -75,7 +72,6 @@ The demo projects in `projects/` are test fixtures. For example, `tests/test_rom
 
 These variables point code at test stand-ins:
 
-- `DECOMP_WSL`: stand-in for `wsl.exe`[^wsl]
 - `DECOMP_LINUXBOX`: stand-in for `docker`[^linuxbox]
 - `DECOMP_LOCKDOWN`: forces fleet lockdown on or off[^engine]
 
@@ -87,6 +83,5 @@ See [configuration and state](/project/configuration-and-state.md).
 [^benchreadme]: benchmarks/README.md
 [^benchbaseline]: benchmarks/baseline-pytest.txt
 [^readme]: README.md
-[^wsl]: src/decompnet/wsl.py
 [^linuxbox]: src/decompnet/linuxbox.py
 [^engine]: src/decompnet/app/engine.py

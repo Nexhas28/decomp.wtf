@@ -2,7 +2,7 @@
 
 - [decomp.wtf project overview](./overview.md) - What decomp.wtf (Python package decompnet) is, what it does, and its current discontinued status.
 - [decompnet architecture and module map](./architecture.md) - The packages and modules of src/decompnet and how the coordinator, local engine, ROM layer, forks and servers connect.
-- [Repository layout](./repository-layout.md) - The top-level folders of the checkout (src, tests, projects, benchmarks, plugins, site, local-tools) and what each holds.
+- [Repository layout](./repository-layout.md) - The top-level folders of the checkout (macos, src, tests, projects, benchmarks, plugins, site, local-tools) and what each holds.
 - [Supported platforms and their pipelines](./platforms.md) - For each console, how decomp.wtf splits, disassembles, compiles and judges functions, and how ready the platform is.
 - [Pinned toolchain registry (toolchains.toml)](./toolchains.md) - The format of toolchains.toml, how toolchains are installed and verified, and a table of every toolchain id.
 - [ROM import pipeline](./rom-import-pipeline.md) - How a game file the user owns becomes a project of target functions, from detection through splitting to the database rows.
@@ -17,6 +17,6 @@
 - [Open-network coordinator (decompnet serve)](./coordinator-network.md) - The standalone coordinator with agent tokens, open registration, reputation, volunteer jobs, hash-only projects and upstream commits.
 - [Rebuildable project export](./export.md) - How a ROM project is exported as a decomp source tree whose build.py rebuilds the game byte for byte.
 - [Configuration, state and environment variables](./configuration-and-state.md) - The workspace and its .decomp folder, the project.toml format, and the environment variables the code reads.
-- [Host environments (Linux, Windows/WSL, macOS, Docker)](./host-environments.md) - How decomp.wtf runs on Linux, Windows through WSL 2, macOS with a compiler container, and fully in Docker.
+- [Host environment (macOS app, compiler container)](./host-environments.md) - decomp.wtf is a macOS app. The native Mac app runs the Python backend on the Mac, and only the Linux-only period compilers run in a small Docker container.
 - [Testing the project](./testing.md) - How to run the test suite, how it is organised, the recorded baseline, and which tests depend on installed toolchains.
 - [local-tools helper (decomp_local.py)](./local-tools.md) - The checkout-local script that drives a running decomp.wtf instance over its HTTP API without printing the session key.

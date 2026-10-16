@@ -68,7 +68,7 @@
         <div class="cart" aria-hidden="true"><span></span></div>
         <p class="drop-title">Drop a game here</p>
         <p class="muted small">ROM, disc image or program file · or <span class="link">choose a file</span></p>
-        <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="ps2">PS2</span><span data-p="gba">GBA</span><span data-p="nds">DS</span></div>
+        <div class="plat-row" id="platRow"><span data-p="gc">GameCube</span><span data-p="wii">Wii</span><span data-p="n64">N64</span><span data-p="psx">PS1</span><span data-p="gba">GBA</span><span data-p="nds">DS</span></div>
         <p class="plat-legend muted small" id="platLegend" hidden><span class="rec-mark">★</span> recommended: the most tested path to a full decomp you can port and mod · the rest are beta</p>
         <button class="link-btn" id="pathPick" type="button">Big disc? Use its path instead</button>
       </div>
@@ -105,7 +105,7 @@
           <button class="primary" id="errBack" type="button">Try another file</button>
           <button class="ghost" id="errCopy" type="button">Copy for a bug report</button>
           <a class="ghost btn" id="errLogLink" href="/api/log" target="_blank" rel="noopener">The full log</a>
-          <a class="ghost btn" href="https://github.com/i12bp8/decomp.wtf/issues/new" target="_blank" rel="noopener">Report it</a>
+          <a class="ghost btn" href="https://github.com/Nexhas28/decomp.wtf" target="_blank" rel="noopener">Report it</a>
         </div>
       </div>
     </div>
@@ -236,7 +236,7 @@
     <section class="panel map-panel">
       <header class="panel-head">
         <h2 id="mapTitle">ROM map</h2>
-        <div class="legend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span></div>
+        <div class="legend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span><span id="legendBios" hidden><i class="sw bios"></i>BIOS</span></div>
       </header>
       <p class="muted small map-hint" id="mapHint">every square is a function, in ROM order</p>
       <div class="map-wrap" id="mapWrap">
@@ -401,6 +401,11 @@
     <p class="muted">decomp.wtf installs what a project needs by itself. Proprietary compilers (IDO, CodeWarrior) are only installed when you accept that.</p></header>
   <div class="chips" id="toolChips"></div>
   <div class="tool-grid" id="toolGrid"></div>
+  <section id="localTools" hidden>
+    <header class="page-head lt-head"><h2>Reverse-engineering tools</h2>
+      <p class="muted">Disassemblers, decompilers, decompressors, extractors and symbol finders on this computer. Helper agents run the ones marked "agents can" by themselves, on your game's files only; the rest are for you.</p></header>
+    <div class="tool-grid" id="localToolGrid"></div>
+  </section>
 </main>
 
 <!-- ================================================================ settings -->
@@ -436,6 +441,7 @@
       </div>
     </header>
     <div class="drawer-body">
+      <div class="fn-aside" id="fnAside" hidden><p class="small" id="fnAsideText"></p><button class="ghost small-btn" id="fnAsideBtn" type="button"></button></div>
       <div class="fn-chart" id="fnChartWrap"><svg id="fnChart" aria-label="Match per compile"></svg><div class="fn-chart-note" id="fnChartNote"></div></div>
       <div class="fn-tabs">
         <div class="tabs" role="tablist" aria-label="Function view">

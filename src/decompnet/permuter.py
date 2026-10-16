@@ -1212,7 +1212,7 @@ class LocalScorer:
                 raise ValueError(f"refusing include path {rel!r}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(text, encoding="utf-8", newline="\n")
-        # the coordinator's own way to run the toolchain (on Windows, Linux-only ones go through WSL)
+        # the coordinator's own way to run the toolchain (Linux-only ones go through the compiler container)
         compiler = {"toolchain": tc.id, "include_dirs": [str(inc)]}
         compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k)})
         self.cc = compiler_config(inc, {"compiler": compiler})

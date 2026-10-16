@@ -1,0 +1,43 @@
+name: DecompWTF
+options:
+  bundleIdPrefix: wtf.decomp
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.10.6"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  DecompWTF:
+    type: application
+    platform: macOS
+    sources:
+      - DecompWTF
+    info:
+      path: DecompWTF/Info.plist
+      properties:
+        CFBundleName: decomp.wtf
+        CFBundleDisplayName: decomp.wtf
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: MIT license
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: DecompWTF/DecompWTF.entitlements
+      properties:
+        # The app starts uv, Python and Docker and reads ~/Decomp, which a sandboxed app can't do.
+        com.apple.security.app-sandbox: false
+    settings:
+      base:
+        PRODUCT_NAME: decomp.wtf
+        # Not wtf.decomp.app: `decomp` itself writes a launcher with that id to ~/Applications.
+        PRODUCT_BUNDLE_IDENTIFIER: wtf.decomp.mac
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: false
+        COMBINE_HIDPI_IMAGES: true

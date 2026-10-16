@@ -9,6 +9,20 @@ Helper scripts plus third-party decomp / reverse-engineering tools, each downloa
 
 Knowledge base entries for each tool live in `.okf/tools/`.
 
+## In decomp.wtf
+
+decomp.wtf finds this folder (`DECOMP_LOCAL_TOOLS`, which the Mac app sets, or `local-tools/` in the checkout it runs
+from) and uses it in two places (`src/decompnet/app/localtools.py`):
+
+- **Compilers & tools page:** every tool below with whether it works on this computer, and a Check button that runs
+  its `test.sh`.
+- **Helper agents:** the MCP tools `local_tools` (what is here) and `run_tool` (run one). Agents have no shell, so they
+  only get fixed operations whose command lines decomp.wtf builds from checked values (files inside the project,
+  numbers, hex, names from a list): disassemble, decompile (rz-ghidra, RetDec), p-code, decompress (crunch64), find
+  library functions (n64sym), display lists, textures, ROM/disc extraction, map files, Ghidra diffs. Results go to
+  `tool-output/` in the project. Tools that need free-form input (assemblers writing their own outputs, compiler
+  wrappers, Python libraries, emulators, Ghidra extensions) are listed for people with the reason.
+
 | Tool | Category | Status | Repo | Version | Test |
 |---|---|---|---|---|---|
 | [armips](./armips/) | assembler | pass | https://github.com/Kingcom/armips | 62adab4ef30da765f5cf22a451eb08a59c54dc8b | `armips/test.sh` |

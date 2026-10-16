@@ -13,6 +13,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__
+from . import localtools
 from ..network import Agent, NetworkError
 from .engine import RomNetwork
 
@@ -55,6 +56,7 @@ decomp.wtf: you are decompiling a game ROM that the user owns into C that compil
 machine code. Your C is compiled with the game's original compiler, linked at the function's real address
 and compared with the ROM: score 0 means byte-identical, and the function is saved as matched.
 Start with project_info, then claim_function -> compile_and_diff (repeat). guide(topic) has know-how.
+local_tools() lists reverse-engineering tools on this computer that run_tool runs on the game's files.
 Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
 """
 
@@ -81,6 +83,8 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
    then release_function with precise notes (what you tried, what is left) and claim the next one.
 
 Write plausible original code, pure C (no inline asm). Be brief in your messages: work, don't narrate.
+Stuck on what a function does or what some data is? local_tools() lists the disassemblers, decompilers,
+decompressors and symbol finders on this computer; run_tool runs one on the game's files.
 """
 
 FORK_PROMPT = """\
@@ -153,7 +157,7 @@ def _project_info(net: RomNetwork, slug: str) -> str:
 
 # name -> handler(net, agent, slug, **args); every handler returns text for the model
 def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: str, count: int = 1) -> str:
-    """A claim; one asked for that's matched, hand-written assembly or someone else's is the next free function
+    """A claim; one asked for that's matched, hand-written assembly, BIOS code or someone else's is the next free function
     instead (an agent asking for those has nothing better to do than the next one, and is told why). count > 1: a
     batch of small ones."""
     strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
@@ -162,7 +166,7 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
     try:
         return net.claim(agent, slug, function or None, strategy)
     except NetworkError as e:
-        if not function or not re.search(r"already matched|is hand-written assembly|is claimed by", str(e)):
+        if not function or not re.search(r"already matched|is hand-written assembly|is BIOS code|is claimed by", str(e)):
             raise
         return f"({e}. Here's the next free function instead.)\n\n" + net.claim(agent, slug, None, strategy)
 
@@ -209,6 +213,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
+    "local_tools": lambda net, agent, slug, tool="": localtools.describe(tool.strip()),
+    "run_tool": lambda net, agent, slug, tool, operation, **args:
+        localtools.run(net, slug, tool.strip(), operation, agent=getattr(agent, "name", "") or "you", **args),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "rescan_gba"}
@@ -383,10 +390,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         template instances), matched ones first, with the matching source of the best one. Start there."""
         return await run(ctx, "find_similar", function=function, limit=limit)
 
-    @mcp.tool(meta=ALWAYS_LOAD)
+    # (the topic list comes from GUIDES, so it never falls behind the guides that exist)
+    @mcp.tool(meta=ALWAYS_LOAD, description=f"Decompilation know-how. Call without a topic for the list "
+                                            f"({', '.join(GUIDES)}).")
     async def guide(ctx: Context, topic: str = "") -> str:
-        """Decompilation know-how. Call without a topic for the list (workflow, mips, gcc-kmc, ido, m2c,
-        data, structs, n64, naming)."""
         return await run(ctx, "guide", topic=topic)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -423,6 +430,27 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         the game still builds byte for byte and every match still matches. A file links only when its code and
         data are exactly one original file's."""
         return await run(ctx, "split_file", path=path, at=at, new_name=new_name, data=data)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def local_tools(ctx: Context, tool: str = "") -> str:
+        """Reverse-engineering tools on this computer (disassemblers, Ghidra's and RetDec's decompilers, N64/GBA/DS
+        decompressors, texture and display-list viewers, symbol finders, ROM/disc extractors) and what run_tool can
+        do with each. Name a tool for its parameters and README."""
+        return await run(ctx, "local_tools", tool=tool)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def run_tool(ctx: Context, tool: str, operation: str, file: str = "", file2: str = "", arch: str = "",
+                       address: str = "", base: str = "", count: int = 0, offset: str = "", length: str = "",
+                       hex: str = "", text: str = "", format: str = "", microcode: str = "", what: str = "",
+                       mode: str = "", width: int = 0, height: int = 0) -> str:
+        """Run one operation of a local tool (see local_tools) on the project's files. `file` is a path in the
+        project folder, "game" for the game file, or a tool-output/... file one of your earlier runs wrote. Only the
+        parameters the operation lists are used. Examples: run_tool(tool="rz-ghidra", operation="decompile",
+        file="game", arch="mips-be", address="0x80000400", base="0x7FFFF400"); run_tool(tool="crunch64",
+        operation="decompress", format="yay0", file="game", offset="0x123450")."""
+        return await run(ctx, "run_tool", tool=tool, operation=operation, file=file, file2=file2, arch=arch,
+                         address=address, base=base, count=count, offset=offset, length=length, hex=hex, text=text,
+                         format=format, microcode=microcode, what=what, mode=mode, width=width, height=height)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:
