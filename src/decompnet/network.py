@@ -27,6 +27,45 @@ CLAIM_TTL = 30 * 60
 # starts on something fresh instead of passing the same function back and forth. Asked for by name, it comes at once.
 RELEASE_COOLDOWN = 15 * 60
 MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their claims never mean "given up on"
+# A function released with a toolchain-wall note is left out of strategy claims for this long (asking by name
+# still works): the same signature gives the same result, and agents were burning their first claims on walls
+# everyone already swept. A context or compiler-profile change clears the cooldown (see _reset_budgets_for_context).
+WALL_COOLDOWN = 6 * 3600
+# Wall signatures (PR-31): a release note matching one of these classifies the function as a wall and records
+# the reason in function_walls so successors see WHY without re-sweeping it.
+WALL_SIGNATURES = (
+    ("gte-cop2", r"\b(GTE|COP2)\b|\b(lwc2|swc2|ctc2|mfc2|rtps|rtpt)\b"),
+    ("jump-table", r"Illegal operands (lui|addiu)|jtbl_|jump.?table"),
+    ("load-delay-nop", r"load.?delay|spurious nop|extra nop"),
+    ("bios-veneer", r"\bBIOS\b|veneer|hand.?written assembly|syscall"),
+    ("boundary-fragment", r"boundary|false.?split|fragment|continuation|mis.?split"),
+    ("toolchain-floor", r"\bfloor\b|toolchain"),
+    ("regalloc-tie", r"regalloc|allocno|register allocation|register tie"),
+)
+
+
+def wall_signature(text: str) -> str | None:
+    """The wall class a release note names, or None when the note is ordinary handoff text."""
+    t = text or ""
+    for sig, pattern in WALL_SIGNATURES:
+        if re.search(pattern, t, re.I):
+            return sig
+    return None
+
+
+def _fragment_like(fn) -> bool:
+    """The boundary-fragment shape perf-test observed: the entry instruction already uses a saved
+    register (live-in) with no stack-frame prologue — a function split in two by the disassembler."""
+    head = "\n".join((fn["asm"] or "").splitlines()[:3])
+    if not head:
+        return False
+    first = next((line for line in (fn["asm"] or "").splitlines()
+                  if line.strip() and not line.lstrip().startswith((".", "/*", "#", "@"))), "")
+    if not first:
+        return False
+    if re.search(r"\baddiu\s+sp,\s*sp,\s*-", first) or re.search(r"\baddi\s+sp,\s*sp,\s*-", first):
+        return False  # a real prologue: the frame is set up
+    return bool(re.search(r"\b(s[0-7]|ra|gp)\b", first))
 # Twins first (see app/twins.py): a function whose code the game has more than once (boost: how many more times)
 # and isn't too big or given up on, best value per instruction first; its twins (boost -1) last, as they match for
 # free once it does.
@@ -331,10 +370,11 @@ class Network:
                     rows = db.execute(
                         """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                            AND f.id NOT IN (SELECT function_id FROM claims)
+                           AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
                            AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                            ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                                AND created_at > ?), f.id LIMIT 200""",
-                        (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                        (proj["id"], now, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                     ).fetchall()
                     if not rows:
                         return None
@@ -343,10 +383,11 @@ class Network:
                     fn = db.execute(
                         f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                             AND f.id NOT IN (SELECT function_id FROM claims)
+                            AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
                             AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                             ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                                 AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                        (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                        (proj["id"], now, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                     ).fetchone()
                     if fn is None:
                         return None
@@ -362,12 +403,27 @@ class Network:
                 raise NetworkError(f"you don't hold a claim on {fn['name']}")
             db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET abandons=abandons+1 WHERE id=?", (fn["id"],))
-            if notes.strip():
+            note = notes.strip()
+            if note:
                 db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
-                           (fn["project_id"], fn["id"], agent.id, notes.strip(), time.time()))
+                           (fn["project_id"], fn["id"], agent.id, note, time.time()))
+                sig = wall_signature(note)
+                if sig:  # PR-31: a wall release is recorded and scheduled out until something material changes
+                    db.execute("INSERT OR REPLACE INTO function_walls(function_id, signature, reason, at) "
+                               "VALUES(?,?,?,?)", (fn["id"], sig, note[:400], time.time()))
+                    db.execute(
+                        "INSERT INTO search_budgets(function_id, epoch, policy_version, turns_used, max_turns, "
+                        "cooldown_until, reset_reason, last_at) VALUES(?,'wall',1,4,4,?,'wall:'||?,?) "
+                        "ON CONFLICT(function_id) DO UPDATE SET cooldown_until=excluded.cooldown_until, "
+                        "reset_reason='wall:'||excluded.reset_reason, epoch='wall', turns_used=4, last_at=excluded.last_at",
+                        (fn["id"], time.time() + WALL_COOLDOWN, sig, time.time()))
             self._event(db, fn["project_id"], agent.id, "release", fn["name"])
-        return (f"Released {fn['name']}. Your best attempt and notes are saved so the next agent starts "
-                f"where you left off. Call claim_function for a new one.")
+        out = (f"Released {fn['name']}. Your best attempt and notes are saved so the next agent starts "
+               f"where you left off. Call claim_function for a new one.")
+        if wall_signature(note or ""):
+            out += ("\nWall recorded (%s): strategy claims skip %s for %dh or until its context/compiler "
+                    "changes." % (wall_signature(note), fn["name"], WALL_COOLDOWN // 3600))
+        return out
 
     def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
         return self._brief(self._function(function, project), agent, header="VIEW")
@@ -397,11 +453,27 @@ class Network:
             if fn["best_source"]:
                 lines += ["", f"### Best attempt so far: score {fn['best_score']} by "
                               f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
-                              f"start from this", "```c", fn["best_source"].strip(), "```"]
+                              f"start from this"
+                          + ("\n⚠ LEGACY BEST (unverified): this score predates snapshot verification "
+                             "and may not reproduce under the current compiler/context — revalidate "
+                             "before trusting it" if "best_verified" in fn.keys() and not fn["best_verified"]
+                             else ""), "```c", fn["best_source"].strip(), "```"]
             elif fn["seed"]:
                 lines += ["", "### Machine-generated starting point (m2c: expect wrong types and names; "
                               "the context header helps)", "```c",
                           fn["seed"].strip(), "```"]
+        walls = self.store.all(
+            "SELECT signature, reason, at FROM function_walls WHERE function_id=? ORDER BY at DESC LIMIT 3",
+            fn["id"])
+        if walls:
+            lines += ["", "### Known walls (don't re-sweep these without new information)"]
+            lines += [f"- {w['signature']} ({_ago(w['at'])}): {w['reason']}" for w in walls]
+        merges = self.store.all(
+            "SELECT m.id, m.at, c.name AS cont FROM merge_proposals m JOIN functions c ON c.id=m.continues_id "
+            "WHERE m.function_id=? ORDER BY m.id DESC LIMIT 2", fn["id"])
+        if merges:
+            lines += ["", "### Boundary merge proposals (review; never applied automatically)"]
+            lines += [f"- {fn['name']} continues {m['cont']} ({_ago(m['at'])})" for m in merges]
         notes = self.store.all(
             "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
@@ -572,7 +644,7 @@ class Network:
             # latest draft overwrite the only copy; alternatives are never current-best unless rescored.
             self._note_candidate(db, fn, via, source, snapshot)
             if score is not None:
-                cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "
+                cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=?, best_verified=1 "
                                  "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
                                  (score, source, agent.id, fn["id"], score))
                 # A materially better source from an agent is new search input: give the permuter a fresh
@@ -642,6 +714,100 @@ class Network:
             out.append(f"- {r['origin']} ({'current-snapshot' if fresh else 'historical'}): "
                        f"{r['source'].strip().splitlines()[0] if r['source'].strip() else '(empty)'}")
         return "\n".join(out)
+
+    # ------------------------------------------------- legacy revalidation (PR-31)
+
+    def mark_legacy_unverified(self, project: str | None = None) -> int:
+        """One-time provenance audit: any open function whose current best attempt predates the
+        snapshot/receipt machinery (its attempts have no attempt_snapshots rows) gets
+        best_verified=0 — the best score is retained but flagged until reproduced under the current
+        snapshot. This is what perf-test found on func_8004B738: a stored best no longer reachable."""
+        proj = self._project(project)
+        n = 0
+        with self.store.tx() as db:
+            for fn in db.execute("SELECT * FROM functions WHERE project_id=? AND status='open' "
+                                 "AND best_source IS NOT NULL", (proj["id"],)).fetchall():
+                latest = db.execute(
+                    "SELECT a.id FROM attempts a WHERE a.function_id=? AND a.score IS NOT NULL "
+                    "AND a.score=(SELECT best_score FROM functions WHERE id=?) ORDER BY a.id DESC LIMIT 1",
+                    (fn["id"], fn["id"])).fetchone()
+                if latest is None:
+                    continue
+                has_snap = db.execute("SELECT 1 FROM attempt_snapshots WHERE attempt_id=?",
+                                      (latest["id"],)).fetchone()
+                if has_snap is None:
+                    db.execute("UPDATE functions SET best_verified=0 WHERE id=?", (fn["id"],))
+                    n += 1
+        return n
+
+    def revalidate_bests(self, project: str | None = None, limit: int = 10) -> str:
+        """Recompile each unverified legacy best under the CURRENT snapshot (bounded): a reproduced
+        score flips it back to verified; anything else stays flagged with a note. Never clears the
+        best source itself — historical evidence is preserved, only the trust flag changes."""
+        proj = self._project(project)
+        todo = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='open' "
+                              "AND best_verified=0 AND best_source IS NOT NULL LIMIT ?", proj["id"], limit)
+        if not todo:
+            return "No unverified legacy best attempts to revalidate."
+        out = []
+        for fn in todo:
+            ctx = self._context(proj["id"], fn["unit"])
+            result = self._compile(proj, ctx["header"], fn["best_source"])
+            if not result.ok:
+                out.append(f"❌ {fn['name']}: best no longer compiles under v{ctx['version']} — "
+                           f"stays unverified (historical only)")
+                continue
+            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+            if cand is None:
+                out.append(f"❌ {fn['name']}: best compiles but no longer contains the function — "
+                           f"stays unverified")
+                continue
+            if self._hash_only(fn):
+                ok = cand.fingerprint() == fn["fingerprint"]
+                score = 0 if ok else None
+            else:
+                d = scoring.diff(self._target_obj(fn, proj), cand)
+                if verdict is not None:
+                    d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+                score, ok = d.score, d.score == fn["best_score"]
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET best_verified=1 WHERE id=?", (fn["id"],))
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) "
+                           "VALUES(?,?,NULL,?,?)", (proj["id"], fn["id"],
+                                                    f"revalidated legacy best: reproduces (score {score})"
+                                                    if ok else f"revalidated legacy best: best {fn['best_score']} "
+                                                               f"not reproduced (got {score})", time.time()))
+            out.append(f"{'✅' if ok else '⚠'} {fn['name']}: legacy best "
+                       f"{'reproduced' if ok else 'NOT reproduced'} under v{ctx['version']} "
+                       f"(stored {fn['best_score']}, got {score})")
+        return "\n".join(out)
+
+    def propose_merge(self, function: str, continues: str, project: str | None = None,
+                      evidence: str = "") -> str:
+        """PR-31: record a boundary-merge proposal — `function` looks like the continuation of
+        `continues` (adjacent bytes, entry uses a live-in saved register with no prologue). Merges are
+        NEVER applied automatically: the proposal is reviewable evidence until an operator merges.
+        Forks edit their own source files; this is ROM-boundary territory only."""
+        fn = self._function(function, project)
+        cont = self._function(continues, project)
+        if fn["project_id"] != cont["project_id"]:
+            raise NetworkError("both functions must be in the same project")
+        if fn["status"] == "matched" or cont["status"] == "matched":
+            raise NetworkError("matched functions can't be merged")
+        a = (fn["vram"], fn["rom_offset"], fn["size"])
+        b = (cont["vram"], cont["rom_offset"], cont["size"])
+        adjacent = (b[0] is not None and a[0] is not None and b[0] == a[0] + (a[2] or 0)) or \
+                   (b[1] is not None and a[1] is not None and b[1] == a[1] + (a[2] or 0))
+        if not adjacent:
+            raise NetworkError(f"{fn['name']} and {cont['name']} are not adjacent: no boundary to merge")
+        if not _fragment_like(fn):
+            raise NetworkError(f"{fn['name']} doesn't look like a fragment (no live-in saved register at entry)")
+        with self.store.tx() as db:
+            db.execute("INSERT INTO merge_proposals(function_id, continues_id, at, evidence) VALUES(?,?,?,?)",
+                       (fn["id"], cont["id"], time.time(), evidence.strip()[:400]))
+        return (f"Merge proposed: {fn['name']} continues {cont['name']} (adjacent at "
+                f"{hex(fn['vram'] or 0)} / {hex(cont['vram'] or 0)}). Recorded for review; nothing was "
+                f"merged automatically.")
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """A function just matched (subclasses try its code on its twins)."""
@@ -766,8 +932,8 @@ class Network:
         header: their permuter budgets reset (bounded; reset reason recorded). Effective-unit logic
         matches _effective_unit()."""
         db.execute(
-            "UPDATE search_budgets SET turns_used=0, epoch=?, reset_reason='context-changed', last_at=? "
-            "WHERE turns_used > 0 AND function_id IN ("
+            "UPDATE search_budgets SET turns_used=0, cooldown_until=0, epoch=?, reset_reason='context-changed', "
+            "last_at=? WHERE (turns_used > 0 OR cooldown_until > 0) AND function_id IN ("
             "SELECT f.id FROM functions f WHERE f.project_id=? AND (CASE WHEN f.unit IN "
             "(SELECT unit FROM context_versions WHERE project_id=? AND unit != '') THEN f.unit ELSE '' END)=?)",
             (f"ctx-v{version}", time.time(), project_id, project_id, unit))
@@ -952,7 +1118,8 @@ class Network:
         proj = self._project(slug)
         with self.store.tx() as db:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
-            for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts", "candidates"):
+            for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts", "candidates",
+                        "function_walls", "merge_proposals"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
@@ -967,7 +1134,7 @@ class Network:
         with self.store.tx() as db:
             for table in ("claims", "attempts", "notes"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
-            for table in ("attempt_snapshots", "verification_receipts", "candidates"):
+            for table in ("attempt_snapshots", "verification_receipts", "candidates", "function_walls", "merge_proposals"):
                 db.execute(f"DELETE FROM {table} WHERE function_id=?", (fn["id"],))
             db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
             db.execute("UPDATE functions SET status='open', best_score=NULL, best_source=NULL, best_agent_id=NULL, "
