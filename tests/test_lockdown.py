@@ -29,7 +29,9 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def net(tmp_path, home):
-    n = RomNetwork(tmp_path / "app.db", tmp_path / "work")
+    # the lockdown belongs to the instance that owns <home>/.decomp/decomp.db
+    (home / ".decomp").mkdir(parents=True, exist_ok=True)
+    n = RomNetwork(home / ".decomp" / "decomp.db", tmp_path / "work")
     make_project(n, 2)
     return n
 
@@ -39,7 +41,7 @@ def set_settings(home, **kw):
 
 
 def test_no_settings_means_no_lockdown(net):
-    assert _lockdown_settings().get("lockdown") in (None, False)
+    assert _lockdown_settings(net.db_path).get("lockdown") in (None, False)
     agent, _ = net.local_agent("brand-new-runner")
     assert agent.name == "brand-new-runner"
 
@@ -83,11 +85,25 @@ def test_env_override_wins_both_ways(net, home, monkeypatch):
 def test_malformed_settings_never_lock_the_app_out(net, home, monkeypatch):
     (home / ".decomp" / "settings.json").write_text("{not json", encoding="utf-8")
     monkeypatch.delenv("DECOMP_LOCKDOWN", raising=False)
-    assert _lockdown_refuses("anything") is None
+    assert _lockdown_refuses("anything", net.db_path) is None
     assert net.local_agent("still-works")[0].name == "still-works"
 
 
 def test_refusal_names_the_escape_hatch(home):
     set_settings(home, lockdown=True)
-    why = _lockdown_refuses("gengar")
+    why = _lockdown_refuses("gengar", home / ".decomp" / "decomp.db")
     assert why and "settings.json" in why and "allowed_agents" in why
+
+
+def test_lockdown_never_leaks_into_another_instance(tmp_path, home):
+    """The regression this scoping exists for: an operator lockdown (or a stray test) in one app home
+    must not stop a different database — a scratch copy, a test, a second instance — from creating its
+    own agent identities. Before the fix every RomNetwork in the process inherited ~/Decomp's policy."""
+    set_settings(home, lockdown=True)
+    other = RomNetwork(tmp_path / "scratch.db", tmp_path / "work2")
+    make_project(other, 2)
+    assert _lockdown_settings(other.db_path) == {}
+    assert _lockdown_refuses("tyranitar", other.db_path) is None
+    assert other.local_agent("tyranitar")[0].name == "tyranitar"
+    # and the guarded instance is still guarded
+    assert _lockdown_refuses("tyranitar", home / ".decomp" / "decomp.db") is not None

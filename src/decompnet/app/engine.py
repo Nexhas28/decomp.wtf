@@ -124,33 +124,54 @@ def _preview(data: bytes | None, kind: str) -> str:
     return data[:16].hex(" ")
 
 
-def _lockdown_settings() -> dict:
+def _app_home_for(db_path: Path | str | None) -> Path | None:
+    """The app home whose own database this is, or None when it is not an app instance's database.
+
+    The lockdown is an operator setting for ONE instance. Scoping it to the database it protects is what
+    keeps it from leaking into every other RomNetwork in the process — tests, a scratch copy, or a second
+    instance with a different home — which it must never do (it refuses to create agent identities)."""
+    if db_path is None:
+        return None
+    home = Path(os.environ.get("DECOMP_HOME", str(Path.home() / "Decomp"))).expanduser()
+    try:
+        if Path(db_path).resolve() == (home / ".decomp" / "decomp.db").resolve():
+            return home
+    except OSError:
+        return None
+    return None
+
+
+def _lockdown_settings(db_path: Path | str | None = None) -> dict:
     """Operator fleet lockdown (added after a runaway agent swarm): a small JSON file in the app home
 
         <DECOMP_HOME>/.decomp/settings.json   {"lockdown": true, "allowed_agents": ["name", ...]}
 
     While `lockdown` is true, the app refuses to CREATE new agent identities — an existing identity keeps
     working (tokens still rotate), and names in `allowed_agents` are always allowed. Nothing else about
-    the app changes. `DECOMP_LOCKDOWN=1` forces it on and `DECOMP_LOCKDOWN=0` forces it off, which is what
-    the tests use. Unreadable or malformed settings mean "no lockdown": a broken file must never lock the
-    app out."""
-    data: dict = {}
-    home = Path(os.environ.get("DECOMP_HOME", str(Path.home() / "Decomp"))).expanduser()
-    try:
-        loaded = json.loads((home / ".decomp" / "settings.json").read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            data = loaded
-    except (OSError, ValueError):
-        data = {}
+    the app changes. It applies ONLY to the instance that owns `<home>/.decomp/decomp.db`: other networks
+    in the same process (tests, scratch copies, another home) are untouched.
+    `DECOMP_LOCKDOWN=1` forces it on and `DECOMP_LOCKDOWN=0` forces it off, which is what the tests use.
+    Unreadable or malformed settings mean "no lockdown": a broken file must never lock the app out."""
     forced = os.environ.get("DECOMP_LOCKDOWN")
+    home = _app_home_for(db_path)
+    if home is None and forced is None:
+        return {}  # not this instance's setting: never read (and never inherit) another instance's policy
+    data: dict = {}
+    if home is not None:
+        try:
+            loaded = json.loads((home / ".decomp" / "settings.json").read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, ValueError):
+            data = {}
     if forced is not None:
         data["lockdown"] = forced.strip().lower() not in ("", "0", "false", "no", "off")
     return data
 
 
-def _lockdown_refuses(name: str) -> str | None:
+def _lockdown_refuses(name: str, db_path: Path | str | None = None) -> str | None:
     """The refusal message when the lockdown forbids creating `name` as a NEW identity, else None."""
-    settings = _lockdown_settings()
+    settings = _lockdown_settings(db_path)
     if not settings.get("lockdown"):
         return None
     allowed = {str(a).strip().lower() for a in (settings.get("allowed_agents") or [])}
@@ -164,6 +185,7 @@ def _lockdown_refuses(name: str) -> str | None:
 class RomNetwork(Network):
     def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60):
         super().__init__(db_path, claim_ttl=claim_ttl)
+        self.db_path = Path(db_path)
         self.workspace = Path(workspace)
         self._syms: dict[int, SymbolTable] = {}
         self._sym_override: dict[int, SymbolTable] = {}
@@ -2185,7 +2207,7 @@ class RomNetwork(Network):
         else:
             raise NetworkError("too many chat sessions at once")
         if row is None:
-            if (why := _lockdown_refuses(name)):
+            if (why := _lockdown_refuses(name, self.db_path)):
                 raise NetworkError(why)
             token = self.register_agent(name, "you", trusted=True, origin="chat")
             if client:
@@ -2214,7 +2236,7 @@ class RomNetwork(Network):
                 db.execute("UPDATE agents SET token_hash=?, origin=CASE origin WHEN 'chat' THEN 'local' ELSE origin END "
                            "WHERE id=?", (_hash_token(token), row["id"]))
         else:
-            if (why := _lockdown_refuses(name)):
+            if (why := _lockdown_refuses(name, self.db_path)):
                 raise NetworkError(why)
             token = self.register_agent(name, "you", trusted=True, origin="local")
         return self.authenticate(token), token
