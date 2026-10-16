@@ -208,7 +208,12 @@ def test_mgbdis_symbol_parsing_and_code_classification():
     assert syms == [(0, 0x0000, "RST_00"), (2, 0x4ABC, "Func_002_4abc"),
                     (2, 0x5000, "Data_002_5000"), (3, 0x4010, ".local")]
     assert gb_mgbdis.is_code("Func_002_4abc") and gb_mgbdis.is_code("RST_08")
+    assert gb_mgbdis.is_code("VBlankInterrupt") and gb_mgbdis.is_code("Call_000_0bd3")
+    # internal branch targets and data are NOT function boundaries: mgbdis emits ~27k of them, and
+    # treating them as entries cut a 16-byte function into one-byte pieces
+    assert not gb_mgbdis.is_code("Jump_000_0bd3") and not gb_mgbdis.is_code("jr_000_0bc7")
     assert not gb_mgbdis.is_code("Data_002_5000") and not gb_mgbdis.is_code(".local")
+    assert not gb_mgbdis.is_code("HeaderTitle") and not gb_mgbdis.is_code("HeaderROMSize")
     blocks = gb_mgbdis.blocks('SECTION "ROM Bank $002", ROMX[$4000], BANK[$2]\n'
                               "Func_002_4000::\n    xor a, a\n    ret\n\nData_002_4003::\n    db $12\n")
     assert [ln.strip() for ln in blocks["Func_002_4000"].splitlines()] == ["xor a, a", "ret"]
