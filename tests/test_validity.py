@@ -129,3 +129,38 @@ def test_guard_catches_the_archived_artefact():
     assert bad.ok is False, "the uninitialised-pointer artefact must be flagged"
     assert "uninitialized" in bad.detail
     assert good.ok is True, "the semantically valid reconstruction must pass"
+
+
+def test_record_refuses_a_match_from_the_artefact(tmp_path):
+    """The wiring itself: a would-be match whose source is UB must not be accepted."""
+    root = Path(__file__).resolve().parents[2]
+    artifact = root / "work" / "perf-test" / "a4620_UB_artifact_score10.c"
+    live_db = root / ".decomp" / "decomp.db"
+    if not (artifact.exists() and live_db.exists()):
+        pytest.skip("perf-test artefact or the project DB is not present")
+
+    import shutil
+    import sys
+
+    sys.path.insert(0, str(root / "decomp-wtf" / "src"))
+    from decompnet.app.engine import RomNetwork
+
+    db = tmp_path / "decomp.db"
+    shutil.copy(live_db, db)
+    net = RomNetwork(str(db), root)  # real HOME: the toolchains live there
+    fn = net._function("func_800A4620", "slus-01363-4")
+    agent_row = net.store.one("SELECT id,name,owner,trusted FROM agents ORDER BY id LIMIT 1")
+    from decompnet.network import Agent
+
+    agent = Agent(agent_row["id"], agent_row["name"], agent_row["owner"], bool(agent_row["trusted"]))
+    ctx = net._context(fn["project_id"], fn["unit"])
+
+    net._record(net.store.one("SELECT * FROM functions WHERE id=?", fn["id"]), agent,
+                score=0, source=artifact.read_text(), ctx_version=ctx["version"], matched=True)
+
+    after = net.store.one("SELECT status, meta FROM functions WHERE id=?", fn["id"])
+    assert after["status"] != "matched", "a match built from undefined behaviour must be refused"
+    meta = json.loads(after["meta"]) if after["meta"] else {}
+    assert meta.get("validity", {}).get("ok") is False
+    note = net.store.one("SELECT text FROM notes WHERE function_id=? ORDER BY id DESC LIMIT 1", fn["id"])
+    assert note and "validity guard" in note["text"] and "match refused" in note["text"]

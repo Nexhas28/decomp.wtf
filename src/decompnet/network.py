@@ -956,7 +956,7 @@ class Network:
         turn into an outage.
         """
         try:
-            proj = self.store.one("SELECT * FROM projects WHERE id=?", (fn["project_id"],))
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
             ctx = self._context(fn["project_id"], fn["unit"])
             cfg = compiler_config(Path(proj["root"]), json.loads(proj["config"]))
         except Exception:  # pragma: no cover - defensive: never block on guard setup
@@ -1026,6 +1026,10 @@ class Network:
                         self._flag_validity(db, fn, source, f"score {score}", verdict)
             if matched:
                 verdict = self._validity(fn, source)
+                if verdict.ok and verdict.detail:
+                    # The guard could not run (context/toolchain unavailable). Accepting the
+                    # match is the only non-blocking option, but never silently.
+                    self._flag_validity(db, fn, source, "match accepted without guard", verdict)
                 if not verdict.ok:
                     # Refuse the match: a byte-identical build from a source with an
                     # uninitialised use is not finished work. Stay open and say why.
