@@ -114,25 +114,25 @@ class _Judge:
         return ("variant", "cand", True, [], self.variant_score)
 
 
-def _should_try(verdict, score, limit=200) -> bool:
+def _should_try(verdict, score, limit=300) -> bool:
     """The judge's condition, in one place so the test cannot drift from the implementation."""
     return verdict is not True and 0 < score <= limit
 
 
 def test_variant_only_runs_for_near_misses():
     assert _should_try(False, 100) is True          # near miss: try the variant
-    assert _should_try(False, 200) is True          # at the limit
-    assert _should_try(False, 201) is False         # far off and structurally close: skip
+    assert _should_try(False, 300) is True          # at the limit
+    assert _should_try(False, 301) is False         # far off and structurally close: skip
     assert _should_try(False, 159265) is False      # a wall (jtbl giant) is skipped
     assert _should_try(True, 0) is False            # already matched
     assert _should_try(None, 0) is False            # nothing to fix
 
 
-def _worth_variant(verdict, score, extras, limit=200, max_extra=5) -> bool:
+def _worth_variant(verdict, score, extras, limit=300, far_extras=5) -> bool:
     """The judge's real condition (network.Network._worth_variant), restated for the table test."""
     if verdict is True or score <= 0:
         return False
-    return score <= limit or extras >= max_extra
+    return score <= limit or extras >= far_extras
 
 
 def test_structural_mismatch_also_triggers_the_variant():
@@ -140,6 +140,9 @@ def test_structural_mismatch_also_triggers_the_variant():
     # score far above the near-miss limit, yet the variant is what makes it reproducible (5320 -> 410).
     assert _worth_variant(False, 5320, extras=52) is True
     assert _worth_variant(False, 110, extras=1) is True     # near-miss limit path
+    assert _worth_variant(False, 230, extras=2) is True     # func_800AEA14: 230 -> reproducible 130
+    assert _worth_variant(False, 400, extras=1) is False    # one extra row and far off: skip
+    assert _worth_variant(False, 400, extras=4) is False    # weak signature far off: not worth a compile
     assert _worth_variant(False, 5000, extras=0) is False   # nothing structural to fix
     assert _worth_variant(True, 0, extras=0) is False
     assert _worth_variant(False, 159265, extras=2) is False # jtbl wall: still skipped
