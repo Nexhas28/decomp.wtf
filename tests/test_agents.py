@@ -81,6 +81,17 @@ def test_prompts_go_in_on_stdin_never_the_command_line(tmp_path, monkeypatch):
         assert not any("line one" in a for a in cmd), (kind, cmd)
         assert "line one" in stdin and "some-model" in cmd
         assert env["DECOMP_SESSION_TOKEN"] == "tok"  # a `decomp mcp` the agent starts works as this session
+        if kind == "claude":  # a matching helper: decomp's tools only, no web
+            assert cmd[cmd.index("--allowedTools") + 1] == "mcp__decomp"
+            assert cmd[cmd.index("--disallowedTools") + 1] == "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+    # a Claude Code researcher: the prompt on stdin too; GitHub allowed, web search not, nothing else added
+    m = _manager(tmp_path, monkeypatch, "claude")
+    s = agents.Session("claude-9", "claude", "c", "demo", "claude-9", {"model": "some-model", "role": "researcher"})
+    (tmp_path / "research").mkdir()
+    cmd, _, stdin = m._command(s, "tok", tmp_path / "research")
+    assert not any("line one" in a for a in cmd) and "line one" in stdin
+    assert cmd[cmd.index("--allowedTools") + 1].split(",") == ["mcp__decomp", *agents.RESEARCH_WEB]
+    assert cmd[cmd.index("--disallowedTools") + 1] == "Bash,Edit,Write,NotebookEdit,WebSearch"
     # Antigravity: one stream-json user message, the server in the workspace's own MCP config
     m = _manager(tmp_path, monkeypatch, "antigravity")
     s = agents.Session("antigravity-2", "antigravity", "a", "demo", "antigravity-2", {})

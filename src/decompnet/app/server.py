@@ -339,7 +339,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if net.is_chat(agent):
             return ListToolsResult(tools=everything)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
-        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), fixer=net.is_fixer(agent)))
+        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), net.role.get(agent.id),
+                                    fixer=net.is_fixer(agent)))
         return ListToolsResult(tools=[t for t in everything if t.name in keep])
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
@@ -1038,7 +1039,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             options["billing"] = "api"
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
-        focus = str(given.get("focus") or "default")
+        role = str(given.get("role") or "")
+        if role:  # a job other than matching (Research: write notes); focus doesn't apply to it
+            if role not in agents.ROLES:
+                return fail(ValueError(f"unknown job {role!r}"))
+            options["role"] = role
+        focus = "default" if role else str(given.get("focus") or "default")
         if focus != "default":  # Quick Wins / Close Calls: which functions the helpers take
             if focus not in agents.FOCUSES:
                 return fail(ValueError(f"unknown focus {focus!r}"))
