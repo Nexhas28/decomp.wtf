@@ -118,21 +118,6 @@ private struct Sidebar: View {
                     }
                 }
             }
-            .alert(deleting.map { "Delete \u{201C}\($0.name)\u{201D}?" } ?? "",
-                   isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-                   presenting: deleting) { p in
-                Button("Delete", role: .destructive) { delete(p) }
-                Button("Cancel", role: .cancel) {}
-            } message: { p in
-                Text("This removes \(p.name) from decomp.wtf, with all its matched functions, notes and history. "
-                     + "It can't be undone.\n\nYour own game file isn't touched, and the project's folder stays on your Mac.")
-            }
-            .alert("Couldn't delete the project", isPresented: Binding(get: { deleteError != nil },
-                                                                       set: { if !$0 { deleteError = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(deleteError ?? "")
-            }
 
             Section("Explore") {
                 Label("Public Decomps", systemImage: "square.grid.2x2")
@@ -155,6 +140,21 @@ private struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .alert(deleting.map { "Delete \u{201C}\($0.name)\u{201D}?" } ?? "",
+               isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { p in
+            Button("Delete", role: .destructive) { delete(p) }
+            Button("Cancel", role: .cancel) {}
+        } message: { p in
+            Text("This removes \(p.name) from decomp.wtf, with all its matched functions, notes and history. "
+                 + "It can't be undone.\n\nYour own game file isn't touched, and the project's folder stays on your Mac.")
+        }
+        .alert("Couldn't delete the project", isPresented: Binding(get: { deleteError != nil },
+                                                                   set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
     }
 
     /// Delete it in decomp.wtf; if it was open, back to the home page. The page's own project list catches up at once.
