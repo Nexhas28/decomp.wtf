@@ -53,6 +53,9 @@ private enum NavItem: Hashable {
 private struct Sidebar: View {
     @EnvironmentObject private var web: WebController
     @EnvironmentObject private var projects: Projects
+    /// The project the right-click Delete is asking about, and why a delete didn't happen.
+    @State private var deleting: ProjectSummary?
+    @State private var deleteError: String?
 
     private var selection: Binding<NavItem?> {
         Binding(
@@ -109,6 +112,9 @@ private struct Sidebar: View {
                                     web.go("#/p/\(p.slug)")
                                 }
                             })
+                            .contextMenu {
+                                Button("Delete Project…", role: .destructive) { deleting = p }
+                            }
                     }
                 }
             }
@@ -134,6 +140,35 @@ private struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .alert(deleting.map { "Delete \u{201C}\($0.name)\u{201D}?" } ?? "",
+               isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { p in
+            Button("Delete", role: .destructive) { delete(p) }
+            Button("Cancel", role: .cancel) {}
+        } message: { p in
+            Text("This removes \(p.name) from decomp.wtf, with all its matched functions, notes and history. "
+                 + "It can't be undone.\n\nYour own game file isn't touched, and the project's folder stays on your Mac.")
+        }
+        .alert("Couldn't delete the project", isPresented: Binding(get: { deleteError != nil },
+                                                                   set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
+    }
+
+    /// Delete it in decomp.wtf; if it was open, back to the home page. The page's own project list catches up at once.
+    private func delete(_ p: ProjectSummary) {
+        let wasOpen = projects.route.slug == p.slug
+        Task {
+            do {
+                try await projects.delete(p.slug)
+                if wasOpen { web.go("#/") }
+                web.run("if (typeof loadNav === 'function') loadNav();")
+            } catch {
+                deleteError = error.localizedDescription
+            }
+        }
     }
 }
 

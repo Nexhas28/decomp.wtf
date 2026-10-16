@@ -390,6 +390,27 @@ def test_a_project_that_cant_be_read_is_listed_with_the_reason(app, monkeypatch)
         db.execute("DELETE FROM projects WHERE slug='odd-game'")
 
 
+def test_deleting_a_project_removes_it_but_keeps_its_folder(app, tmp_path):
+    """The sidebar's Delete: the project and its work leave decomp.wtf; the folder (and the game in it) stays. Even
+    a project that can't be read (one never set up, say) can be deleted."""
+    client, net, _ = app
+    h = {"X-Decomp": "1"}
+    folder = tmp_path / "throwaway"
+    folder.mkdir()
+    (folder / "game.gbc").write_bytes(b"rom")
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
+                   ("throwaway", "Throwaway", "", "mips", 1, str(folder), "{}"))
+    assert any(p["slug"] == "throwaway" for p in client.get("/api/projects").json())
+    assert client.post("/api/delete", json={"slug": "throwaway"}).status_code == 403  # writes need the header
+    r = client.post("/api/delete", json={"slug": "throwaway"}, headers=h)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert all(p["slug"] != "throwaway" for p in client.get("/api/projects").json())
+    assert (folder / "game.gbc").read_bytes() == b"rom"
+    # a project that isn't there (deleted already) says so, and nothing else changes
+    assert client.post("/api/delete", json={"slug": "throwaway"}, headers=h).status_code >= 400
+
+
 @needs_demo
 def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
     """A local llama.cpp model with a small context: the agent learns it from /props, trims older tool output to
