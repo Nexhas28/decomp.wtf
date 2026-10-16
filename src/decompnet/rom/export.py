@@ -159,7 +159,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
             as_fallback.append((f["name"], "doesn't compile any more"))
             f["kind"] = "asm"
             continue
-        linked = match.link(compiled.obj, row["name"], net._rom_target(row), net.symbols(proj["id"]), net.reader(proj))
+        linked = match.link(compiled.obj, row["name"], net._rom_target(row), net.symbols(proj["id"]), net.reader(proj, row))
         if not linked.exact:
             as_fallback.append((f["name"], "no longer matches"))
             f["kind"] = "asm"
