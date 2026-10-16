@@ -33,11 +33,14 @@ from .n64 import RomError
 
 SYM = re.compile(r"^([0-9A-Fa-f]{2}):([0-9A-Fa-f]{4})\s+(\S+)")
 LABEL_LINE = re.compile(r"^([A-Za-z_.][\w.$]*?)::?\s*$")
-#: mgbdis names code with these prefixes; everything else in the symbol file is data, graphics or a
-#: jump-table target it could not attribute to a function.
-CODE_PREFIXES = ("Func_", "Jump_", "Call_", "RST_", "VBlank_", "Int_", "Entry", "Start", "Main")
+#: What a **function entry** looks like in mgbdis's output: something a `call` reaches (`Call_`/`Func_`),
+#: a reset vector (`RST_`) or an interrupt vector. `Jump_` and `jr_` labels are *internal branch targets*
+#: — mgbdis emits tens of thousands of them (26,709 `jr_` and 1,511 `Jump_` on a 1 MiB cartridge) and
+#: treating them as boundaries cuts functions into one-byte pieces. Data labels are excluded too.
+FUNCTION_PREFIXES = ("Func_", "Call_", "RST_")
+INTERRUPT_SUFFIX = "Interrupt"
 DATA_PREFIXES = ("Data_", "Unknown_", "Gfx_", "Pal_", "Map_", "Text_", "String_", "Ptr_", "Table_",
-                 "Tileset_", "Tilemap_", "Music_", "SFX_", "Obj_")
+                 "Tileset_", "Tilemap_", "Music_", "SFX_", "Obj_", "Header")
 MAX_FUNCTION = 0x400
 
 
@@ -136,12 +139,15 @@ def parse_sym(text: str) -> list[tuple[int, int, str]]:
 
 
 def is_code(name: str) -> bool:
-    """Whether a symbol name looks like code rather than data/graphics/jump-table material."""
+    """Whether a symbol is a **function entry** (so it bounds a function), rather than an internal branch
+    target, a local label, or data."""
     if "." in name:  # a local label inside another function
         return False
     if name.startswith(DATA_PREFIXES):
         return False
-    return name.startswith(CODE_PREFIXES)
+    if name.startswith(FUNCTION_PREFIXES):
+        return True
+    return name.endswith(INTERRUPT_SUFFIX) or name in ("EntryPoint", "Start", "Main")
 
 
 def blocks(text: str) -> dict[str, str]:
@@ -216,6 +222,13 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
         for bank, addr, name in symbols:
             if is_code(name):
                 by_bank.setdefault(bank, []).append((addr, name))
+        for bank, items in by_bank.items():  # one entry per address: prefer the call-reached name
+            best: dict[int, str] = {}
+            for addr, name in items:
+                current = best.get(addr)
+                if current is None or (name.startswith(("Func_", "Call_")) and not current.startswith(("Func_", "Call_"))):
+                    best[addr] = name
+            by_bank[bank] = sorted(best.items())
 
         fns: list[gb.GbFunction] = []
         for bank, items in sorted(by_bank.items()):
