@@ -40,6 +40,8 @@ struct MapCell: Equatable {
 struct FunctionMap: View {
     let cells: [MapCell]
     let working: [String: String]  // function -> agent on it
+    var fixing: Set<String> = []  // the auto-fixer is repairing these
+    var researching: Set<String> = []  // a researcher is writing these a note
     var flashes: [String: Date] = [:]  // just matched -> when
     let isFork: Bool
     let onOpen: (String) -> Void
@@ -82,7 +84,8 @@ struct FunctionMap: View {
     private var legend: some View {
         HStack(spacing: 12) {
             ForEach([("to do", MapPalette.open(scheme)), ("tried", MapPalette.tried(scheme)),
-                     ("working", MapPalette.work(scheme)), ("matched", MapPalette.match(scheme))]
+                     ("working", MapPalette.work(scheme)), ("auto-fixing", MapPalette.fix(scheme)),
+                     ("researching", MapPalette.research(scheme)), ("matched", MapPalette.match(scheme))]
                     + (cells.contains { $0.status == "bios" } ? [("BIOS", MapPalette.bios(scheme))] : []), id: \.0) { item in
                 HStack(spacing: 5) {
                     RoundedRectangle(cornerRadius: 2).fill(item.1).frame(width: 9, height: 9)
@@ -97,7 +100,7 @@ struct FunctionMap: View {
     @ViewBuilder private func grid(_ g: Geo) -> some View {
         let flashing = flashes.values.contains { Date().timeIntervalSince($0) < 1.6 }
         // About 30 frames a second while something moves (a pulse, a ring), like the page; still otherwise.
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: working.isEmpty && !flashing)) { tl in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: working.isEmpty && fixing.isEmpty && researching.isEmpty && !flashing)) { tl in
             Canvas { ctx, _ in
                 let t = tl.date.timeIntervalSinceReferenceDate * 1000
                 let r: CGFloat = g.size >= 10 ? 2.5 : g.size >= 7 ? 1.5 : 1
@@ -105,8 +108,14 @@ struct FunctionMap: View {
                     let rect = CGRect(x: CGFloat(i % g.cols) * (g.size + g.gap), y: CGFloat(i / g.cols) * (g.size + g.gap),
                                       width: g.size, height: g.size)
                     var color = cellColor(f)
-                    if f.status != "matched", f.status != "asm", f.status != "bios", working[f.name] != nil {
-                        color = MapPalette.work(scheme).opacity(0.55 + 0.45 * sin(t / 260 + Double(i)))
+                    let pulse = 0.55 + 0.45 * sin(t / 260 + Double(i))
+                    // the auto-fixer, then an agent's claim, then a researcher: pulsing in their own colours
+                    if f.status != "matched", fixing.contains(f.name) {
+                        color = MapPalette.fix(scheme).opacity(pulse)
+                    } else if f.status != "matched", f.status != "asm", f.status != "bios", working[f.name] != nil {
+                        color = MapPalette.work(scheme).opacity(pulse)
+                    } else if f.status != "matched", f.status != "asm", f.status != "bios", researching.contains(f.name) {
+                        color = MapPalette.research(scheme).opacity(pulse)
                     }
                     ctx.fill(Path(roundedRect: rect, cornerRadius: r), with: .color(color))
                 }
@@ -162,9 +171,11 @@ struct FunctionMap: View {
         if let h = hover, h < cells.count {
             let f = cells[h]
             let status = f.status == "matched" ? "matched\(f.matchedBy.map { " by \($0)" } ?? "")"
+                : fixing.contains(f.name) ? "the auto-fixer is repairing it"
                 : f.status == "bios" ? "BIOS code: agents leave it"
                 : f.status == "asm" ? "hand-written assembly: agents leave it"
                 : working[f.name].map { "\($0) is on it" }
+                ?? (researching.contains(f.name) ? "a researcher is writing it a note" : nil)
                 ?? (f.closeness.map { "best \(Self.pctText($0))" } ?? "not started")
             let place = isFork ? (f.unit ?? "") : String(format: "%08X", f.vram ?? 0)
             VStack(alignment: .leading, spacing: 2) {
@@ -205,6 +216,8 @@ enum MapPalette {
     static func work(_ s: ColorScheme) -> Color { color(pick(s, 0xa8670d, 0xe5b04b)) }
     static func match(_ s: ColorScheme) -> Color { color(pick(s, 0x157a49, 0x4fcf8c)) }
     static func bios(_ s: ColorScheme) -> Color { color(pick(s, 0x9fb3cc, 0x34465e)) }
+    static func fix(_ s: ColorScheme) -> Color { color(pick(s, 0x8a3fc4, 0xc08cf5)) }  // --fix
+    static func research(_ s: ColorScheme) -> Color { color(pick(s, 0x1f8fa8, 0x5ccbe4)) }  // --research
     static func panel(_ s: ColorScheme) -> Color { color(pick(s, 0xfbfaf6, 0x131310)) }
     static func line(_ s: ColorScheme) -> Color { color(pick(s, 0xd8d4c8, 0x2a2924)) }
 

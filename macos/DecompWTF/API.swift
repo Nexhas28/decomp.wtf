@@ -200,6 +200,9 @@ struct LiveUpdate: Decodable {
     let events: [LiveEvent]?
     let attempts: [LiveAttempt]?
     let claims: [LiveClaim]?
+    /// Functions taken without a claim: the auto-fixer's current list, and those handed to researchers.
+    let fixing: [String]?
+    let researching: [String]?
 }
 
 struct LiveClaim: Decodable { let name: String?; let agent: String? }
