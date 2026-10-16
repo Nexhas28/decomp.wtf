@@ -104,7 +104,10 @@ class ResourceBudget:
     _cond: threading.Condition
 
     def __init__(self, limits: dict | None = None):
-        self.limits = dict(limits or {"compiler": max(2, (os.cpu_count() or 4) - 1), "permuter": 1,
+        # The permuter is the default finisher for near misses: about a quarter of the cores run its turns
+        # in parallel (never fewer than one), each turn's compiles still held to the compiler pool.
+        self.limits = dict(limits or {"compiler": max(2, (os.cpu_count() or 4) - 1),
+                                      "permuter": max(1, (os.cpu_count() or 4) // 4),
                                       "external": 1, "analysis": 1, "fork_build": 2})
         self._used = {k: 0 for k in self.limits}
         self._waiting = {k: 0 for k in self.limits}

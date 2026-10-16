@@ -272,15 +272,15 @@ def test_top_level_keys_stay_free_form_and_known_values_pass():
 
 
 def test_effective_config_reports_values_and_their_sources():
-    diag = effective_config({"search": {"portfolio_size": 2, "policy": "single_v1"}},
-                            env={"DECOMPNET_GUIDED_SEARCH": "1"})
+    diag = effective_config({"search": {"portfolio_size": 2, "policy": "guided_v1"}},
+                            env={"DECOMPNET_GUIDED_SEARCH": "0"})
     search = diag["sections"]["search"]
     assert search["portfolio_size"] == {"value": 2, "source": "project"}
-    assert search["policy"] == {"value": "guided_v1", "source": "env:DECOMPNET_GUIDED_SEARCH"}
+    assert search["policy"] == {"value": "single_v1", "source": "env:DECOMPNET_GUIDED_SEARCH"}
     assert any("DECOMPNET_GUIDED_SEARCH" in w for w in diag["warnings"])
     defaults = effective_config({}, env={})["sections"]
-    # optional features are off unless opted into
-    assert defaults["search"]["policy"]["value"] == "single_v1"
+    # guided search is the default finisher's policy; the other optional features are off unless opted into
+    assert defaults["search"]["policy"]["value"] == "guided_v1"
     assert defaults["search"]["structural_rerank"]["value"] is False
     assert defaults["analysis"]["enabled"]["value"] is False
     assert defaults["rea"]["enabled"]["value"] is False

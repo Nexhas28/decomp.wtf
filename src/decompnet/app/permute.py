@@ -9,10 +9,18 @@ wants it gets it next, records every improvement as the function's best attempt 
 a match as a match. Rewrites keep the meaning of the code (see permuter.py); what matches is still judged
 byte for byte, like everything else.
 
-The guided search (PR-18, plan P5.4-P5.6) is opt-in: with DECOMPNET_GUIDED_SEARCH=1 the structured mismatch
-counts of the best attempt route the operator weights, a bounded beam of structurally different candidates
-replaces the single trajectory, evaluations are reused by source and object digest, and runs checkpoint for
-the next turn. Without it the permuter runs the single-trajectory policy (see search.policy.active_policy).
+The guided search (PR-18, plan P5.4-P5.6) is on by default: the structured mismatch counts of the best attempt
+route the operator weights, a bounded beam of structurally different candidates replaces the single trajectory,
+evaluations are reused by source and object digest, and runs checkpoint for the next turn. With
+DECOMPNET_GUIDED_SEARCH=0 the permuter runs the single-trajectory policy instead (see search.policy.active_policy).
+
+The permuter is the default finisher. When an agent's compile lands a near miss (under HANDOFF of the function's
+score, the same number of instructions, only register/stack/order differences), the network hands the function
+here (`enqueue`) with that attempt as the seed and tells the agent to release it and move on: hand-shuffling
+registers is what the permuter is for, and agents spent thousands of compiles on it. Queued hand-offs come before
+the permuter's own scan of near misses, and as many run at once as the scheduler's permuter pool allows (about a
+quarter of the cores). While the permuter has a function (queued or being permuted) the network keeps it out of
+agents' strategy claims and says so in its brief.
 
 A turn that compiled nothing because the infrastructure failed (no toolchain, an evaluation that could not
 run) is refunded: a missing toolchain must not consume a function's search budget. The budget row counts
@@ -26,9 +34,10 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from .. import scoring, snapshots
+from .. import scheduler, scoring, snapshots
 from ..network import NetworkError
 from ..permuter import digest
 from ..search import SearchResumeError, EvalOutcome, checkpoint_run, new_run, resume_run, step
@@ -36,6 +45,8 @@ from ..search.policy import active_policy
 
 log = logging.getLogger("decomp.wtf")
 NEAR = 0.06  # a near miss: at most this much of the function differs (best_score <= 6% of n_insns * 100)
+HANDOFF = 0.05  # an agent's attempt under this much of the score (same insn count, r/o/s diffs only) is handed here
+MAX_INSNS = 400  # the permuter has no business with giants (perf-test run 2)
 SECONDS = 60  # per function per turn
 MAX_TURNS = 4  # turns per function before it's left to agents
 CHECKPOINT_LIMIT = 64  # bounded resume checkpoints, in memory and in the search_runs table (P5.5 step 6)
@@ -80,6 +91,18 @@ class State:
 
 
 @dataclass
+class Handoff:
+    """A near miss an agent's compile handed to the permuter: the attempt is the seed of the next run."""
+    function_id: int
+    project_id: int
+    name: str
+    source: str
+    score: int
+    agent: str = ""
+    at: float = field(default_factory=time.time)
+
+
+@dataclass
 class TurnStats:
     """What one search turn did, for the budget row: whether any candidate compiled, whether any improved
     on the best, and how many infrastructure failures (evaluation could not run, exceptions) it hit."""
@@ -94,10 +117,87 @@ class Permuter:
         self.net = net
         self.jobs: dict[str, State] = {}
         self.checkpoints: OrderedDict[int, dict] = OrderedDict()  # function id -> run checkpoint (P5.5)
+        self.queue: OrderedDict[int, Handoff] = OrderedDict()  # function id -> near miss handed over, oldest first
+        self.active: dict[int, tuple[str, int]] = {}  # function id -> (name, project id) while a worker permutes it
+        self._lock = threading.Lock()  # queue, active and the in-memory checkpoints (workers run in parallel)
+        self._wake = threading.Event()  # a hand-off wakes the loop out of its idle wait
 
     def status(self, slug: str) -> dict | None:
         st = self.jobs.get(slug)
-        return None if st is None else {k: v for k, v in st.__dict__.items() if k != "stop"}
+        if st is None:
+            return None
+        out = {k: v for k, v in st.__dict__.items() if k != "stop"}
+        with self._lock:
+            out["queued"] = len(self.queue)
+            out["workers"] = self.workers()
+        return out
+
+    # ------------------------------------------------------------ hand-offs
+
+    @staticmethod
+    def workers() -> int:
+        """How many functions permute at once: the scheduler's permuter pool (about a quarter of the cores)."""
+        return max(1, scheduler.BUDGET.limits.get("permuter", 1))
+
+    def enqueue(self, fn, source: str, score: int, agent: str = "") -> Handoff:
+        """Hand a near miss over: the next run on the function starts from `source` (when it is at least as good
+        as the recorded best). A function already queued keeps its place with the newer seed. The loop wakes."""
+        hand = Handoff(fn["id"], fn["project_id"], fn["name"], source, score, agent)
+        with self._lock:
+            self.queue[fn["id"]] = hand  # a function already in line keeps its place, with the newest seed
+        self._wake.set()
+        return hand
+
+    def dequeue(self, function_id: int) -> None:
+        with self._lock:
+            self.queue.pop(function_id, None)
+
+    def holds(self, function_id: int) -> str:
+        """'permuting' while a worker has the function, 'queued' while it waits its turn, '' otherwise."""
+        with self._lock:
+            if function_id in self.active:
+                return "permuting"
+            return "queued" if function_id in self.queue else ""
+
+    def held(self, project_id: int) -> set[int]:
+        """The project's functions the permuter has (queued or being permuted): the network keeps these out
+        of agents' strategy claims while a permuter is running."""
+        with self._lock:
+            return ({h.function_id for h in self.queue.values() if h.project_id == project_id}
+                    | {fid for fid, (_, pid) in self.active.items() if pid == project_id})
+
+    def running(self, slug: str) -> bool:
+        st = self.jobs.get(slug)
+        return st is not None and st.state == "running"
+
+    def queued(self, proj) -> list:
+        """The queued hand-offs for a project that are ready to permute: still open and not claimed by anyone
+        (an agent that has not released yet keeps its place in line). A function that matched meanwhile, or
+        whose search budget is spent, leaves the queue."""
+        with self._lock:
+            ids = [fid for fid, h in self.queue.items() if h.project_id == proj["id"]]
+        if not ids:
+            return []
+        out, gone = [], []
+        now = time.time()
+        policy = active_policy()
+        for fid in ids:
+            fn = self.net.store.one("SELECT * FROM functions WHERE id=?", fid)
+            if fn is None or fn["status"] != "open" or not fn["n_insns"] or fn["n_insns"] > MAX_INSNS:
+                gone.append(fid)
+                continue
+            budget = self.net.store.one("SELECT turns_used, max_turns, reset_reason, policy_version FROM search_budgets "
+                                        "WHERE function_id=?", fid)
+            if budget is not None and budget["policy_version"] == policy.version and (
+                    budget["turns_used"] >= budget["max_turns"] or budget["reset_reason"] == NEEDS_CONTEXT):
+                gone.append(fid)
+                continue
+            if self.net.store.one("SELECT 1 FROM claims WHERE function_id=? AND expires_at > ?", fid, now):
+                continue  # the agent still holds it: it stays in line until released
+            out.append(fn)
+        for fid in gone:
+            self.dequeue(fid)
+        return out
 
     def start(self, slug: str) -> State | None:
         """Run on the project's near misses until there are none (looking again every few minutes while the
@@ -191,24 +291,59 @@ class Permuter:
                     proj = self.net.project_row(slug)
                 except NetworkError:
                     return  # the project is gone
-                todo = self.candidates(proj)
+                self._wake.clear()
+                todo = self.round(proj)
                 if not todo:
                     idle += 1
                     if idle > 20:  # nothing for an hour: done until agents start again
                         return
-                    st.stop.wait(180)
+                    self._wait(st, 180)
                     continue
                 idle = 0
-                for fn in todo:
-                    if st.stop.is_set():
-                        break
-                    try:
-                        self._permute(agent, proj, fn, st)
-                    except Exception as e:  # one odd function must not stop the rest
-                        log.info("permuter: %s: %s", fn["name"], e)
+                self._run_round(agent, proj, todo, st)
         finally:
             st.state = "stopped" if st.stop.is_set() else "done"
             st.current = ""
+
+    def round(self, proj) -> list:
+        """What this round permutes: queued hand-offs first (oldest first), then the permuter's own scan of the
+        project's near misses, without repeats."""
+        todo = self.queued(proj)
+        seen = {fn["id"] for fn in todo}
+        todo += [fn for fn in self.candidates(proj) if fn["id"] not in seen]
+        return todo
+
+    def _wait(self, st: State, seconds: float) -> None:
+        """Idle until something changes: a stop, a hand-off, or the time."""
+        deadline = time.monotonic() + seconds
+        while not st.stop.is_set() and not self._wake.is_set() and time.monotonic() < deadline:
+            st.stop.wait(min(1.0, max(0.0, deadline - time.monotonic())))
+
+    def _run_round(self, agent, proj, todo: list, st: State) -> None:
+        """Permute the round's functions, as many at once as the permuter pool allows. Each turn holds one unit
+        of the pool; the lease (_hold) is what keeps two workers off one function."""
+        workers = self.workers()
+
+        def one(fn):
+            if st.stop.is_set():
+                return
+            try:
+                with scheduler.BUDGET.slot("permuter"):
+                    self._permute(agent, proj, fn, st)
+            except Exception as e:  # one odd function must not stop the rest
+                log.info("permuter: %s: %s", fn["name"], e)
+
+        if workers <= 1:
+            for fn in todo:
+                if st.stop.is_set():
+                    break
+                one(fn)
+            return
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="permuter-worker") as pool:
+            for fn in todo:
+                if st.stop.is_set():
+                    break
+                pool.submit(one, fn)
 
     def _hold(self, agent, fn) -> bool:
         now = time.time()
@@ -304,26 +439,39 @@ class Permuter:
                                object_digest=comp.candidate.normalised_fingerprint, kind="scored")
         return evaluate
 
+    def _seed_source(self, fn) -> tuple[str, int]:
+        """What a fresh run starts from: the handed-over attempt when the function was handed to the permuter
+        and that attempt is at least as good as the recorded best (it usually is the best: _record keeps the
+        better score), otherwise the function's best attempt."""
+        with self._lock:
+            hand = self.queue.get(fn["id"])
+        if hand is not None and hand.source and (fn["best_score"] is None or hand.score <= fn["best_score"]):
+            return hand.source, hand.score
+        return fn["best_source"], fn["best_score"]
+
     def _resume_or_start(self, proj, fn, fork, policy, seed, snapshot_key):
         """Resume the previous turn's checkpoint when the snapshot and policy still match; otherwise
-        start a fresh deterministic run routed by the best attempt's structured mismatches."""
+        start a fresh deterministic run routed by the best attempt's structured mismatches (the seed is
+        the handed-over attempt when there is one, see _seed_source)."""
         cp = self._load_checkpoint(fn["id"])
         if cp is not None:
             try:
                 return resume_run(policy, snapshot_key, cp)
             except SearchResumeError:
                 self._drop_checkpoint(fn["id"])
+        source, score = self._seed_source(fn)
+        fn = {**fn, "best_source": source, "best_score": score} if source != fn["best_source"] else fn
         counts, coverage, probe = self._probe(proj, fn, fork)
-        run = new_run(policy, seed, snapshot_key, fn["best_source"], fn["best_score"],
-                      counts=counts, coverage=coverage)
+        run = new_run(policy, seed, snapshot_key, source, score, counts=counts, coverage=coverage)
         if probe is not None:
-            run.evals.store(digest(fn["best_source"]), probe)
+            run.evals.store(digest(source), probe)
         return run
 
     def _load_checkpoint(self, fn_id: int) -> dict | None:
         """The function's resumable checkpoint: from memory, else from the search_runs table (a restart
         keeps it). An unreadable row is dropped. Compatibility is judged by resume_run."""
-        cp = self.checkpoints.get(fn_id)
+        with self._lock:
+            cp = self.checkpoints.get(fn_id)
         if cp is not None:
             return cp
         row = self.net.store.one("SELECT checkpoint FROM search_runs WHERE function_id=?", fn_id)
@@ -339,10 +487,11 @@ class Permuter:
         return cp
 
     def _save_checkpoint(self, fn_id: int, cp: dict) -> None:
-        if len(self.checkpoints) >= CHECKPOINT_LIMIT:
-            self.checkpoints.popitem(last=False)
-        self.checkpoints[fn_id] = cp
-        self.checkpoints.move_to_end(fn_id)
+        with self._lock:
+            if len(self.checkpoints) >= CHECKPOINT_LIMIT and fn_id not in self.checkpoints:
+                self.checkpoints.popitem(last=False)
+            self.checkpoints[fn_id] = cp
+            self.checkpoints.move_to_end(fn_id)
         with self.net.store.tx() as db:
             db.execute(
                 "INSERT INTO search_runs(function_id, snapshot_key, policy_epoch, checkpoint, updated_at) "
@@ -364,16 +513,23 @@ class Permuter:
 
     def _drop_checkpoint(self, fn_id: int) -> None:
         """Forget the function's checkpoint (matched, budget spent, or incompatible with the current snapshot)."""
-        self.checkpoints.pop(fn_id, None)
+        with self._lock:
+            self.checkpoints.pop(fn_id, None)
         with self.net.store.tx() as db:
             db.execute("DELETE FROM search_runs WHERE function_id=?", (fn_id,))
+
+    def _set_current(self, st: State) -> None:
+        st.current = ", ".join(sorted(name for name, _ in self.active.values()))  # under self._lock
 
     def _permute(self, agent, proj, fn, st: State) -> None:
         if not self._hold(agent, fn):
             return
         self._policy_reset(fn)  # a new search-policy epoch gets one fresh bounded budget
         turn = self._charge_turn(fn)  # a failed claim costs nothing: only real search work is charged
-        st.current, st.tried = fn["name"], st.tried + 1
+        with self._lock:
+            self.active[fn["id"]] = (fn["name"], fn["project_id"])
+            self._set_current(st)
+            st.tried += 1
         fork = self.net.fork_slug(proj["slug"])
         policy = active_policy()
         seed = f"{fn['id']}-{turn}-{policy.epoch}"  # deterministic per (function, turn, policy epoch)
@@ -405,6 +561,7 @@ class Permuter:
                 self._save_checkpoint(fn["id"], checkpoint_run(run))  # resume next turn (P5.5 step 7)
             else:
                 self._drop_checkpoint(fn["id"])
+                self.dequeue(fn["id"])  # matched, refused or out of budget: the hand-off is done with
         except Exception:  # a toolchain error or any other exception is an infrastructure failure
             stats.infra += 1
             raise
@@ -413,3 +570,6 @@ class Permuter:
                 self._finish_turn(fn, stats)
             finally:
                 self._let_go(agent, fn)
+                with self._lock:
+                    self.active.pop(fn["id"], None)
+                    self._set_current(st)
