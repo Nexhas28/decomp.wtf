@@ -30,6 +30,32 @@ LOGO = bytes.fromhex("CEED6666CC0D000B03730083000C000D0008111F8889000EDCCC6EE6DD
 HEADER_LEN = 0x150
 BANK_SIZE = 0x4000  # 16 KiB
 
+
+def bank_of(flat: int) -> int:
+    """Which 16 KiB bank a flat ROM offset lives in."""
+    return flat // BANK_SIZE
+
+
+def cpu_address(flat: int) -> int:
+    """The address the CPU sees for code at this flat offset.
+
+    Bank 0 is wired to 0x0000-0x3FFF; every other bank is switched into the 0x4000-0x7FFF window by the
+    MBC. That window is what the ROM's own `call`/`jp` instructions contain, so it is the address a
+    candidate's symbols must use (see gb_build's absolute mode)."""
+    bank, off = bank_of(flat), flat % BANK_SIZE
+    return off if bank == 0 else 0x4000 + off
+
+
+def flat_offset(cpu: int, bank: int) -> int:
+    """The inverse of `cpu_address`: a CPU address in `bank` back to a flat ROM offset."""
+    return cpu if cpu < 0x4000 else bank * BANK_SIZE + (cpu - 0x4000)
+
+
+def function_name(flat: int) -> str:
+    """Auto name in bank_cpu form, the convention Game Boy disassembly uses (`Func_001_4234`): with
+    banking, two banks can hold the same CPU address, so the address alone is not an identity."""
+    return f"func_{bank_of(flat):03d}_{cpu_address(flat):04x}"
+
 ROM_SIZES = {0x00: 0x8000, 0x01: 0x10000, 0x02: 0x20000, 0x03: 0x40000, 0x04: 0x80000,
              0x05: 0x100000, 0x06: 0x200000, 0x07: 0x400000, 0x08: 0x800000,
              0x52: 0x120000, 0x53: 0x140000, 0x54: 0x180000}
@@ -125,17 +151,22 @@ def candidates(data: bytes, limit: int = 4000) -> list[tuple[int, str]]:
         found.setdefault(ENTRY, "entry")
 
     for off, _text, _ln in sm83.disassemble(data):
+        bank = bank_of(off)
         for target, kind in ((sm83.call_target(data, off), "call"), (sm83.jump_target(data, off), "jp")):
-            if target is not None and 0 <= target < len(data):
-                found.setdefault(target, kind)
+            if target is None:
+                continue
+            flat = flat_offset(target, bank)  # the instruction holds a CPU address for its own bank
+            if 0 <= flat < len(data):
+                found.setdefault(flat, kind)
         if len(found) >= limit:
             break
     if len(found) < limit:  # byte-level pass for calls the sweep could not reach
         for off in range(len(data) - 2):
             if data[off] in (0xCD, 0xC3):
                 target = data[off + 1] | (data[off + 2] << 8)
-                if 0 <= target < len(data):
-                    found.setdefault(target, "call" if data[off] == 0xCD else "jp")
+                flat = flat_offset(target, bank_of(off))
+                if 0 <= flat < len(data):
+                    found.setdefault(flat, "call" if data[off] == 0xCD else "jp")
             if len(found) >= limit:
                 break
     return sorted(found.items())
@@ -143,16 +174,20 @@ def candidates(data: bytes, limit: int = 4000) -> list[tuple[int, str]]:
 
 @dataclass
 class GbFunction:
-    """One discovered function: flat ROM offsets, its bytes, and its disassembly."""
+    """One discovered function: where it is, its bytes, and its disassembly.
+
+    `vram` is the **CPU address** (what the ROM's instructions refer to), `rom` the **flat offset** in
+    the file, and `bank` the 16 KiB bank it lives in. See the module docstring."""
 
     name: str
-    vram: int          # flat ROM offset used as the function's address (see the module docstring)
-    rom: int
+    vram: int          # CPU address (bank 0: 0x0000-0x3FFF; other banks: 0x4000-0x7FFF)
+    rom: int           # flat ROM offset
     code: bytes
     n_insns: int
     asm: str
     refs: list = field(default_factory=list)   # (offset, kind, address): 10 = call, as the GBA lane uses
     asm_only: bool = False
+    bank: int = 0      # the 16 KiB bank the function lives in
 
     @property
     def size(self) -> int:
@@ -193,11 +228,13 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
         refs = []
         for off, text, _ln in insns:
             if text.startswith(("call ", "jp ")) and "$" in text:
-                target = int(text.rsplit("$", 1)[1], 16)
-                if 0 <= target < len(data) and not (addr <= target < addr + len(code)):
+                target = int(text.rsplit("$", 1)[1], 16)  # a CPU address
+                flat = flat_offset(target, bank_of(addr))
+                if 0 <= flat < len(data) and not (addr <= flat < addr + len(code)):
                     refs.append((off - addr, 10, target))  # 10 = a call edge (kind 10, as the GBA lane)
-        out.append(GbFunction(name=f"func_{addr:06x}", vram=addr, rom=addr, code=code,
-                              n_insns=len(insns), asm=sm83.asm_text(code, addr, width=6), refs=refs))
+        out.append(GbFunction(name=function_name(addr), vram=cpu_address(addr), rom=addr,
+                              bank=bank_of(addr), code=code, n_insns=len(insns),
+                              asm=sm83.asm_text(code, cpu_address(addr), width=4), refs=refs))
     log(f"found {len(out)} functions in {len(data) // BANK_SIZE} banks")
     return out
 
@@ -208,5 +245,6 @@ def split(path: Path, workdir: Path, log=lambda *_: None) -> list[GbFunction]:
     if not is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
     info = read_info(data)
-    log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}, {info['rom_banks']} banks)")
+    log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}, {info['rom_banks']} banks, "
+        f"functions named bank_cpu)")
     return functions(data, log=log)

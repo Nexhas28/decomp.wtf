@@ -43,6 +43,18 @@ _FORBIDDEN = [
 ]
 _INCLUDE = re.compile(r'#\s*include\s*"([^"]+)"')
 
+# A register pin is a *declaration*, not a statement:
+#     register u32 t __asm__("$4");
+# It only constrains which register a variable lives in -- every instruction still comes from the
+# compiler -- and it is the documented technique for register-allocation hard tails (BFM-decomp
+# matching cookbook, section 10: "Closing the regalloc/scheduling hard tail by hand"). The pattern
+# accepts no parentheses, braces or semicolons between `register` and the asm clause, so it cannot
+# hide another statement, and the register name itself is restricted to a plain name or "$N".
+# __asm__ *statements* (e.g. `__asm__ __volatile__("" : : "r"(x));`) remain forbidden.
+_REGISTER_PIN = re.compile(
+    r'\bregister\b[^;{}()]*?\b(?:__)?asm(?:__)?\s*\(\s*"(\$?[A-Za-z0-9_]+)"\s*\)\s*;'
+)
+
 
 class SourceRejected(ValueError):
     pass
@@ -54,7 +66,10 @@ def check_source(source: str) -> None:
     for inc in _INCLUDE.findall(source):
         if inc.startswith("/") or ".." in inc.split("/"):
             raise SourceRejected(f"include path not allowed: {inc}")
-    code = _COMMENTS_AND_STRINGS.sub(" ", source)
+    # Remove register pins before masking comments/strings (the pin's own string is the register
+    # name, which the masking below would otherwise hide from the pin pattern).
+    pinned = _REGISTER_PIN.sub("register ", source)
+    code = _COMMENTS_AND_STRINGS.sub(" ", pinned)
     for pattern, why in _FORBIDDEN:
         if pattern.search(code):
             raise SourceRejected(why)

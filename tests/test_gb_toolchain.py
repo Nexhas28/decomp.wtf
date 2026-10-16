@@ -11,7 +11,7 @@ import pytest
 from decompnet import scoring
 from decompnet import toolchains as tc
 from decompnet.elfobj import FunctionObj, extract_function
-from decompnet.rom import gb_build, sm83
+from decompnet.rom import gb, gb_build, sm83
 
 needs_toolchain = pytest.mark.skipif(not gb_build.available(),
                                      reason="the Game Boy C toolchain (gbdk-2020) is not installed")
@@ -168,3 +168,31 @@ def test_the_lane_enforces_the_source_policy(tmp_path):
             gb_build.build_source(bad)
     # and a normal C candidate still compiles
     assert gb_build.build_source("void f(void) { }")["f"].code == b"\xc9"
+
+
+@needs_toolchain
+def test_banked_code_uses_cpu_addresses_not_flat_offsets(tmp_path):
+    """A bank >= 2 function has a CPU address different from its flat ROM offset. The candidate's calls
+    must carry the **CPU** address (what the ROM's instructions contain), which the old flat-address
+    model got wrong by 0x4000 per bank."""
+    from tests.test_gb import make_rom
+
+    # 4 banks: bank 2 holds a `ret` callee at CPU 0x4000 (flat 0x8000) and a caller at CPU 0x4010
+    rom = bytearray(make_rom(size=0x10000))
+    rom[0x8000] = 0xC9                                              # callee: ret
+    rom[0x8010:0x8014] = bytes.fromhex("cd0040c9")                  # caller: call $4000 ; ret
+    rom[0x8020:0x8024] = bytes.fromhex("cd1040c9")                  # something calls the caller (discovery)
+    data = bytes(rom)
+
+    fns = {f.name: f for f in gb.functions(data)}
+    callee, caller = fns["func_002_4000"], fns["func_002_4010"]
+    assert (callee.rom, callee.vram, callee.bank) == (0x8000, 0x4000, 2)
+    assert (caller.rom, caller.vram, caller.bank) == (0x8010, 0x4010, 2)
+    assert caller.code == bytes.fromhex("cd0040c9")
+
+    symbols = {f.name: f.vram for f in fns.values()}
+    src = (f"typedef unsigned char u8;\nu8 {callee.name}(void);\n"
+           f"u8 {caller.name}(void) {{ return {callee.name}(); }}\n")
+    cand = gb_build.compile_function(src, caller.name, symbols=symbols)
+    assert cand.code[1:3] == bytes.fromhex("0040"), (
+        f"expected the CPU address 0x4000 in {cand.code.hex()} (flat 0x8000 would be 0080)")
