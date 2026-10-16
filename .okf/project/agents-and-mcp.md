@@ -2,7 +2,7 @@
 type: Interface
 title: Agents and the MCP interface
 description: Which AI agents decomp.wtf runs, how they connect over MCP, and the full list of tools they get.
-tags: [agents, mcp, tools, claude-code, codex, opencode, antigravity]
+tags: [agents, mcp, tools, claude-code, codex, opencode, antigravity, researcher, okf]
 generated:
   by: claude-code/claude-opus-5-5
   at: '2026-10-16T11:51:12Z'
@@ -10,6 +10,9 @@ sources:
   - id: tools
     resource: src/decompnet/app/tools.py
     title: Work tools and guides
+  - id: okf
+    resource: src/decompnet/app/okf.py
+    title: Knowledge base tools
   - id: chat
     resource: src/decompnet/app/chat.py
     title: Tools for the user's own agent
@@ -41,6 +44,7 @@ sources:
 
 - **How CLI agents run.** They run headless in a private folder, connected only to the app's MCP endpoint. Claude Code, for example, is launched with `--strict-mcp-config --allowedTools mcp__decomp`. Each session handles a few functions and exits, and the runner starts a fresh one. The prompt goes in on stdin[^agents].
 - **Access.** Agents get only decomp.wtf's tools: no shell, and no file access beyond a fork's own source tree[^readme].
+- **Researchers.** A helper started with the job (option `role`) `researcher` matches nothing. It takes open functions from `next_to_research` (read-only, in the order matchers will claim them, set aside from other researchers for 30 minutes), and leaves each a research note with `add_research_note`: a function note starting `[research] ` that the function's brief and the app's function view always show first. It saves general know-how to this bundle with `add_knowledge`. A researcher never runs tiered: started tiered or with no model, it gets Sonnet 5.5 at medium effort (a model picked by name is kept) and stops when nothing is left to research. Only a Claude Code researcher reads the web: its `--allowedTools` adds `WebFetch(domain:github.com)`, `api.github.com`, `raw.githubusercontent.com`, `gist.github.com`, with `WebSearch` denied: it finds other projects through `api.github.com/search/repositories`. Other agent kinds research from this bundle only[^agents].
 
 ## The user's own agent
 
@@ -69,6 +73,8 @@ The core loop, available in every project[^tools]:
 - `find_similar`
 - `guide(topic)`
 
+Every helper also gets `search_knowledge(query)` and `read_knowledge(path)` over this bundle (`.okf/`, or `DECOMP_OKF`), confined to it and never following links. Researchers alone (and the user's own agent) get `add_knowledge(title, description, text, sources, tags, type)`, which writes `research/<slug>.md` with its source URLs and lists it in `research/index.md` and `log.md`, plus `next_to_research` and `add_research_note`[^tools][^okf].
+
 ROM projects only: `get_context`, `edit_context`, `rename_symbol`, `split_function`, `rescan_gba`.
 
 Fork projects only: `read_file`, `search_code`, `edit_file`, `file_status`, `split_file`.
@@ -93,6 +99,7 @@ Helper agents the app starts itself get only the work tools, so a helper can't s
 See [matching and scoring](/project/matching-and-scoring.md) for what `compile_and_diff` does, and [local app server](/project/local-app-server.md) for where `/mcp` is served.
 
 [^tools]: src/decompnet/app/tools.py
+[^okf]: src/decompnet/app/okf.py
 [^chat]: src/decompnet/app/chat.py
 [^agents]: src/decompnet/app/agents.py
 [^bridge]: src/decompnet/app/bridge.py

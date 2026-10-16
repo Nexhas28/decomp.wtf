@@ -27,8 +27,8 @@ from pathlib import Path
 from .. import compiler_profiles as profiles
 from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
-from ..network import (STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent, Network, NetworkError, _adjacent,
-                       _fragment_like, _hash_token, config_from)
+from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent, Network,
+                       NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -95,6 +95,7 @@ _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 # hex words ("add", "dead", "cafe") still resolve as names
 _ADDRESS = re.compile(r"^(?:0x([0-9A-Fa-f]{1,8})|([0-9A-Fa-f]{8}))$", re.I)
 ROOM_CLAIM_TRIES = 6  # host offers this copy can't take, given back before a room claim gives up
+RESEARCH_HOLD = 30 * 60  # how long a function next_to_research handed one researcher is skipped for the others
 _HOST_HOLDS = re.compile(r"^you already hold (\S+?);")
 
 
@@ -264,6 +265,12 @@ class RomNetwork(Network):
         self.rescan_busy = lambda slug: False  # server supplies its built-in agent/session guard
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
+        self.role: dict[int, str] = {}  # helper agent id -> its job when it isn't matching ("researcher")
+        self.role_model: dict[int, str] = {}  # researcher agent id -> the model it runs (for what it adds to .okf)
+        # function id -> (researcher agent id, until): what next_to_research handed out, so two researchers don't
+        # write notes on the same function. Never a claim: matchers ignore it.
+        self._research_held: dict[int, tuple[int, float]] = {}
+        self._research_lock = threading.Lock()
 
     # ------------------------------------------------------------------ basics
 
@@ -2066,6 +2073,70 @@ class RomNetwork(Network):
         name = self._function(function, project)["name"] if function else None
         return link.call("/collab/note", agent, text=text, function=name) or "Noted, and shared with the room."
 
+    def add_research_note(self, agent: Agent, project: str | None, function: str, text: str) -> str:
+        fn = self._function(function, project)
+        with self._research_lock:
+            self._research_held.pop(fn["id"], None)
+        link = self._link(project)
+        if link is None:
+            return super().add_research_note(agent, project, function, text)
+        out = link.call("/collab/note", agent, text=research_note_text(text), function=fn["name"])
+        with self.store.tx() as db:  # the researcher's progress, kept here (the note itself lives in the room)
+            self._event(db, fn["project_id"], agent.id, "research", fn["name"])
+        return out or f"Saved, and shared with the room. Next: next_to_research() for another function."
+
+    def research_candidates(self, slug: str, agent_id: int = 0, count: int = 1, reserve: bool = False) -> list:
+        """Open functions nobody holds and nobody has researched, in the order matchers will claim them (so research
+        lands just ahead of them), leaving out those another researcher was handed in the last RESEARCH_HOLD
+        seconds. `reserve`: hand these to agent_id for that long. Read-only otherwise: nothing is claimed."""
+        proj = self.project_row(slug)
+        order = STRATEGIES.get("finish" if self.fork_slug(slug) else "easiest") or "f.n_insns ASC"
+        now = time.time()
+        with self._research_lock:
+            for fid, (_, until) in list(self._research_held.items()):
+                if until <= now:
+                    del self._research_held[fid]
+            others = {fid for fid, (aid, _) in self._research_held.items() if aid != agent_id}
+            rows = self.store.all(
+                f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                    AND f.id NOT IN (SELECT function_id FROM claims)
+                    AND f.id NOT IN (SELECT function_id FROM notes WHERE function_id IS NOT NULL AND text LIKE ?)
+                    AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND kind='research' AND created_at > ?)
+                    ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                        AND created_at > ?), {order} LIMIT ?""",
+                # (a research event too: in a room the note lives on the host until it syncs back)
+                proj["id"], RESEARCH_PREFIX + "%", proj["id"], now - RESEARCH_HOLD, proj["id"], now - RELEASE_COOLDOWN,
+                count + len(others))
+            rows = [r for r in rows if r["id"] not in others][:count]
+            if reserve and agent_id:
+                for r in rows:
+                    self._research_held[r["id"]] = (agent_id, now + RESEARCH_HOLD)
+        return rows
+
+    def release_research(self, agent_id: int) -> None:
+        """A researcher stopped: what it was handed goes back to the others."""
+        with self._research_lock:
+            for fid, (aid, _) in list(self._research_held.items()):
+                if aid == agent_id:
+                    del self._research_held[fid]
+
+    def next_to_research(self, agent: Agent, slug: str, count: int = 1) -> str:
+        if self.role.get(agent.id) != "researcher":
+            raise NetworkError("next_to_research is for researcher helpers; matching agents use claim_function")
+        rows = self.research_candidates(slug, agent.id, max(1, min(int(count or 1), 3)), reserve=True)
+        if not rows:
+            return ("Nothing left to research here: every open function is claimed or has a research note already. "
+                    "Stop now.")
+        lines = [f"Yours to research for the next {RESEARCH_HOLD // 60} minutes (other researchers skip them; nothing "
+                 "is claimed, so never call claim_function or release_function):"]
+        for r in rows:
+            where = f" at 0x{r['vram']:08X}" if r["vram"] else (f" in {r['unit']}" if r["unit"] else "")
+            best = "nothing compiled yet" if r["best_score"] is None else f"best score {r['best_score']}"
+            lines.append(f"- {r['name']}{where}: {r['n_insns']} instructions, {best}, {r['attempts']} attempts")
+        lines.append("For each: get_function(name), find_similar(name) and search_notes, then add_research_note(name, "
+                     "text).")
+        return "\n".join(lines)
+
     def _remote_agent(self, name: str) -> int:
         label = "@" + name
         if label in self._remote_ids:
@@ -2830,8 +2901,7 @@ class RomNetwork(Network):
             "WHERE t.function_id=? ORDER BY t.id", fn["id"])
         latest = self.store.one("SELECT source, score FROM attempts WHERE function_id=? AND source IS NOT NULL "
                                 "ORDER BY id DESC LIMIT 1", fn["id"])
-        notes = self.store.all("SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a "
-                               "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
+        notes = self.function_notes(fn["id"])
         x = self.xrefs(proj)
         syms = self.symbols(proj["id"])
         if not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
@@ -2846,7 +2916,7 @@ class RomNetwork(Network):
             "source_kind": "matched" if fn["matched_source"] else "best" if fn["best_source"] else
                            "latest" if latest else "draft" if fn["seed"] else None,
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
-            "notes": [dict(n) for n in notes],
+            "notes": notes,
             "calls": [syms.label(a) for a in sorted(x["calls"].get(fn["vram"], ()))],
             "called_by": [syms.label(a) for a in sorted(x["called_by"].get(fn["vram"], ()))],
         } | self.set_aside_info(fn)

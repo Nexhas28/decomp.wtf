@@ -32,6 +32,24 @@ CLAIM_TTL = 30 * 60
 log = logging.getLogger("decomp.wtf")
 RELEASE_COOLDOWN = 15 * 60
 MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their claims never mean "given up on"
+# A research note: guidance a researcher helper wrote for the next agent that claims the function. It is an ordinary
+# function note whose text starts with this; briefs and the function view always show the latest one first.
+RESEARCH_PREFIX = "[research] "
+
+
+def research_note_text(text: str) -> str:
+    """What a research note stores: the prefix once (a researcher may have typed it too), within the note cap."""
+    text = (text or "").strip()
+    while text.lower().startswith(RESEARCH_PREFIX.strip()):
+        text = text[len(RESEARCH_PREFIX.strip()):].strip()
+    if not text:
+        raise NetworkError("empty research note")
+    return (RESEARCH_PREFIX + text)[:4000]
+
+
+def research_text(note: str) -> str:
+    """A research note without its prefix, for showing."""
+    return note[len(RESEARCH_PREFIX):] if note.startswith(RESEARCH_PREFIX) else note
 # A better source resets a function's permuter budget only when it is a material improvement (new score at most
 # BUDGET_RESET_RATIO of the previous best) and at most MAX_BUDGET_RESETS times in the function's lifetime, so tiny
 # stochastic gains cannot keep the search running forever (plan P1.2).
@@ -1119,9 +1137,13 @@ class Network:
         if merges:
             lines += ["", "### Boundary merge proposals (review; never applied automatically)"]
             lines += [f"- {fn['name']} continues {m['cont']} ({_ago(m['at'])})" for m in merges]
+        research = self.research_note(fn["id"])
+        if research:  # however many notes came after it
+            lines += ["", "### Research notes (read first)",
+                      f"({research['name']}, {_ago(research['created_at'])}) {research_text(research['text'])}"]
         notes = self.store.all(
             "SELECT n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
-            "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
+            "WHERE n.function_id=? AND n.id<>? ORDER BY n.id DESC LIMIT 8", fn["id"], research["id"] if research else 0)
         if notes:
             lines += ["", "### Notes from previous agents on this function"]
             lines += [f"- ({n['name']}, {_ago(n['created_at'])}) {n['text']}" for n in notes]
@@ -2173,6 +2195,34 @@ class Network:
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"] if fn else None, agent.id, text.strip()[:4000], time.time()))
         return "Noted. Other agents will see it" + (f" when they open {fn['name']}." if fn else " in their briefings.")
+
+    def add_research_note(self, agent: Agent, project: str | None, function: str, text: str) -> str:
+        """A research note on a function (RESEARCH_PREFIX + text), and a 'research' event: a researcher's work."""
+        proj = self._project(project)
+        fn = self._function(function, proj["slug"])
+        with self.store.tx() as db:
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (proj["id"], fn["id"], agent.id, research_note_text(text), time.time()))
+            self._event(db, proj["id"], agent.id, "research", fn["name"])
+        return (f"Saved. It is the first thing the next agent to open {fn['name']} reads. Next: next_to_research() "
+                "for another function.")
+
+    def research_note(self, function_id: int):
+        """The latest research note on a function (id, text, created_at, name), or None."""
+        return self.store.one(
+            "SELECT n.id, n.text, n.created_at, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.function_id=? AND n.text LIKE ? ORDER BY n.id DESC LIMIT 1", function_id, RESEARCH_PREFIX + "%")
+
+    def function_notes(self, function_id: int, limit: int = 10) -> list[dict]:
+        """A function's notes for the function view, newest first, its latest research note pinned on top."""
+        research = self.research_note(function_id)
+        rows = self.store.all(
+            "SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "WHERE n.function_id=? AND n.id<>? ORDER BY n.id DESC LIMIT ?", function_id,
+            research["id"] if research else 0, limit)
+        pinned = [{"text": research_text(research["text"]), "created_at": research["created_at"],
+                   "agent": research["name"], "research": True}] if research else []
+        return pinned + [dict(r) for r in rows]
 
     def clear_function_notes(self) -> int:
         """Delete every note left on a function, in every project (project-wide notes stay). Returns how many."""
