@@ -62,7 +62,8 @@ def ensure_app(home: Path) -> dict:
 def mint(info: dict, name: str) -> str:
     port = info["port"]
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/agents/token", method="POST",
-                                 data=json.dumps({"name": name}).encode(),
+                                 data=json.dumps({"name": name,
+                                                  "client": os.environ.get("DECOMP_BRIDGE_ID", "")}).encode(),
                                  headers={"Cookie": f"decomp_live={info['secret']}", "X-Decomp": "1",
                                           "Host": f"127.0.0.1:{port}", "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as r:

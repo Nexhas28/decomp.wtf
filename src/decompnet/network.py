@@ -71,6 +71,7 @@ def _fragment_like(fn) -> bool:
 # free once it does.
 _TWINS = ("(f.boost > 0 AND f.n_insns <= 400 AND f.abandons < 2) DESC, "
           "CASE WHEN f.boost > 0 THEN (f.boost + 1) * 64 / (f.n_insns + 16) ELSE 0 END DESC, f.boost < 0, ")
+STRATEGY_INSNS_CAP = {"closest": 400}  # near-miss search has no business with giants (perf-test run 2)
 STRATEGIES = {
     "easiest": _TWINS + "f.abandons > 0, f.n_insns ASC",
     # what nobody gave up on, small first; among functions of about the same size, the files closest to done (a
@@ -343,6 +344,7 @@ class Network:
         if strategy not in STRATEGIES:
             raise NetworkError(f"strategy must be one of {', '.join(STRATEGIES)}")
         proj = self._project(project) if (project or function is None) else None
+        cap = STRATEGY_INSNS_CAP.get(strategy, -1)
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -371,10 +373,11 @@ class Network:
                         """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                            AND f.id NOT IN (SELECT function_id FROM claims)
                            AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
+                           AND (? = -1 OR f.n_insns <= ?)
                            AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                            ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                                AND created_at > ?), f.id LIMIT 200""",
-                        (proj["id"], now, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                     ).fetchall()
                     if not rows:
                         return None
@@ -384,10 +387,11 @@ class Network:
                         f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                             AND f.id NOT IN (SELECT function_id FROM claims)
                             AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
+                            AND (? = -1 OR f.n_insns <= ?)
                             AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                             ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                                 AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                        (proj["id"], now, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                     ).fetchone()
                     if fn is None:
                         return None
