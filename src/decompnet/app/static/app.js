@@ -1758,6 +1758,8 @@ function renderSessions(sessions) {
   const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
   const ext = outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span>${a.startsWith("@") ? "" : `<button class="ghost" data-kick="${esc(a)}" type="button" title="Cut this agent off: what it claimed goes back to the others">Disconnect</button>`}</div>
       <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join("");
+  $("disconnectAll").hidden = outside.filter((a) => !a.startsWith("@")).length < 2;
+  $("removeAll").hidden = sessions.length - running.length < 2;
   $("noSessions").hidden = sessions.length + outside.length > 0;
   // Same content as last time: leave the DOM alone. The poll runs every second or two, and replacing a button
   // between a mouse press and its release drops the click, which made Stop impossible to hit while an agent worked.
@@ -1784,6 +1786,17 @@ function renderSessions(sessions) {
 $("stopAll").onclick = async () => {
   await api("/api/agents/stop", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
   toast("Stopping every agent on this project.");
+  poll(false);
+};
+
+$("disconnectAll").onclick = async () => {
+  if (!confirm("Disconnect every connected agent on this project? The functions they're working on go back to the others, and anything else they try here is refused. Your own helpers keep running.")) return;
+  const r = await api("/api/agents/disconnect", { method: "POST", body: { slug: S.slug } }).catch((e) => { toast(esc(e.message), "err"); });
+  if (r) toast(`Disconnected ${plural(r.disconnected.length, "agent")}.`);
+  poll(false);
+};
+$("removeAll").onclick = async () => {
+  await api("/api/agents/stop", { method: "POST", body: { slug: S.slug, remove: true } }).catch((e) => toast(esc(e.message), "err"));
   poll(false);
 };
 

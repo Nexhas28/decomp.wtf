@@ -108,3 +108,54 @@ def test_the_endpoint_disconnects_and_keeps_helpers_for_their_stop_button(tmp_pa
     assert r.status_code == 400 and "Stop" in r.json()["error"]
     del manager.sessions["s1"]
     assert client.post("/api/agents/disconnect", json={"name": "@alice"}, headers=h).status_code == 400
+
+
+def test_disconnect_all_spares_the_apps_own_helpers_and_other_projects(net, tmp_path):
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(id, slug, name, root, config) VALUES(2, 'other', 'other', ?, '{}')", (str(tmp_path),))
+        db.execute("INSERT INTO functions(id, project_id, name) VALUES(4, 2, 'g4')")
+    a, token_a = net.chat_agent("claude-code", client="bridge-a")
+    b, _ = net.local_agent("claude-14")
+    helper, helper_token = net.local_agent("claude-3")
+    elsewhere, elsewhere_token = net.chat_agent("codex", client="bridge-b")
+    for agent, fid in ((a, 1), (b, 2), (helper, 3), (elsewhere, 4)):
+        _claim(net, agent, fid)
+
+    assert net.disconnect_all("game", keep={"claude-3"}) == ["claude-14", "claude-code"]
+    held = {r["agent_id"] for r in net.store.all("SELECT agent_id FROM claims")}
+    assert held == {helper.id, elsewhere.id}
+    assert net.authenticate(helper_token).id == helper.id and net.authenticate(elsewhere_token).id == elsewhere.id
+    with pytest.raises(NetworkError, match="disconnected by the user"):
+        net.authenticate(token_a)
+    assert net.disconnect_all("game", keep={"claude-3"}) == []
+
+
+def test_the_all_buttons_endpoints(tmp_path):
+    from types import SimpleNamespace
+
+    home = tmp_path / "home"
+    (home / ".decomp").mkdir(parents=True)
+    net = RomNetwork(home / ".decomp" / "decomp.db", home)
+    _project(net, tmp_path)
+    mcp, manager, security = build(net, home / ".decomp", PORT, SECRET)
+    client = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"),
+                        base_url=f"http://127.0.0.1:{PORT}")
+    client.cookies.set("decomp_live", SECRET)
+    h = {"X-Decomp": "1"}
+
+    outside, _ = net.chat_agent("claude-code", client="bridge-a")
+    mine, mine_token = net.local_agent("claude-3")
+    _claim(net, outside, 1)
+    _claim(net, mine, 2)
+    manager.sessions["s1"] = SimpleNamespace(id="s1", agent_name="claude-3", state="working", slug="game")
+    r = client.post("/api/agents/disconnect", json={"slug": "game"}, headers=h)
+    assert r.status_code == 200 and r.json()["disconnected"] == ["claude-code"]
+    assert net.authenticate(mine_token).id == mine.id
+
+    removed = []
+    manager.remove = lambda sid: (removed.append(sid), manager.sessions.pop(sid, None))
+    manager.sessions["s2"] = SimpleNamespace(id="s2", agent_name="claude-4", state="stopped", slug="game")
+    manager.sessions["s3"] = SimpleNamespace(id="s3", agent_name="claude-5", state="error", slug="game")
+    manager.sessions["s4"] = SimpleNamespace(id="s4", agent_name="claude-6", state="stopped", slug="other")
+    assert client.post("/api/agents/stop", json={"slug": "game", "remove": True}, headers=h).status_code == 200
+    assert sorted(removed) == ["s2", "s3"] and set(manager.sessions) == {"s1", "s4"}
