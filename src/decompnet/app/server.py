@@ -35,6 +35,7 @@ from .. import __version__, cache as ccache, hostenv, scheduler, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, localtools, tools, updates
+from . import fixer as fixermod
 from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
@@ -215,7 +216,9 @@ class Settings:
                 "budget_usd": self.data.get("budget_usd") or 0,
                 "anthropic_key": ("•" * 8 + self.data["anthropic_api_key"][-4:]) if self.data.get("anthropic_api_key") else "",
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
-                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
+                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {},
+                "auto_fixer": fixermod.DEFAULTS | {k: v for k, v in (self.data.get("auto_fixer") or {}).items()
+                                                   if k in fixermod.DEFAULTS}}
 
 
 def _session_options(entry: dict) -> dict:
@@ -283,6 +286,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     jobs = Jobs(home / "logs" / "decomp.log")
     settings = Settings(home / "settings.json")
     net.autopilot_after_match = bool(settings.data.get("autopilot_after_match"))
+    fixer = fixermod.Fixer(net, manager, config=lambda: settings.data.get("auto_fixer") or {})
+    net.on_note = fixer.observe
+    manager.on_prepare = fixer.scan
+    net.fixer = fixer
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
 
     def remember(running: list[dict]) -> None:
@@ -332,7 +339,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if net.is_chat(agent):
             return ListToolsResult(tools=everything)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
-        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug))))
+        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), fixer=net.is_fixer(agent)))
         return ListToolsResult(tools=[t for t in everything if t.name in keep])
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
@@ -1187,6 +1194,23 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 settings.data["anthropic_api_key"] = key
             else:
                 settings.data.pop("anthropic_api_key", None)
+        if isinstance(data.get("auto_fixer"), dict):  # {enabled, model, effort}: what starts on flagged notes
+            cur = dict(settings.data.get("auto_fixer") or {})
+            new = data["auto_fixer"]
+            if "enabled" in new:
+                cur["enabled"] = bool(new["enabled"])
+            if "model" in new:
+                model = str(new["model"] or "").strip()
+                if model and not re.fullmatch(r"[A-Za-z0-9._:\[\]-]{1,80}", model):
+                    settings.data = before
+                    return fail(ValueError("that isn't a model name, like claude-sonnet-5-5"))
+                cur["model"] = model or fixermod.SONNET
+            if "effort" in new:
+                if new["effort"] not in agents.EFFORTS:
+                    settings.data = before
+                    return fail(ValueError(f"the effort is one of {', '.join(agents.EFFORTS)}"))
+                cur["effort"] = new["effort"]
+            settings.data["auto_fixer"] = cur
         if per_session is not None:
             settings.data["per_session"] = per_session
         if "autopilot" in data:
