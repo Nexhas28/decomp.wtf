@@ -1152,6 +1152,43 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         except (NetworkError, ValueError) as e:
             return fail(e)
 
+    @mcp.custom_route("/api/auto-fixer", methods=["GET", "POST"])
+    async def api_auto_fixer(request: Request) -> Response:
+        """The auto-fixer on a project: GET ?slug= its settings, state and whether it can run here; POST {slug,
+        model?, effort?, enabled?, run?} saves the settings (model and effort for every run, enabled for the
+        automatic ones) and, with run: true, starts it now."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        data = dict(request.query_params) if request.method == "GET" else await body(request)
+        slug = str(data.get("slug", ""))
+
+        def state() -> dict:
+            return {"settings": fixer.settings(), "unavailable": fixer.why_not(slug) if slug else "",
+                    "models": fixermod.MODELS, "efforts": list(agents.EFFORTS)} | (fixer.status(slug) if slug else {})
+        if request.method == "GET":
+            return JSONResponse(state())
+        cur = dict(settings.data.get("auto_fixer") or {})
+        if "enabled" in data:
+            cur["enabled"] = bool(data["enabled"])
+        if "model" in data:
+            model = str(data["model"] or "").strip()
+            if model and not re.fullmatch(r"[A-Za-z0-9._:\[\]-]{1,80}", model):
+                return fail(ValueError("that isn't a model name, like claude-sonnet-5-5"))
+            cur["model"] = model or fixermod.SONNET
+        if "effort" in data:
+            if data["effort"] not in agents.EFFORTS:
+                return fail(ValueError(f"the effort is one of {', '.join(agents.EFFORTS)}"))
+            cur["effort"] = data["effort"]
+        settings.data["auto_fixer"] = cur
+        settings.save()
+        out = state()
+        if data.get("run"):
+            try:
+                out |= await call(lambda: fixer.run_now(slug))
+            except (NetworkError, ValueError) as e:
+                return fail(e)
+        return JSONResponse(out)
+
     @mcp.custom_route("/api/notes/clear", methods=["POST"])
     async def api_notes_clear(request: Request) -> Response:
         """Settings: delete every note on a function, in every project (notes on a whole project stay)."""

@@ -584,7 +584,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
-  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); }
+  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); loadFixer(); }
   if (tab === "team") renderTeam();
   if (tab === "source" && S.ov) renderSource(S.ov);
   if (tab === "settings") renderProjectSettings();
@@ -1769,6 +1769,61 @@ $("stopAll").onclick = async () => {
   toast("Stopping every agent on this project.");
   poll(false);
 };
+
+/* ------------------------------------------------------------------ the auto-fixer: repairs agents' notes ask for */
+/* Notes that say a function is cut in the wrong place, is really hand-written, or only needs the permuter start a
+   helper with the repairs for them. Here: its model and effort, whether it runs by itself, and a button to run it. */
+const FX = { st: null, busy: false, timer: 0 };
+async function loadFixer() {
+  if (!S.slug) return;
+  try { FX.st = await api(`/api/auto-fixer?slug=${encodeURIComponent(S.slug)}`); } catch { return; }
+  renderFixer();
+  clearTimeout(FX.timer);  // while it works, keep the line under the title current
+  if (S.tab === "agents" && (FX.st.running || (FX.st.waiting || []).length)) FX.timer = setTimeout(loadFixer, 5000);
+}
+function fixerLine(st) {
+  if (st.unavailable) return "";
+  if (st.running) return `working on ${(st.working_on || []).length} function${(st.working_on || []).length === 1 ? "" : "s"}${(st.waiting || []).length ? `, ${st.waiting.length} more waiting` : ""}`;
+  if ((st.waiting || []).length) return `${st.waiting.length} waiting`;
+  return st.settings.enabled ? "runs by itself when notes ask for it" : "only when you run it";
+}
+function renderFixer() {
+  const box = $("fixerBody"), st = FX.st;
+  if (!box || !st) return;
+  $("fixerState").textContent = fixerLine(st);
+  const set = st.settings, known = st.models.some((m) => m.id === set.model);
+  const models = st.models.map((m) => `<option value="${esc(m.id)}" ${m.id === set.model ? "selected" : ""}>${esc(m.name)} — ${esc(m.note)}</option>`).join("")
+    + (known ? "" : `<option value="${esc(set.model)}" selected>${esc(set.model)}</option>`);
+  const efforts = st.efforts.map((e) => `<option value="${esc(e)}" ${e === set.effort ? "selected" : ""}>${esc(e)}</option>`).join("");
+  box.innerHTML = `<p class="muted small">Agents leave notes when a function needs something they can't do: it was cut in the wrong place, it's really hand-written, or only the permuter can finish it. The auto-fixer reads those notes and makes the repair (it writes no C), then leaves a note saying what it did.</p>
+    ${st.unavailable ? `<p class="small"><b>${esc(st.unavailable)}</b></p>` : ""}
+    <div class="lz-row">
+      <label class="field"><span>Model</span><select data-fx="model">${models}</select></label>
+      <label class="field"><span>Effort</span><select data-fx="effort">${efforts}</select></label>
+      <span class="grow"></span>
+      <button class="primary" data-fx="run" type="button" ${st.unavailable || st.running || FX.busy ? "disabled" : ""}>${st.running ? "Auto-fixer is working…" : FX.busy ? "Starting…" : "Run the auto-fixer now"}</button>
+    </div>
+    <label class="check"><input type="checkbox" data-fx="enabled" ${set.enabled ? "checked" : ""}><span><b>Run by itself</b> when helpers start or a note asks for a repair (on your Claude plan, one at a time).</span></label>`;
+  const save = async (change) => {
+    try { FX.st = { ...FX.st, ...(await api("/api/auto-fixer", { method: "POST", body: { slug: S.slug, ...change } })) }; renderFixer(); }
+    catch (e) { toast(esc(e.message), "err"); loadFixer(); }
+  };
+  box.querySelector('[data-fx="model"]').onchange = (e) => save({ model: e.target.value });
+  box.querySelector('[data-fx="effort"]').onchange = (e) => save({ effort: e.target.value });
+  box.querySelector('[data-fx="enabled"]').onchange = (e) => save({ enabled: e.target.checked });
+  box.querySelector('[data-fx="run"]').onclick = async () => {
+    FX.busy = true; renderFixer();
+    try {
+      const out = await api("/api/auto-fixer", { method: "POST", body: { slug: S.slug, run: true } });
+      FX.st = { ...FX.st, ...out };
+      const n = (out.working_on || []).length, more = (out.waiting || []).length;
+      toast(out.running ? `The auto-fixer is on ${n} function${n === 1 ? "" : "s"}${more ? ` (${more} more after)` : ""}. Watch it below.` : "Nothing to fix right now: no note asks for a repair.", out.running ? "match" : "");
+      poll(false);
+    } catch (e) { toast(esc(e.message), "err"); }
+    FX.busy = false;
+    loadFixer();
+  };
+}
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
 const LZ = { kind: null, model: "", count: 1, per: null, focus: "default", role: "match" };

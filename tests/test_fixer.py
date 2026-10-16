@@ -257,7 +257,7 @@ def test_flagged_notes_start_one_session_with_the_list(net, monkeypatch):
     assert started == [("game", ["func_80001010"], "claude-sonnet-5-5", "medium")]
     assert net._function("func_80001010", "game")["meta"] is None  # looked at only once the session got through
     fx.observe("game", "func_80001000", "mis-split, needs merge", helper)  # one session at a time: it waits
-    assert fx.status("game") == {"running": "fixer-1", "waiting": ["func_80001000"]}
+    assert fx.status("game") == {"running": "fixer-1", "waiting": ["func_80001000"], "working_on": ["func_80001010"]}
     fixer_agent, _ = net.local_agent("fixer-1")
     net.fixer_ids.add(fixer_agent.id)
     fx.observe("game", "func_80001038", "auto-fixer: mis-split? no, left alone", fixer_agent)  # its own notes: nothing
@@ -271,7 +271,10 @@ def test_only_mips_projects_start_the_fixer(net):
         db.execute("UPDATE projects SET arch='sm83', config=json_set(config, '$.arch', 'sm83', '$.platform', 'gbc')")
     fx = fixer.Fixer(net, None)
     fx.observe("game", "func_80001010", "fragment, needs merge")
-    assert fx.status("game") == {"running": "", "waiting": []} and fx.scan("game") == 0
+    assert fx.status("game")["waiting"] == [] and fx.scan("game") == 0
+    assert "N64, PlayStation" in fx.why_not("game")
+    with pytest.raises(ValueError, match="PlayStation"):
+        fx.run_now("game")
 
 
 def test_giants_are_not_flagged_for_the_permuter(net):
@@ -279,3 +282,22 @@ def test_giants_are_not_flagged_for_the_permuter(net):
     assert fixer.wanted(fn, {"permuter"}) == {"permuter"}
     assert fixer.wanted(fn | {"n_insns": 413}, {"permuter"}) == set()
     assert fixer.wanted(fn | {"status": "matched"}, {"boundary"}) == set()
+
+
+def test_run_now_starts_at_once_even_when_switched_off(net):
+    started = []
+
+    class Manager:
+        def start_fixer(self, slug, items, model, effort, on_done):  # noqa: ARG002
+            started.append([i["function"] for i in items])
+            return "fixer-1"
+
+    with net.store.tx() as db:
+        db.execute("INSERT INTO notes(project_id, function_id, agent_id, text, created_at) SELECT 1, id, NULL, "
+                   "'mis-split: needs merge', 0 FROM functions WHERE name='func_80001010'")
+    fx = fixer.Fixer(net, Manager(), config=lambda: {"enabled": False, "model": "claude-opus-5-5"})
+    assert fx.scan("game") == 0  # switched off: helpers starting don't run it
+    out = fx.run_now("game")
+    assert started == [["func_80001010"]] and out["running"] == "fixer-1" and out["flagged"] == 1
+    net.links["game"] = object()
+    assert "host" in fx.why_not("game")
