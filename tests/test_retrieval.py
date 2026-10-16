@@ -389,6 +389,24 @@ def test_route_plan_configurable_order():  # P10.4
 
 # ---------------------------------------------------------------------------- real-lane gate
 
+def test_lane_returns_explicit_skip_when_toolchain_missing(monkeypatch):
+    # host-independent: when analyzeHeadless/java are unavailable the lanes skip with the given
+    # reason and never touch the index
+    registry = make_registry()
+    config = RetrievalConfig(function_id_retrieval=True, bsim_retrieval=True)
+    fake_toolchain(monkeypatch, fid_module, ok=False, reason="no analyzeHeadless/java (explicit)")
+    fake_toolchain(monkeypatch, bsim_module, ok=False, reason="no analyzeHeadless/java (explicit)")
+    fid_index = FunctionIdIndex(registry)
+    result = FidLane(fid_index, registry, config).lookup("sig", "mips", "")
+    assert result.status == "skipped" and "explicit" in result.reason
+    assert fid_index.lookups == 0
+    bsim_index = BsimIndex(registry)
+    bsim_index.add(bsim_sig("a", LINES_A, calls=1), sidecar("good", "liba-1"))
+    result = BsimLane(bsim_index, registry, config).query(bsim_sig("target", LINES_A))
+    assert result.status == "skipped" and "explicit" in result.reason
+    assert bsim_index.queries == 0
+
+
 def test_real_lane_skips_without_analyzeheadless_or_java():
     ok, reason = toolchain_available()
     if not ok:
