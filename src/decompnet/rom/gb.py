@@ -194,6 +194,22 @@ class GbFunction:
         return len(self.code)
 
 
+def refs_of(code: bytes, addr: int, bank: int, limit: int) -> list[tuple[int, int, int]]:
+    """(offset_in_function, kind, CPU address) for every call/jump edge out of `code`.
+
+    Kind 10 is a call edge, the same label the GBA lane uses, so `xrefs` builds the call graph from it.
+    `limit` is the ROM size: a target outside it is not a reference."""
+    out: list[tuple[int, int, int]] = []
+    for off, text, _ln in sm83.disassemble(code, addr):
+        if not text.startswith(("call ", "jp ")) or "$" not in text:
+            continue
+        target = int(text.rsplit("$", 1)[1], 16)  # a CPU address
+        flat = flat_offset(target, bank)
+        if 0 <= flat < limit and not (addr <= flat < addr + len(code)):
+            out.append((off - addr, 10, target))
+    return out
+
+
 def _extent(data: bytes, addr: int, next_addr: int, max_len: int = 0x400) -> bytes:
     """A function's bytes: from its start **up to and including** its terminating instruction, or to the
     next known start when it runs into one first (never past `max_len`).
@@ -225,13 +241,7 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
         insns = list(sm83.disassemble(code, addr))
         if not insns:
             continue
-        refs = []
-        for off, text, _ln in insns:
-            if text.startswith(("call ", "jp ")) and "$" in text:
-                target = int(text.rsplit("$", 1)[1], 16)  # a CPU address
-                flat = flat_offset(target, bank_of(addr))
-                if 0 <= flat < len(data) and not (addr <= flat < addr + len(code)):
-                    refs.append((off - addr, 10, target))  # 10 = a call edge (kind 10, as the GBA lane)
+        refs = refs_of(code, cpu_address(addr), bank_of(addr), len(data))
         out.append(GbFunction(name=function_name(addr), vram=cpu_address(addr), rom=addr,
                               bank=bank_of(addr), code=code, n_insns=len(insns),
                               asm=sm83.asm_text(code, cpu_address(addr), width=4), refs=refs))
@@ -239,12 +249,30 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
     return out
 
 
-def split(path: Path, workdir: Path, log=lambda *_: None) -> list[GbFunction]:
-    """The GBA-lane equivalent: read a ROM file and return its functions (no external tool needed)."""
+def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = True) -> list[GbFunction]:
+    """A ROM file's functions.
+
+    Preferred: **mgbdis + rgbds** (rom/gb_mgbdis), a real disassembler with code/data separation whose
+    output reassembles the ROM byte for byte — the check that the split is faithful. Falls back to the
+    built-in call-graph sweep when those tools are not installed, or when asked not to use them."""
     data = Path(path).read_bytes()
     if not is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
     info = read_info(data)
-    log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}, {info['rom_banks']} banks, "
-        f"functions named bank_cpu)")
+    log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}, {info['rom_banks']} banks)")
+    if prefer_mgbdis:
+        from . import gb_mgbdis
+
+        if gb_mgbdis.available():
+            try:
+                fns, meta = gb_mgbdis.split(path, workdir, log=log)
+                if meta["faithful"]:
+                    log(f"split by mgbdis: {meta['functions']} functions, reassembly byte-identical")
+                    return fns
+                log(f"mgbdis split did NOT rebuild the ROM byte for byte ({meta['rebuilt_bytes']} vs "
+                    f"{meta['original_bytes']} bytes): using the built-in split instead")
+            except Exception as e:  # a tool failure must never cost the user the import
+                log(f"mgbdis split unavailable ({type(e).__name__}: {e}): using the built-in split")
+        else:
+            log("mgbdis/rgbds are not installed: using the built-in call-graph split")
     return functions(data, log=log)
