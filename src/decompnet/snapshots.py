@@ -59,8 +59,8 @@ def capture(fn, proj, ctx) -> dict:
         "project_id": proj["id"],
         "function_id": fn["id"],
         "function_revision": fn["revision"] if "revision" in fn.keys() else 1,
-        "context_version": ctx["version"],
-        "context_digest": context_digest(ctx),
+        "context_version": ctx["version"] if ctx else 0,  # ctx can be a sqlite3.Row: no .get
+        "context_digest": context_digest(ctx) if ctx else "",
         "target_digest": target_digest(fn),
         "compiler_digest": compiler_digest(proj),
         "scorer_version": SCORER_VERSION,

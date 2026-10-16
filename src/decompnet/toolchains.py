@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
-from . import wsl
+from . import linuxbox, wsl
 from .cache import canonical, sha
 
 MANIFEST = ".decompnet-toolchain.json"
@@ -68,9 +68,16 @@ class Toolchain:
         return [p for p in self.parts if plat in p.get("platforms", [plat])]
 
     @property
+    def via_linux(self) -> bool:
+        """A Linux-only toolchain where only a Linux side can run it: installed from its Linux build and run
+        inside WSL 2 on Windows (wsl.py) or in the compiler container on macOS (linuxbox.py)."""
+        return ((wsl.wanted() or linuxbox.wanted()) and not self.git and not self.parts_for()
+                and bool(self.parts_for(LINUX)))
+
+    @property
     def via_wsl(self) -> bool:
-        """A Linux-only toolchain on Windows: installed from its Linux build and run inside WSL 2 (see wsl.py)."""
-        return wsl.wanted() and not self.git and not self.parts_for() and bool(self.parts_for(LINUX))
+        """`via_linux` under its older name (configs and callers written before the rename)."""
+        return self.via_linux
 
     def linux_parts(self) -> list[dict]:
         return [p for p in self.parts if WSL_PLATFORM in p.get("platforms", [])] or self.parts_for(LINUX)
@@ -78,7 +85,7 @@ class Toolchain:
     @property
     def supported(self) -> bool:
         """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
-        return bool(self.git) or bool(self.parts_for()) or self.via_wsl
+        return bool(self.git) or bool(self.parts_for()) or self.via_linux
 
 
 def current_platform() -> str:
@@ -118,11 +125,14 @@ def get(tid: str) -> Toolchain:
 
 def data_dir() -> Path:
     """Per-user data directory for decompnet (toolchains, caches)."""
+    env = os.environ.get("XDG_DATA_HOME")
+    if env:  # set explicitly: it wins on every platform
+        return Path(env) / "decompnet"
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "decompnet"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "decompnet"
-    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "decompnet"
+    return Path.home() / ".local" / "share" / "decompnet"
 
 
 def root() -> Path:
@@ -133,8 +143,8 @@ def root() -> Path:
 def path(tid: str, linux: bool | None = None) -> Path:
     """Where a toolchain is installed. `linux`: its Linux build for WSL (default: when that's how it runs here)."""
     if linux is None:
-        linux = tid in _registry_data() and get(tid).via_wsl
-    return root() / "wsl" / tid if linux else root() / tid
+        linux = tid in _registry_data() and get(tid).via_linux
+    return root() / ("wsl" if wsl.wanted() else "linux") / tid if linux else root() / tid
 
 
 def installed(tid: str, linux: bool | None = None) -> dict | None:
@@ -152,7 +162,7 @@ def require(tid: str, linux: bool | None = None) -> Path:
 def runtime_dirs(tid: str) -> tuple[Path, ...]:
     """The toolchain plus everything it requires, for mounting into the sandbox (all Linux builds for WSL)."""
     tc = get(tid)
-    linux = tc.via_wsl
+    linux = tc.via_linux
     return (require(tid, linux), *(require(dep, linux) for dep in tc.requires))
 
 
@@ -239,7 +249,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     """Install a toolchain (and what it requires). `linux`: its Linux build, to run inside WSL (default: when
     that's how it runs on this computer)."""
     tc = get(tid)
-    linux = tc.via_wsl if linux is None else linux
+    linux = tc.via_linux if linux is None else linux
     if linux:
         ok, why = wsl.status()
         if not ok:
@@ -266,7 +276,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    log(f"{tid}: installing {tc.name} [{tc.license}]" + (" (Linux build, runs in WSL 2)" if linux else ""))
+    log(f"{tid}: installing {tc.name} [{tc.license}]" + (f" (Linux build, runs {_where()})" if linux else ""))
     pinned = []
     try:
         if tc.git:
@@ -293,7 +303,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
                         if f.is_file():
                             os.chmod(f, 0o755)
             pinned.append({"url": part["url"], "sha256": digest})
-        if linux and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader: bring ours
+        if linux and wsl.wanted() and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader
             n = wsl.wrap_i386(dest, wsl.path(path("runtime-i386", linux=True)))
             log(f"  {n} 32-bit programs start through the pinned 32-bit runtime")
     except BaseException:
@@ -302,7 +312,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     (dest / MANIFEST).write_text(json.dumps({
         "id": tid, "name": tc.name, "license": tc.license, "source": tc.source,
         "parts": pinned, "commit": tc.commit or None, "installed_at": time.time(),
-        "license_accepted": bool(tc.proprietary and accept_license), "wsl": linux,
+        "license_accepted": bool(tc.proprietary and accept_license), "linux": linux,
     }, indent=2), encoding="utf-8")
     log(f"{tid}: installed at {dest}")
     return dest
@@ -365,13 +375,37 @@ def java_version() -> int:
     return int(m.group(1)) if m else 0
 
 
+def side_name() -> str:
+    """Which Linux side runs Linux-only toolchains here: wsl or docker."""
+    return "wsl" if wsl.wanted() else "docker"
+
+
+def _where() -> str:
+    return "inside WSL 2" if side_name() == "wsl" else "in the compiler container (Docker)"
+
+
+def side_status(prepare: bool = False, log=print) -> tuple[bool, str]:
+    """Whether the Linux side for Linux-only toolchains works here: (usable, why not). `prepare` builds what's
+    missing (the compiler image on a Mac)."""
+    if wsl.wanted():
+        ok, why = wsl.status()
+        return ok, "" if ok else f"on Windows it runs in WSL 2. {why}"
+    if prepare:
+        try:
+            linuxbox.prepare(log)
+        except RuntimeError as e:
+            return False, f"on a Mac it runs in a Docker container. {e}"
+    ok, why = linuxbox.status()
+    return ok, "" if ok else f"on a Mac it runs in a Docker container. {why}"
+
+
 def status() -> list[dict]:
     rows = []
     for tc in registry().values():
         m = installed(tc.id)
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
                      "installed": m is not None, "supported": tc.supported, "description": tc.description,
-                     "wsl": tc.via_wsl,
+                     "linux": tc.via_linux, "linux_side": side_name() if tc.via_linux else "",
                      "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit)})
     return rows
 

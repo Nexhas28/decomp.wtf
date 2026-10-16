@@ -28,7 +28,7 @@ ADD = "int add(int a, int b) {\n    return a + b;\n}\n"
 SUB = "int sub(int a, int b) {\n    return a - b;\n}\n"
 
 CONFIGURE = '''\
-import json, re, sys
+import json, re, shlex, sys
 from pathlib import Path
 
 Matching, NonMatching = True, False
@@ -44,7 +44,7 @@ objects = [
 '''
 
 CONFIGURE_TAIL = '''
-TC = sys.argv[1] if len(sys.argv) > 1 else "{tc}"
+TC = shlex.quote(sys.argv[1] if len(sys.argv) > 1 else "{tc}")
 lines = [
     "rule configure", "  command = python3 configure.py", "  generator = 1",
     "build build.ninja: configure | configure.py",

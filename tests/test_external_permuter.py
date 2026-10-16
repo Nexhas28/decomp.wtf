@@ -114,7 +114,7 @@ def test_p07_candidates_are_reverified_before_any_credit(tmp_path, monkeypatch):
         def fingerprint(self):
             return self._fp
 
-    net._compile = lambda proj, header, source: FakeResult()
+    net._compile = lambda proj, header, source, fn=None: FakeResult()
     net._evaluate = lambda fn, proj, obj: (FakeCand(fn["name"], fn["fingerprint"]), None, [])
 
     out = external.reverify(net, alice, fn, proj,
@@ -137,7 +137,7 @@ def test_p07_candidates_are_reverified_before_any_credit(tmp_path, monkeypatch):
     class Broken:
         ok, log, obj = False, "nope", None
 
-    net2._compile = lambda proj, header, source: Broken()
+    net2._compile = lambda proj, header, source, fn=None: Broken()
     out2 = external.reverify(net2, alice2, fn2, proj2, {"a": "int func_001(void) { return 1; }"}, ctx2)
     assert out2["a"]["why"] == "doesn't compile"
     assert net2.store.one("SELECT status FROM functions WHERE id=1")["status"] == "open"
