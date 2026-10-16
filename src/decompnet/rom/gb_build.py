@@ -56,20 +56,38 @@ class BuiltFunction:
         self.name = self.name[1:] if self.name.startswith("_") else self.name  # SDCC's C symbol prefix
 
 
-def toolchain_bin(name: str) -> Path | None:
-    """A binary inside the installed GBDK toolchain, or None when the toolchain isn't installed."""
+def toolchain_dirs() -> list[Path]:
+    """Where the GBDK toolchain is installed (empty when it isn't).
+
+    The fork's installer extracts the release exactly as published, and GBDK's tarball has a single
+    top-level `gbdk/` directory — so the binaries live either at `<root>/bin` or `<root>/gbdk/bin`
+    depending on how the archive was unpacked. Both are accepted."""
+    roots: list[Path] = []
     try:
         from .. import toolchains as tc
 
-        root = Path(tc.path(TOOLCHAIN))
+        roots.append(Path(tc.path(TOOLCHAIN)))
     except Exception:
-        candidates = [Path.home() / "Library/Application Support/decompnet/toolchains" / TOOLCHAIN,
-                      Path.home() / ".local/share/decompnet/toolchains" / TOOLCHAIN]
-        root = next((c for c in candidates if c.exists()), None)
-        if root is None:
-            return None
-    exe = root / "bin" / name
-    return exe if exe.exists() else None
+        pass
+    roots += [Path.home() / "Library/Application Support/decompnet/toolchains" / TOOLCHAIN,
+              Path.home() / ".local/share/decompnet/toolchains" / TOOLCHAIN]
+    dirs: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for cand in [root] + sorted(p for p in root.iterdir() if p.is_dir()):
+            if (cand / "bin").is_dir():
+                dirs.append(cand)
+    return dirs
+
+
+def toolchain_bin(name: str) -> Path | None:
+    """A binary inside the installed GBDK toolchain, or None when the toolchain isn't installed."""
+    for d in toolchain_dirs():
+        exe = d / "bin" / name
+        if exe.exists():
+            return exe
+    return None
 
 
 def available() -> bool:
