@@ -164,3 +164,11 @@ def test_antigravity_helpers_say_when_it_isnt_connected(tmp_path, monkeypatch):
     s.runs = 1
     with pytest.raises(agents.Fatal, match="decomp connect antigravity"):
         m._run_cli(s, "tok", tmp_path)
+
+
+def test_helpers_get_the_read_diff_and_match_loop_skills_in_their_prompt():
+    from decompnet.app.agents import skill_text
+    text = skill_text("read-diff", "match-loop")
+    assert "| Marker |" in text and "Release-note words" in text
+    assert "name: read-diff" not in text and not text.startswith("---")  # front matter is not for the helper
+    assert skill_text("no-such-skill") == ""

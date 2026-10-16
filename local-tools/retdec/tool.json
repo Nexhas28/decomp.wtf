@@ -4,10 +4,16 @@
   "version": "v5.0",
   "sha256": null,
   "category": "decompiler",
-  "platforms": ["mips", "powerpc", "arm", "x86", "macos-arm64"],
-  "runs_on": "rosetta",
+  "platforms": [
+    "mips",
+    "powerpc",
+    "arm",
+    "x86",
+    "macos-arm64"
+  ],
+  "runs_on": "macos-arm64-native",
   "entry": "run",
   "test": "test.sh",
   "status": "pass",
-  "notes": "x86_64 build (commit 53e55b4b26e9b843787f0e06d867441e32b1604e, build date 2022-12-08) run under Rosetta via the run wrapper. test.sh passed on 2026-10-16 (exit 0, prints ok for mips, ppc and arm then PASS). Source archive not retained, so sha256 is null. Output is C-like first-pass code, not byte-exact."
+  "notes": "Homebrew's Apple Silicon bottle (formula retdec 5.0, native arm64: no Rosetta any more). bin/retdec-decompiler links to /opt/homebrew/bin/retdec-decompiler and the run wrapper calls it directly. The earlier x86_64 build is kept aside in bin.local-build/. test.sh passed on 2026-10-16 (ok for mips, ppc and arm, then PASS). Upstream's last release is v5.0 (2022-12-08); the repo is still active. Output is C-like first-pass code, not byte-exact."
 }

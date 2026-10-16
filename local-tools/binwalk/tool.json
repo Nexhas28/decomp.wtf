@@ -4,10 +4,13 @@
   "version": "3.1.0",
   "sha256": null,
   "category": "file-carving, firmware-analysis, decompression",
-  "platforms": ["macos-arm64", "generic"],
+  "platforms": [
+    "macos-arm64",
+    "generic"
+  ],
   "runs_on": "macos-arm64-native",
   "entry": "bin/binwalk",
   "test": "test.sh",
   "status": "pass",
-  "notes": "Installed with cargo install --locked binwalk@3.1.0 (crates.io crate; its Cargo.toml repository field is https://github.com/ReFirmLabs/binwalk). Binary is a Mach-O arm64 executable. test.sh builds a hand-made blob with gzip at 0x400, xz at 0x800 and a standalone zlib file, runs binwalk -e, and checks the signatures and extracted payloads. Passed on 2026-10-16. sha256 is null because the crate archive was not hashed; the git tag was not checked against the repo."
+  "notes": "Homebrew's Apple Silicon bottle (formula binwalk 3.1.0); bin/binwalk links to /opt/homebrew/bin/binwalk. The earlier cargo build is kept aside in bin.local-build/. test.sh builds a hand-made blob with gzip at 0x400, xz at 0x800 and a standalone zlib file, runs binwalk -e, and checks the signatures and extracted payloads. Passed on 2026-10-16 with the Homebrew build."
 }

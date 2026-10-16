@@ -27,7 +27,8 @@ from pathlib import Path
 from .. import compiler_profiles as profiles
 from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
-from ..network import Agent, Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from
+from ..network import (STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent, Network, NetworkError, _adjacent,
+                       _fragment_like, _hash_token, config_from)
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -257,6 +258,7 @@ class RomNetwork(Network):
         self._rescan_previews: dict[str, tuple[str, list, dict]] = {}
         self.rescan_busy = lambda slug: False  # server supplies its built-in agent/session guard
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
+        self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
 
     # ------------------------------------------------------------------ basics
 
@@ -1639,7 +1641,11 @@ class RomNetwork(Network):
         refused, retried = [], False
         for _ in range(ROOM_CLAIM_TRIES):
             try:
-                name = link.claim(agent, function, strategy)
+                if function is None and strategy in ("quick", "close"):
+                    # a Focus in a room: the host may not know these strategies, so pick here and ask for it by name
+                    name = self._room_focus_claim(link, agent, project, strategy)
+                else:
+                    name = link.claim(agent, function, strategy)
             except NetworkError as e:
                 held = _HOST_HOLDS.match(str(e))
                 if held is None or retried or self._holds(agent, held.group(1), project):
@@ -1676,6 +1682,24 @@ class RomNetwork(Network):
             link.call("/collab/release", agent, function=name, notes="")
         except NetworkError:
             pass  # not held there any more (or unreachable: the host's claim expires on its own)
+
+    def _room_focus_claim(self, link, agent: Agent, project: str | None, strategy: str) -> str | None:
+        """The first open function by `strategy` in this copy of the room that the host lets the agent have."""
+        proj = self._project(project)
+        cap = STRATEGY_INSNS_CAP.get(strategy, -1)
+        rows = self.store.all(
+            f"""SELECT f.name FROM functions f WHERE f.project_id=? AND f.status='open'
+                AND f.id NOT IN (SELECT function_id FROM claims WHERE agent_id<>?)
+                AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, "")}
+                ORDER BY {STRATEGIES[strategy]} LIMIT 12""", proj["id"], agent.id, cap, cap)
+        for r in rows:
+            try:
+                return link.claim(agent, r["name"], "easiest")
+            except NetworkError as e:  # someone in the room has it (this copy hadn't heard yet): the next one
+                if "isn't reachable" in str(e):
+                    raise
+                continue
+        return None
 
     def claim_many(self, agent: Agent, project: str | None, count: int, strategy: str = "easiest") -> str:
         """Several small functions at once (count 2-6): the next one by `strategy` and, when it's small, its
@@ -2420,7 +2444,7 @@ class RomNetwork(Network):
             only = agent.id in self.starred_only
             if only and function is not None and function not in names:
                 raise NetworkError(f"{function} isn't marked ★ Next in line: this helper works only on the starred ones")
-            if function is None:
+            if function is None and agent.id not in self.focus:  # a Focus picks by its own rule, stars included
                 # a starred-only helper that released a star (data, not code...) doesn't get it handed back again
                 given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id]) if only else set()
                 for name in names:

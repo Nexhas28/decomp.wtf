@@ -19,7 +19,7 @@ sources:
 mkpsxiso builds PlayStation 1 disc images from an XML project description, and dumpsxiso extracts a disc image into its files and an XML layout[^repo]. For byte-matching decompilation it covers both ends of the disc workflow: unpacking an original PS1 disc to get the assets and file layout, and rebuilding a disc around a recompiled executable so the result can be tested.
 
 ## Local install
-Path `local-tools/mkpsxiso/`, version v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214), built with CMake from the upstream tag. Entry points `local-tools/mkpsxiso/bin/mkpsxiso` and `local-tools/mkpsxiso/bin/dumpsxiso`. Runs natively on macOS arm64.
+Path `local-tools/mkpsxiso/`, version v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214), the prebuilt universal binaries from the upstream GitHub release (no build). Entry points `local-tools/mkpsxiso/bin/mkpsxiso` and `local-tools/mkpsxiso/bin/dumpsxiso`. Runs natively on macOS arm64.
 
 ## Examples
 ```bash

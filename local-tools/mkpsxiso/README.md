@@ -8,7 +8,7 @@ How to run:
 - `local-tools/mkpsxiso/bin/mkpsxiso -y disc.xml` builds `test.bin` and `test.cue` from an XML project.
 - `local-tools/mkpsxiso/bin/dumpsxiso -x outdir -s out.xml image.bin` extracts a disc image into `outdir` and writes an XML description.
 
-Install: built from the upstream git tag v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214) with CMake (Release) on macOS arm64 and copied into `bin/`. Git submodules were initialised for the build. Runs natively on macOS arm64.
+Install: the prebuilt binaries from the upstream GitHub release v2.30 (`mkpsxiso-2.30-Darwin.zip`, a universal Intel + Apple Silicon build, sha256 a64d4d57d78ce57cd810a6a044602ce3cf1b552ca7c7e8675518f554206e0b49), copied into `bin/`. No build needed; the earlier CMake build is kept aside in `bin.local-build/`.
 
 Test: `bash local-tools/mkpsxiso/test.sh` builds a small disc with a file and a subdirectory, extracts it with dumpsxiso, and compares the files byte for byte. Last run: PASS (exit 0).
 

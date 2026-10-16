@@ -20,7 +20,7 @@ RetDec decompiles compiled binaries into C-like code, with support for MIPS, Pow
 
 ## Local install
 
-Path `local-tools/retdec/`, upstream tag v5.0 (commit 53e55b4b26e9b843787f0e06d867441e32b1604e). Entry point: `local-tools/retdec/run`, which runs the x86_64 `bin/retdec-decompiler` under Rosetta 2 (`arch -x86_64`).
+Path `local-tools/retdec/`, upstream tag v5.0 (commit 53e55b4b26e9b843787f0e06d867441e32b1604e). Entry point: `local-tools/retdec/run`, which runs Homebrew's native Apple Silicon `bin/retdec-decompiler` (no Rosetta since 2026-10-16).
 
 ## Examples
 
