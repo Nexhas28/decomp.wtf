@@ -133,3 +133,23 @@ def test_a_ps2_dvd_iso_excludes_an_unrelated_elf_at_main_vram(tmp_path, monkeypa
     assert picked.data == boot
     assert [(name, addr) for name, _, addr, _ in picked.overlays] == [("game", 0x007C4880)]
 
+
+def test_a_function_reads_its_own_overlays_data():
+    """Overlays share a load address: a function's jump table must come from its own overlay, not the first one."""
+    from decompnet.app.engine import RomNetwork
+
+    vram = 0x8009FC00
+    other = b"imai\\read0.tim\0\0" + bytes(16)
+    mine = bytes(range(16)) + b"\x27\xbd\xff\xe8" * 4  # a jump table, then the function's code
+    rom = bytes(0x100) + other + mine
+    segs = [split.Segment("main", 0, 0x100, 0x80010000),
+            split.Segment("ovl_a", 0x100, 0x100 + len(other), vram),
+            split.Segment("ovl_b", 0x100 + len(other), len(rom), vram)]
+    net = RomNetwork.__new__(RomNetwork)
+    net._roms = {1: (rom, segs)}
+    proj = {"id": 1}
+    fn = {"vram": vram + 16, "target": mine[16:]}
+
+    assert net.reader(proj)(vram, 16) == other[:16]  # by address alone: the first overlay there
+    assert net.reader(proj, fn)(vram, 16) == mine[:16]
+    assert net.reader(proj, fn)(0x80010010, 4) == bytes(4)  # other segments still read

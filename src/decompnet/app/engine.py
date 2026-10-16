@@ -303,16 +303,38 @@ class RomNetwork(Network):
             self._roms[proj["id"]] = (rom, segs)
         return self._roms[proj["id"]]
 
-    def reader(self, proj):
+    def reader(self, proj, fn=None):
+        """Reads ROM bytes by load address. Overlays share load addresses, so with `fn` the segment holding that
+        function's code is tried first: its jump tables and rodata come from its own overlay, not another one."""
         rom, segs = self._rom(proj)
+        home = self._home_segment(rom, segs, fn) if fn is not None else None
+        order = [home] + [s for s in segs if s is not home] if home is not None else segs
 
         def read(addr: int, n: int) -> bytes | None:
-            for seg in segs:
+            for seg in order:
                 if seg.contains(addr, n):
                     at = seg.rom_start + addr - seg.vram
                     return rom[at:at + n]
             return None
         return read
+
+    @staticmethod
+    def _home_segment(rom: bytes, segs: list[split.Segment], fn) -> split.Segment | None:
+        """The segment whose bytes at the function's address are the function's own code."""
+        try:
+            vram, code = fn["vram"], fn["target"]
+        except (KeyError, IndexError):
+            return None
+        if vram is None or not code:
+            return None
+        hits = [s for s in segs if s.contains(vram, len(code))]
+        if len(hits) < 2:
+            return hits[0] if hits else None
+        for seg in hits:
+            at = seg.rom_start + vram - seg.vram
+            if rom[at:at + len(code)] == code:
+                return seg
+        return hits[0]
 
     def _function(self, name: str, project: str | None):
         """Functions can also be named by address (0x80001234), handy for agents reading assembly, and the way
@@ -443,7 +465,7 @@ class RomNetwork(Network):
             res = match_arm.link(obj, fn["name"], match_arm.ArmTarget(fn["name"], fn["vram"], fn["target"]),
                                  self.symbols(proj["id"]), self.reader(proj))
             return res.candidate, res.exact if res.candidate is not None else None, res.problems
-        res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"]), self.reader(proj))
+        res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"]), self.reader(proj, fn))
         return res.candidate, res.exact if res.candidate is not None else None, res.problems
 
     def _twin_lines(self, proj, fn) -> list[str]:
@@ -834,7 +856,7 @@ class RomNetwork(Network):
 
     def _jtbl_asm(self, proj, fn) -> list[str]:
         out = [".section .rodata"]
-        read = self.reader(proj)
+        read = self.reader(proj, fn)
         syms = self.symbols(proj["id"])
         for m in sorted(set(re.findall(r"jtbl_([0-9A-F]{8})", fn["asm"]))):
             addr = int(m, 16)
