@@ -153,3 +153,18 @@ def test_real_game_shapes_match_through_the_app(tmp_path, code, c_source, what):
     net.claim(agent, function=fn["name"])
     out = net.compile_and_diff(agent, fn["name"], c_source.format(n=fn["name"]))
     assert "MATCH" in out, f"{what}: {out}"
+
+
+@needs_toolchain
+def test_the_lane_enforces_the_source_policy(tmp_path):
+    """Inline assembly is a loophole on a platform where targets can be one instruction: `__asm("nop")`
+    reproduces them without any C. The Game Boy lane must apply the same source policy as every other."""
+    from decompnet.compiler import SourceRejected
+
+    for bad in ('void f(void) __naked {\n    __asm\n        nop\n    __endasm;\n}',
+                'void f(void) { __asm("nop"); }',
+                'void f(void) { __attribute__((naked)) ; }'):
+        with pytest.raises(SourceRejected):
+            gb_build.build_source(bad)
+    # and a normal C candidate still compiles
+    assert gb_build.build_source("void f(void) { }")["f"].code == b"\xc9"
