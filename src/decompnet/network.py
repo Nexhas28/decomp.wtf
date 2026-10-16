@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scheduler, scoring, snapshots
+from . import policy, scheduler, scoring, snapshots, telemetry
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
@@ -410,25 +410,27 @@ class Network:
         now = time.time()
 
         # Claim bookkeeping first: you can't score (or get credit) on someone else's function.
-        with self.store.tx() as db:
-            self._expire_claims(db)
-            claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
-            scratch = fn["status"] == "matched"
-            if not scratch:
-                if claim is None:
-                    held = db.execute("SELECT 1 FROM claims WHERE agent_id=?", (agent.id,)).fetchone()
-                    if held:
-                        raise NetworkError("you hold another claim; release it before working on a different function")
-                    db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
-                    self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
-                elif claim["agent_id"] != agent.id:
-                    raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
-                else:
-                    db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+        with telemetry.span("attempt.claim"):
+            with self.store.tx() as db:
+                self._expire_claims(db)
+                claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                scratch = fn["status"] == "matched"
+                if not scratch:
+                    if claim is None:
+                        held = db.execute("SELECT 1 FROM claims WHERE agent_id=?", (agent.id,)).fetchone()
+                        if held:
+                            raise NetworkError("you hold another claim; release it before working on a different function")
+                        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                        self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+                    elif claim["agent_id"] != agent.id:
+                        raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+                    else:
+                        db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
         snap = snapshots.capture(fn, proj, ctx)
-        result = self._compile(proj, ctx["header"], source)
+        with telemetry.span("attempt.compile", origin=agent.name):
+            result = self._compile(proj, ctx["header"], source)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
@@ -440,7 +442,8 @@ class Network:
         """Evaluate one compiled object against fn's target and record the result: the single evaluator +
         acceptance path shared by attempt() (one compile, one function) and attempt_many() (one compile,
         several functions) — plan P2.1/P2.2: the batch must not grow a second acceptance implementation."""
-        cand, verdict, problems = self._evaluate(fn, proj, result.obj)
+        with telemetry.span("attempt.evaluate"):
+            cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:
             self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
             return {"text": f"❌ Compiled, but the object has no function named `{fn['name']}`. "
@@ -449,7 +452,8 @@ class Network:
             matched_now = cand.fingerprint() == fn["fingerprint"] and not scratch
             score = 0 if matched_now else None
         else:
-            d = scoring.diff(self._target_obj(fn, proj), cand)
+            with telemetry.span("attempt.score"):
+                d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
             matched_now = d.bytes_match and not scratch
@@ -522,6 +526,7 @@ class Network:
         """Record one attempt. `stale_reason` marks the result historical: it is stored (with its snapshot)
         as search evidence but never updates best_score/status, never accepts a match and never writes a
         receipt (plan P1.4: a stale compilation cannot become a current match)."""
+        telemetry.count("attempt.record")
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         with self.store.tx() as db:
@@ -766,7 +771,8 @@ class Network:
                 return []
             res = self._compile(proj, header, "")
             return [] if res.ok else [("<header>", res.log.strip()[:300])]
-        return [b for b in self._pool.map(check, matched) if b]
+        with telemetry.span("context.regression", n=len(matched)):
+            return [b for b in self._pool.map(check, matched) if b]
 
     # ------------------------------------------------------------------ notes
 
