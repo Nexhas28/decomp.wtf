@@ -2,8 +2,10 @@
 
 A native macOS app (Swift, SwiftUI) that runs decomp.wtf in its own window: no terminal, no browser tab.
 
-It starts decomp.wtf in the background, shows the app in the window and stops it again when you quit. The screens
-inside are decomp.wtf's own, so everything the app can do works here, plus:
+It starts decomp.wtf in the background, shows the app in the window and stops it again when you quit. The sidebar
+(your projects with how much of each is matched, and the other screens) and a project's overview (matched %, functions
+matched, the autopilot with its Run/Stop button, recent activity) are native Mac screens; the rest are decomp.wtf's own
+pages, shown beside the native sidebar. Both read the same running decomp.wtf, so the numbers always agree. Plus:
 
 - **File menu:** New Project (⌘N), Open Game… (⌘O, with the Mac's file picker; the game is read where it is, so big
   discs work), Open the Demo Game, Continue a Public Decomp, Join a Team.

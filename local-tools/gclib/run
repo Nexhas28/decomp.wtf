@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Run python inside the gclib venv: ./run script.py  |  ./run -c "import gclib"
+exec "$(cd "$(dirname "$0")" && pwd)/.venv/bin/python" "$@"

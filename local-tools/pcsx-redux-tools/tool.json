@@ -1,0 +1,13 @@
+{
+  "name": "pcsx-redux-tools",
+  "repo": "https://github.com/grumpycoders/pcsx-redux",
+  "version": "e7ced7b681296ace22f7847f7bb3c9a206315571",
+  "sha256": null,
+  "category": "object-converter",
+  "platforms": ["psx"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/psyq-obj-parser",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Only the headless CLI tools psyq-obj-parser (PSY-Q LNK .OBJ -> MIPS ELF converter/dumper) and ps1-packer (PS-EXE/ELF/CPE/PSF packer and converter) are built; the full emulator was not built (needs ffmpeg, SDL3, curl, luajit and ~40 submodules). Shallow git clone of main at the pinned commit with only the fmt, ELFIO, ucl, magic_enum, iec-60908b and src/mips submodules; compiled directly with clang++ -std=c++2b -O2 (the upstream Makefile links tools with -static, which does not work on macOS). Cloned, not an archive, so sha256 is null. test.sh hand-builds a PSY-Q LNK object and a PS-EXE, converts/dumps the object to an EM_MIPS ELF and checks code bytes + symbol, then packs the PS-EXE and checks PS-X EXE/CPE output: PASS."
+}

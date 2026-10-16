@@ -1,0 +1,13 @@
+{
+  "name": "ndspy",
+  "repo": "https://github.com/RoadrunnerWMC/ndspy",
+  "version": "v4.2.0",
+  "sha256": null,
+  "category": "nds-python-library",
+  "platforms": ["nds"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python library installed from PyPI ndspy 4.2.0 into .venv/ (Python 3.12, uv). Matches upstream tag v4.2.0 (commit c5016497a540144a201b46186f984e6ffc2d1a74). The wheel's sha256 was not recorded, so sha256 is null and the PyPI-to-tag match is unverified. test.sh builds a tiny synthetic DS ROM, reloads and patches it, and round-trips LZ10 and NARC; it passed on 2026-10-16. Upstream is GPL-3.0."
+}

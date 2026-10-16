@@ -1,0 +1,769 @@
+{
+  "tools": [
+    {
+      "name": "armips",
+      "repo": "https://github.com/Kingcom/armips",
+      "version": "62adab4ef30da765f5cf22a451eb08a59c54dc8b",
+      "sha256": null,
+      "category": "assembler",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/armips",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from git clone (commit 62adab4, plus ext/filesystem submodule 3f1c185) with CMake Release in scratchpad; only the armips binary copied to bin/ (sha256 cc2af5ae8dc4562550839af22d51dc78cb0b692f3352276d9d2200f943fb4c4e). Binary reports v0.11.0. test.sh assembles a tiny MIPS routine for N64 (.n64, big-endian) and PSX (.psx, little-endian) and compares exact bytes. MIT licence.",
+      "folder": "armips"
+    },
+    {
+      "name": "asm-differ",
+      "repo": "https://github.com/simonlindholm/asm-differ",
+      "version": "0dd09af8f8008f1f880327cf0aca3b26d2562ea2",
+      "sha256": null,
+      "category": "assembly-differ",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python package installed from git commit into .venv (uv, Python 3.12). test.sh uses the decomp.wtf binutils-mips cache (mips-ps2-decompals-as) to build two MIPS objects and checks the diff score and identical-object case. Unlicense.",
+      "folder": "asm-differ"
+    },
+    {
+      "name": "asm-processor",
+      "repo": "https://github.com/simonlindholm/asm-processor",
+      "version": "1.0.1",
+      "sha256": null,
+      "category": "compiler-wrapper",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/asm-processor",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Rust binary built natively from the 1.0.1 tag (commit 52d6454e9d2ac8ed30fe523c0b58647d65d6199a) with cargo install --locked; binary sha256 a7915b88a4abbe9279a6a3b5af4b743698509d8e4e5a4f4fb64bb56b1d10d9fe. Source was git-cloned, so sha256 of an archive is null. test.sh needs an IDO cc (under ~/Decomp/tools/vendor/compilers) and a MIPS assembler (decompnet binutils-mips cache or mips-linux-gnu-as), both outside this folder. Passed 2026-10-16.",
+      "folder": "asm-processor"
+    },
+    {
+      "name": "binwalk",
+      "repo": "https://github.com/ReFirmLabs/binwalk",
+      "version": "3.1.0",
+      "sha256": null,
+      "category": "file-carving, firmware-analysis, decompression",
+      "platforms": [
+        "macos-arm64",
+        "generic"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/binwalk",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Installed with cargo install --locked binwalk@3.1.0 (crates.io crate; its Cargo.toml repository field is https://github.com/ReFirmLabs/binwalk). Binary is a Mach-O arm64 executable. test.sh builds a hand-made blob with gzip at 0x400, xz at 0x800 and a standalone zlib file, runs binwalk -e, and checks the signatures and extracted payloads. Passed on 2026-10-16. sha256 is null because the crate archive was not hashed; the git tag was not checked against the repo.",
+      "folder": "binwalk"
+    },
+    {
+      "name": "ccc",
+      "repo": "https://github.com/chaoticgd/ccc",
+      "version": "v2.1",
+      "sha256": null,
+      "category": "ps2-symbols",
+      "platforms": [
+        "ps2",
+        "mips"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/stdump",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Prebuilt arm64 binaries stdump, objdump, demangle, uncc. test.sh passes (ccc: PASS, exit 0). Build source commit not recorded; version is latest tag v2.1 at check time.",
+      "folder": "ccc"
+    },
+    {
+      "name": "crunch64",
+      "repo": "https://github.com/decompals/crunch64",
+      "version": "0.6.2",
+      "sha256": null,
+      "category": "compression",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/crunch64",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from git tag 0.6.2 (commit 35bb166ae26ee5143af7a62844aa084d4ecf33ce) with cargo install --locked into local-tools/crunch64 (rustc 1.98.1, aarch64-apple-darwin). No archive download, so sha256 is null. test.sh round-trips a generated file through yay0, yaz0 and mio0, checks gzip (raw deflate) with python zlib, checks format magic bytes and that yaz0 compresses. Passed on 2026-10-16.",
+      "folder": "crunch64"
+    },
+    {
+      "name": "decomp-permuter",
+      "repo": "https://github.com/simonlindholm/decomp-permuter",
+      "version": "8556c81d80d1c1af98a858c8f4dc951357f29139",
+      "sha256": null,
+      "category": "matching-search",
+      "platforms": [
+        "macos-arm64",
+        "any-target-via-compiler"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python source copy of upstream main at commit 8556c81d (2026-10-06); no release tags exist upstream. Copied files checked against that commit: src/main.py, src/compiler.py, src/objdump.py, src/permuter.py, src/scorer.py, permuter.py. Smoke test builds a tiny MIPS function with the IDO 7.1 compiler from ~/Decomp/tools/vendor and runs the permuter in --debug and --stop-on-zero modes. Test depends on that IDO compiler and on the MIPS binutils in ~/Library/Application Support/decompnet/toolchains/binutils-mips. The app folder also carries prebuilt Windows/Linux systray binaries from upstream that are unused on macOS.",
+      "folder": "decomp-permuter"
+    },
+    {
+      "name": "ds-rom",
+      "repo": "https://github.com/AetiasHax/ds-rom",
+      "version": "v0.8.0",
+      "sha256": null,
+      "category": "nds-rom-extract-build",
+      "platforms": [
+        "nds"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/dsrom",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built with cargo (ds-rom-cli 0.8.0, rustc 1.98.1, aarch64-apple-darwin) from a source snapshot in scratchpad; snapshot has no .git so the commit is unverified. Upstream latest release v0.8.0 (2026-07-21, MIT). test.sh needs the sibling local-tools/ndstool/bin/ndstool and arm-none-eabi-gcc; it builds a tiny synthetic DS ROM, then runs dump, extract, build, extract, build and checks the round trip is byte-identical. The bundled fixtures/logogen.rs is a small generator for the synthetic header logo.",
+      "folder": "ds-rom"
+    },
+    {
+      "name": "findcode",
+      "repo": "https://github.com/decompals/findcode",
+      "version": "07472cd381e5e3029c33838c45e763cf76b697a6",
+      "sha256": null,
+      "category": "rom-analysis",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/findcode",
+      "test": "test.sh",
+      "status": "fail",
+      "notes": "Build fails on macOS arm64 with Apple clang 21: pinned fmt (74c51ff) and fmt 11.0.2 both hit consteval errors. Upstream Makefile mkdir call also needs MKDIR=\"mkdir -p\" MKDIR_OPTS= on macOS. No binary installed. test.sh exits 1 because bin/findcode is missing.",
+      "folder": "findcode"
+    },
+    {
+      "name": "gba-ghidra-loader",
+      "repo": "https://github.com/pudii/gba-ghidra-loader",
+      "version": "1.1.0 (commit 9bfb2d1fe891aa78bab7093a328feb3a52318ab7, patched for Ghidra 12.1.4)",
+      "sha256": "cb20b0c08f736b67fde98d0d2e42b606e573da3649fa5fc8bab8a4ff3acb7c18",
+      "category": "ghidra-extension",
+      "platforms": [
+        "gba"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261016_gba-ghidra-loader.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "sha256 is of the locally built extension zip (built from the repo with ghidra-12.1-build-fix.patch). Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched.",
+      "folder": "gba-ghidra-loader"
+    },
+    {
+      "name": "gbadisasm",
+      "repo": "https://github.com/jiangzhengwenjz/gbadisasm",
+      "version": "940def2c91d678ee671716b8b44a2223c0ff2c62",
+      "sha256": null,
+      "category": "disassembler",
+      "platforms": [
+        "gba"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/gbadisasm",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from source at pinned commit with make (bundled Capstone 3.0.5-rc2, ARM only). Binary sha256 59243b0f3d8b4ac48d9fa2325565257082fb1d9dcf2557501fac22a1535221b7. test.sh assembles a tiny ARM+Thumb ROM with arm-none-eabi-as/ld/objcopy (Homebrew), runs gbadisasm with a config, and greps output for thumb_func_start, muls, svc #3 and the literal-pool ldr. Passed on 2026-10-16. Repo has no license file and no release tags; version is a commit.",
+      "folder": "gbadisasm"
+    },
+    {
+      "name": "gclib",
+      "repo": "https://github.com/LagoLunatic/gclib",
+      "version": "4e06db0004df411f1c806ad39b0e9a18ac4a1de5",
+      "sha256": null,
+      "category": "gamecube-file-formats",
+      "platforms": [
+        "gamecube"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python library (v1.0.0) installed in .venv from a pinned git commit; no CLI, use via ./run script.py. Smoke test: Yaz0 round trip plus RARC build/save/re-read/extract. Optional PyFastBTI/PyFastTextureUtils speedups not installed.",
+      "folder": "gclib"
+    },
+    {
+      "name": "gfxdis",
+      "repo": "https://github.com/glankk/libgfxd",
+      "version": "gfxdis-0.7 (self-reported by binary; no tag or commit verified)",
+      "sha256": null,
+      "category": "disassembler",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/gfxdis.f3dex2",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Binaries bin/gfxdis.f3d, .f3db, .f3dex, .f3dex2, .f3dexb (Mach-O arm64) were left by an earlier partial attempt. Upstream glankk/gfxdis returns 404 on GitHub. glankk/libgfxd (MIT, pushed 2026-09-09, head 49ec1bb) is a display list library with no gfxdis CLI directory at its root and no tags, so the exact source for these binaries is unverified. test.sh passes on them in this run. Rebuild from a pinned source is still needed for provenance.",
+      "folder": "gfxdis"
+    },
+    {
+      "name": "ghidra-delinker",
+      "repo": "https://github.com/boricj/ghidra-delinker-extension",
+      "version": "v0.9.2 (commit b3890c4443e4ab802c26b66d84821d3ac9362c18, Ghidra 12.1.4 build)",
+      "sha256": "44c569cbaa8f35faccba3e5c632ae6202420a36082352638f48f0dfa37ad5765",
+      "category": "ghidra-extension",
+      "platforms": [
+        "x86",
+        "x86_64",
+        "mips"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20260926_ghidra-delinker-extension.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Prebuilt release zip for Ghidra 12.1.4. test.sh installs it into a throwaway user.home, imports a self-built x86-64 ELF, runs the bundled headless DelinkProgram.java script (exporter 'ELF relocatable object') and checks foo.o has U bar/U counter symbols and R_X86_64_PC32 relocations. Needs JDK 21, clang, lld@21, llvm@21 from Homebrew. Real Ghidra install untouched.",
+      "folder": "ghidra-delinker"
+    },
+    {
+      "name": "ghidra-emotionengine",
+      "repo": "https://github.com/chaoticgd/ghidra-emotionengine-reloaded",
+      "version": "v2.1.38 (commit fcc5deac45d8f5c27c632bfe0db928630939676e), release build for Ghidra 12.1.4",
+      "sha256": "e389ff3e921d9f7d4db2ece9906f808545ce4ff519d9e25a019b72ea509f240b",
+      "category": "ghidra-extension",
+      "platforms": [
+        "ps2"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261004_ghidra-emotionengine-reloaded.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Official GitHub release zip (unmodified). Needs Java 21 and Ghidra 12.1.4; test.sh installs it into a throwaway user.home so the real Ghidra install is untouched. The bundled stdump helper binaries are x86_64 only (not used by the test).",
+      "folder": "ghidra-emotionengine"
+    },
+    {
+      "name": "ghidra-gamecube-loader",
+      "repo": "https://github.com/Cuyler36/Ghidra-GameCube-Loader",
+      "version": "1.3.1 (commit 921504c9ddba6e8d9b3655b665a60f1a33306220, Ghidra 12.1 build)",
+      "sha256": "9892f28fc1e7f19bb3fcec7cfb4ad2ab7504503b571d93de8b142a6f7bec8ed0",
+      "category": "ghidra-extension",
+      "platforms": [
+        "gamecube",
+        "wii"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "GameCubeLoader-1.3.0-921504c-Ghidra_12.1.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "sha256 is of the prebuilt release asset zip (asset name says 1.3.0, release tag is 1.3.1). Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched. Headless imports need -loader-autoloadMaps false when no .map sits next to the DOL (otherwise a GUI dialog throws HeadlessException).",
+      "folder": "ghidra-gamecube-loader"
+    },
+    {
+      "name": "ghidra-n64-loader",
+      "repo": "https://github.com/zeroKilo/N64LoaderWV",
+      "version": "12.1.3 (commit 2bd537627513f0dd32678207c8dd3278016d6003, rebuilt for Ghidra 12.1.4)",
+      "sha256": "1641191b9a5f1a357df017fbac4e3aec21a124ee37a2e79a6c4c5c1007de8e91",
+      "category": "ghidra-extension",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261016_N64LoaderWV.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "sha256 is of the locally built extension zip (unmodified source, gradle buildExtension against Ghidra 12.1.4). Upstream release 12.1.3 zip was built for 12.1.3 and was not used. Repo has no license file. Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched.",
+      "folder": "ghidra-n64-loader"
+    },
+    {
+      "name": "ghidra-nds-loader",
+      "repo": "https://github.com/pedro-javierf/NTRGhidra",
+      "version": "v1.5.1 (commit 9e0674c0b36ef9b816dbe7833a68b17327edc1b9, patched for headless use, built for Ghidra 12.1.4)",
+      "sha256": "fff003c977599d5ffdf09c5f68fdcbfaf1a1d00d8a73b7c29044db6b77bb6ffe",
+      "category": "ghidra-extension",
+      "platforms": [
+        "nds"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261016_NTRGhidra.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "sha256 is of the locally built extension zip (built from the repo with ntrghidra-headless-prompts.patch, which only skips the loader's GUI dialogs under analyzeHeadless). Upstream README claims support up to Ghidra 12.0.4 but it compiles and loads on 12.1.4 unchanged. Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched. Only the ARM9 homebrew path is smoke-tested.",
+      "folder": "ghidra-nds-loader"
+    },
+    {
+      "name": "ghidra-psx-ldr",
+      "repo": "https://github.com/lab313ru/ghidra_psx_ldr",
+      "version": "2026.10.03",
+      "sha256": "32abacd90a5950b97a0756f67e991c3cc0f8a62edd5531890d91af68a9916255",
+      "category": "ghidra-extension",
+      "platforms": [
+        "psx"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261004_ghidra_psx_ldr.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "sha256 is of the prebuilt release asset for Ghidra 12.1.4. Needs Java 21 and Ghidra 12.1.4. test.sh installs it into a throwaway user.home and imports a hand-made PS-X EXE with analyzeHeadless (-loader PsxLoader; the display name 'PSX Executables Loader' is rejected by -loader).",
+      "folder": "ghidra-psx-ldr"
+    },
+    {
+      "name": "ghidraboy",
+      "repo": "https://github.com/Gekkio/GhidraBoy",
+      "version": "20250830 (upstream release, GhidraBoy-1.7.1) + local port to Ghidra 12.1.4 (ghidra-12.1-port.patch)",
+      "sha256": "dc012b0067b7586cbe2275db2197adb93450826fa706717646cd6d9900fc4342",
+      "category": "ghidra-extension",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "ghidra_12.1.4_PUBLIC_20261016_GhidraBoy.zip",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Game Boy (SM83) Ghidra loader and language. Upstream is archived and lists only Ghidra 11.x; the zip here is ported to Ghidra 12.1.4. test.sh unpacks it into a throwaway Ghidra user dir, imports an rgbds-built ROM with analyzeHeadless and GameBoyLoader, and checks the SM83 language, rom block and decoded instructions. Passes. Requires Java 21 and rgbds.",
+      "folder": "ghidraboy"
+    },
+    {
+      "name": "ghidriff",
+      "repo": "https://github.com/clearbluejar/ghidriff",
+      "version": "v1.0.0",
+      "sha256": "32ad28c1b567ceef30b866eebecb1ce1c3703939648a9d0a6105554ac90914c2",
+      "category": "binary-diffing",
+      "platforms": [
+        "x86",
+        "x86_64",
+        "arm",
+        "mips",
+        "ppc"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/ghidriff",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "PyPI wheel ghidriff-1.0.0-py3-none-any.whl (sha256 given) installed into .venv with pyghidra 3.1.0. Wrapper bin/ghidriff sets JAVA_HOME (JDK 21) and GHIDRA_INSTALL_DIR (Ghidra 12.1.4, read-only use). test.sh builds two self-made x86-64 ELFs where only foo() changes, diffs them headless and checks the JSON lists foo as modified and not bar. Needs clang, lld@21 and llvm@21 from Homebrew. Platforms are whatever Ghidra can analyze; only x86-64 was tested.",
+      "folder": "ghidriff"
+    },
+    {
+      "name": "ido-static-recomp",
+      "repo": "https://github.com/decompals/ido-static-recomp",
+      "version": "d5aec59932034b8a20f23f471297a55c45dcbc45",
+      "sha256": null,
+      "category": "static-recompiler",
+      "platforms": [
+        "n64",
+        "irix"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/recomp",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Recompiler only (no IDO binaries). Built from git clone at d5aec59 (v1.2-17) with make setup RELEASE=1 using bundled rabbitizer; bin/recomp sha256 112fb97d56720680ea170e2f33cf33db76abef53e7b549529046e874b601007a. runtime/ holds header.h, helpers.h, libc_impl.c/.h, version_info.c needed to compile recomp output. test.sh needs Homebrew llvm@21 and lld@21: it links a tiny self-written IRIX-shaped MIPS ELF, patches dynsym/GOT layout like IRIX ld, recompiles to C, builds natively and checks exit code 42. recomp rejects .symtab-only (static) ELFs; input must have .dynsym/.dynamic/.got/.reginfo and load high enough for libc_impl's MEM_REGION_START (0xfb00000) assert: text at 0x400100 aborted, 0x10000100 worked. No LICENSE file at repo root and GitHub reports no license (bundled tools/rabbitizer is MIT). The full git clone also fetched the repo's proprietary IRIX binaries under ido/ (32M); they were never used and the whole scratch clone was deleted after copying bin/ and runtime/.",
+      "folder": "ido-static-recomp"
+    },
+    {
+      "name": "keystone",
+      "repo": "https://github.com/keystone-engine/keystone",
+      "version": "0.9.2",
+      "sha256": "2f7af62dab0ce6c2732dbb4f31cfa2184a8a149e280b96b92ebc0db84c6e50f5",
+      "category": "assembler",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "nds",
+        "gba",
+        "arm",
+        "mips",
+        "ppc"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Keystone 0.9.2 (tag commit dc7932ef2b2c4a793836caec6ecab485005139d6). Installed as the keystone-engine PyPI sdist in .venv/ (sha256 is of the sdist, re-downloaded from files.pythonhosted.org and matched to the PyPI digest). bin/kstool and lib/libkeystone.0.dylib are the CLI and library for macOS arm64. test.sh passes: MIPS big-endian, Thumb, ARM and PPC bytes checked through kstool, plus the Python binding.",
+      "folder": "keystone"
+    },
+    {
+      "name": "mapfile-parser",
+      "repo": "https://github.com/ethteck/mapfile_parser",
+      "version": "2.9.0",
+      "sha256": null,
+      "category": "linker-map-parser",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "nds",
+        "gba"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python package with Rust (pyo3/maturin) core, installed from source checkout at commit dd01f8c1cb3250c715d0b7f4f93076531c28dc00 (tag 2.9.0) into .venv via uv. No archive downloaded, so sha256 is null. test.sh parses a tiny GNU ld map through the Python API and the jsonify CLI; passes on macOS arm64 with Python 3.12.",
+      "folder": "mapfile-parser"
+    },
+    {
+      "name": "mgba",
+      "repo": "https://github.com/mgba-emu/mgba",
+      "version": "143adf5 (upstream dev build, reports 0.11-1-143adf5; latest tag 0.10.5)",
+      "sha256": null,
+      "category": "emulator-debugger",
+      "platforms": [
+        "gba"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/mgba-headless",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Prebuilt arm64 binaries bin/mgba (GUI) and bin/mgba-headless (CLI). Headless run stops at SWI 3 and returns r0 as exit code; CLI debugger test sets a breakpoint, checks r0 and disassembly. The test builds its own tiny GBA ROM with arm-none-eabi-as/ld (Homebrew). Binary sha256: mgba a 95d6ba7c050dd1e11eabb0c8d88d4bd5fa8382291aefd2721407de73c3d76b34, mgba-headless a3ce0612ba64cbc846a8ec3498c19fe54debef277c41a0299e60355769b610d3. No build log or scratchpad build dir was present, so the link from these binaries to commit 143adf5 is by embedded version string only.",
+      "folder": "mgba"
+    },
+    {
+      "name": "mkpsxiso",
+      "repo": "https://github.com/Lameguy64/mkpsxiso",
+      "version": "v2.30",
+      "sha256": null,
+      "category": "disc-image",
+      "platforms": [
+        "psx"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/mkpsxiso",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Contains mkpsxiso and dumpsxiso (both in bin/), built from tag v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214) with CMake Release on macOS arm64. Source was cloned, not downloaded as an archive, so sha256 is null. test.sh builds a small BIN from an XML project, extracts it with dumpsxiso and compares files byte for byte: PASS.",
+      "folder": "mkpsxiso"
+    },
+    {
+      "name": "mwccgap",
+      "repo": "https://github.com/mkst/mwccgap",
+      "version": "147598b36b198f267e80adbe04dd5804d070dbb3",
+      "sha256": null,
+      "category": "global-asm-processor",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Pure-Python (stdlib) source copy in src/. The real MWCC compiler is proprietary and not included; test.sh drives the full INCLUDE_ASM transplant pipeline with fake-mwcc.py (own stand-in compiler emitting a MWCC-shaped little-endian MIPS ELF) and the decomp.wtf binutils-mips assembler (or MIPS_AS / mips-linux-gnu-as), checks the disassembly, the missing-.s error path and the 16 upstream unit tests. Not tested against real MWCC output. License: see src/LICENSE.",
+      "folder": "mwccgap"
+    },
+    {
+      "name": "n64recomp",
+      "repo": "https://github.com/N64Recomp/N64Recomp",
+      "version": "ffb39cdad1da5de07eaaa48bd1db4a89a7986771",
+      "sha256": null,
+      "category": "recompiler",
+      "platforms": [
+        "n64",
+        "rsp"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/N64Recomp",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Builds two CLIs from the repo: bin/N64Recomp (N64 MIPS ELF to C) and bin/RSPRecomp (RSP microcode to C). Built with CMake from a git clone at the pinned commit (no archive, so sha256 is null). test.sh generates a tiny big-endian MIPS ELF and a tiny RSP blob and checks the emitted C for both tools; PASS. Test inputs are self-made; no game data.",
+      "folder": "n64recomp"
+    },
+    {
+      "name": "n64sym",
+      "repo": "https://github.com/shygoo/n64sym",
+      "version": "ccf4600f3389f1a84bde23339225cf372fdf7712",
+      "sha256": null,
+      "category": "symbol-identification",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/n64sym",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from a fresh git clone (master, commit ccf4600, last pushed 2023-03-27; latest tag v0.9a) in the scratchpad. Upstream Makefile does not link on macOS: builtin signature asm symbol needs a leading underscore, -static flag fails, and miniz is already included by n64sym.cpp. Built manually with those fixes; bin/ holds only n64sym (sha256 f597e7e9e134c3b683ce9e2afc21ebd0b7a6fa6bba48adbd3b1c82e8a41e4169) and n64sig (sha256 61952439e0906ebcc293fb8b571c6759e1cc907082ea46b5ba52c1c5ca8b137f). MIT licence.",
+      "folder": "n64sym"
+    },
+    {
+      "name": "ndspy",
+      "repo": "https://github.com/RoadrunnerWMC/ndspy",
+      "version": "v4.2.0",
+      "sha256": null,
+      "category": "nds-python-library",
+      "platforms": [
+        "nds"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python library installed from PyPI ndspy 4.2.0 into .venv/ (Python 3.12, uv). Matches upstream tag v4.2.0 (commit c5016497a540144a201b46186f984e6ffc2d1a74). The wheel's sha256 was not recorded, so sha256 is null and the PyPI-to-tag match is unverified. test.sh builds a tiny synthetic DS ROM, reloads and patches it, and round-trips LZ10 and NARC; it passed on 2026-10-16. Upstream is GPL-3.0.",
+      "folder": "ndspy"
+    },
+    {
+      "name": "ndstool",
+      "repo": "https://github.com/devkitPro/ndstool",
+      "version": "76e8b681bb225d945a48852821e03114e6c7ce1c",
+      "sha256": null,
+      "category": "rom-packer",
+      "platforms": [
+        "nds"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/ndstool",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Release 2.3.1 built from upstream source at the pinned commit with clang++ (no archive download, so sha256 is null). Smoke test: test.sh packs tiny ARM9/ARM7 blobs plus a NitroFS file into a .nds, checks the header info, extracts and cmp-checks the binaries and the file. Needs arm-none-eabi-gcc (Homebrew) for the test inputs. Passed 2026-10-16.",
+      "folder": "ndstool"
+    },
+    {
+      "name": "nodtool",
+      "repo": "https://github.com/encounter/nod",
+      "version": "v2.0.0-alpha.12",
+      "sha256": null,
+      "category": "disc-image-extract-convert",
+      "platforms": [
+        "gamecube",
+        "wii"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/nodtool",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Mach-O arm64 binary; `nodtool -V` reports 2.0.0-alpha.12 commit ebd80cac99b48a323200d84365e07a58cc27412d, which matches the upstream tag v2.0.0-alpha.12 (published 2026-09-16, Apache-2.0). The build command and source archive were not recorded, so sha256 is null. test.sh builds a synthetic GCM image in a mktemp dir and checks info, extract (file bytes and main.dol bytes), convert to RVZ and back (cmp identical). Last run: PASS, exit 0.",
+      "folder": "nodtool"
+    },
+    {
+      "name": "pcsx-redux-tools",
+      "repo": "https://github.com/grumpycoders/pcsx-redux",
+      "version": "e7ced7b681296ace22f7847f7bb3c9a206315571",
+      "sha256": null,
+      "category": "object-converter",
+      "platforms": [
+        "psx"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/psyq-obj-parser",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Only the headless CLI tools psyq-obj-parser (PSY-Q LNK .OBJ -> MIPS ELF converter/dumper) and ps1-packer (PS-EXE/ELF/CPE/PSF packer and converter) are built; the full emulator was not built (needs ffmpeg, SDL3, curl, luajit and ~40 submodules). Shallow git clone of main at the pinned commit with only the fmt, ELFIO, ucl, magic_enum, iec-60908b and src/mips submodules; compiled directly with clang++ -std=c++2b -O2 (the upstream Makefile links tools with -static, which does not work on macOS). Cloned, not an archive, so sha256 is null. test.sh hand-builds a PSY-Q LNK object and a PS-EXE, converts/dumps the object to an EM_MIPS ELF and checks code bytes + symbol, then packs the PS-EXE and checks PS-X EXE/CPE output: PASS.",
+      "folder": "pcsx-redux-tools"
+    },
+    {
+      "name": "pigment64",
+      "repo": "https://github.com/decompals/pigment64",
+      "version": "0.6.3 (commit 0fa6b5cf41bb8ec0cf6b82687076931a2e5552c5)",
+      "sha256": null,
+      "category": "texture-converter",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/pigment64",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built with cargo build --release --locked from the 0.6.3 git tag (rustc 1.98.1, aarch64-apple-darwin) in a scratchpad build dir; bin/pigment64 is that build. Upstream MIT licence. test.sh makes a 4x2 RGBA PNG with pure Python, converts it to N64 RGBA16 and checks the exact bytes, converts back to PNG and to bin again (round trip), and checks an I8 output size. Folder also holds .crates.toml and .crates2.json from an earlier cargo install from crates.io 0.6.3; these are leftover cargo metadata and do not affect the binary.",
+      "folder": "pigment64"
+    },
+    {
+      "name": "pret-gba-tools",
+      "repo": "https://github.com/pret/pokeemerald",
+      "version": "731ad5bfd6e6f265508d0efcca0ba42f9dcf5881",
+      "sha256": null,
+      "category": "asset-converter",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/gbagfx",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Tools built from the tools/ folder of pret/pokeemerald commit 731ad5b (extracted via git archive into a fresh scratch dir, clang, flags from pret build logs). Binaries in bin/: bin2c, gbafix, gbagfx, jsonproc, mapjson, mid2agb, preproc, ramscrgen, rsfont, scaninc, wav2agb. test.sh exercises gbagfx (PNG and LZ77 round trip), preproc (charmap .string), scaninc (transitive includes) and gbafix (ROM header patch). Passed on 2026-10-16. Licence file is in the pinned tools/ folder (not read).",
+      "folder": "pret-gba-tools"
+    },
+    {
+      "name": "pygfxd",
+      "repo": "https://github.com/ethteck/pygfxd",
+      "version": "fd11c99",
+      "sha256": null,
+      "category": "disassembler",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python ctypes bindings for libgfxd (N64 F3D/F3DEX2 display-list disassembler). Built from the git clone at commit fd11c99 (no release tags; last upstream push 2024-01-13). Upstream Makefile fails to link on macOS (GNU -Wl,--whole-archive flags); libgfxd.so was linked manually with -Wl,-all_load. Smoke test passes on a hand-made two-command display list.",
+      "folder": "pygfxd"
+    },
+    {
+      "name": "pypcode",
+      "repo": "https://github.com/angr/pypcode",
+      "version": "v4.0.1",
+      "sha256": null,
+      "category": "disassembler",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "nds",
+        "gba"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": ".venv/bin/python",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python bindings to Ghidra SLEIGH (disassembly and P-code lifting) for MIPS BE, ARM and PowerPC BE. Installed from PyPI pypcode 4.0.1 into .venv via uv (no archive hash recorded, so sha256 is null). test.sh passed 2026-10-16 on macOS arm64 with the venv interpreter (python 3.12).",
+      "folder": "pypcode"
+    },
+    {
+      "name": "radare2",
+      "repo": "https://github.com/radareorg/radare2",
+      "version": "6.2.4",
+      "sha256": null,
+      "category": "disassembler-framework",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "wii",
+        "nds",
+        "gba",
+        "gameboy"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/radare2",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "radare2 6.2.4 built natively for darwin-arm64 into local-tools/radare2 (bin, lib, share, include). test.sh passed on 2026-10-16 (9 checks: rasm2 MIPS/Thumb/PPC/SM83 disassembly, rasm2 MIPS and ARM assembly, radare2 ESIL emulation, and aaa/pdf on a self-built Thumb object when arm-none-eabi-gcc is present). The archive was not kept, so sha256 is null. The release tag 6.2.4 was confirmed on GitHub with gh. Binaries reference lib/ by absolute path inside this project.",
+      "folder": "radare2"
+    },
+    {
+      "name": "retdec",
+      "repo": "https://github.com/avast/retdec",
+      "version": "v5.0",
+      "sha256": null,
+      "category": "decompiler",
+      "platforms": [
+        "mips",
+        "powerpc",
+        "arm",
+        "x86",
+        "macos-arm64"
+      ],
+      "runs_on": "rosetta",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "x86_64 build (commit 53e55b4b26e9b843787f0e06d867441e32b1604e, build date 2022-12-08) run under Rosetta via the run wrapper. test.sh passed on 2026-10-16 (exit 0, prints ok for mips, ppc and arm then PASS). Source archive not retained, so sha256 is null. Output is C-like first-pass code, not byte-exact.",
+      "folder": "retdec"
+    },
+    {
+      "name": "rizin",
+      "repo": "https://github.com/rizinorg/rizin",
+      "version": "v0.9.1",
+      "sha256": null,
+      "category": "disassembler",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "wii",
+        "gba",
+        "nds",
+        "gameboy"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/rizin",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built locally for macOS arm64 (rizin 0.9.1). Source clone not kept; tag v0.9.1 is commit c3a90e9226d977f58f4e9c75f78fa6b07afe13c7 on GitHub, build commit not independently confirmed. test.sh passed (8 checks) on 2026-10-16. Depends on arm-none-eabi-gcc for one check (skipped if absent).",
+      "folder": "rizin"
+    },
+    {
+      "name": "rz-ghidra",
+      "repo": "https://github.com/rizinorg/rz-ghidra",
+      "version": "unrecorded build (plugins built against rizin 0.9.1); upstream latest release v0.9.0, default branch dev head 0f4e062 (2026-10-12)",
+      "sha256": null,
+      "category": "ghidra-decompiler-plugin",
+      "platforms": [
+        "n64",
+        "psx",
+        "ps2",
+        "gamecube",
+        "nds",
+        "gba",
+        "arm",
+        "mips",
+        "ppc"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "run",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built plugins are present in plugins/ but the exact source commit used was not recorded, so version is unverified. The run wrapper depends on the sibling folder ../rizin (rizin 0.9.1) and the dylibs have absolute paths to it. test.sh needs clang/lld (/opt/homebrew/opt/llvm) and arm-none-eabi-gcc; passes on this machine. lib/pkgconfig/rz_ghidra.pc has a malformed Libs path (double slash) and is not used by the test.",
+      "folder": "rz-ghidra"
+    },
+    {
+      "name": "slinky",
+      "repo": "https://github.com/decompals/slinky",
+      "version": "0.6.0",
+      "sha256": null,
+      "category": "linker-script-generator",
+      "platforms": [
+        "n64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/slinky-cli",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from source at tag 0.6.0 (commit d01d5c1) with cargo install --locked --path slinky-cli --root local-tools/slinky. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure.",
+      "folder": "slinky"
+    },
+    {
+      "name": "torch",
+      "repo": "https://github.com/HarbourMasters/Torch",
+      "version": "v1.0.0",
+      "sha256": null,
+      "category": "asset-extractor",
+      "platforms": [
+        "macos-arm64",
+        "linux",
+        "windows"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": "bin/torch",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Built from source at tag v1.0.0 (commit bb39229) with CMake 4.4.2 and Apple clang 21, with -DCMAKE_POLICY_VERSION_MINIMUM=3.5, -DFMT_CONSTEVAL= for bundled fmt, and a compiler wrapper adding -Wno-parentheses -Wno-chained-comparison (upstream src/audio/AudioManager.cpp uses chained comparisons that Apple clang 21 rejects). Those flags are not in the repo; the binary in bin/ is the result. The test uses only self-made inputs (a text folder and a 64 KB fake ROM). Verified 2026-10-16.",
+      "folder": "torch"
+    },
+    {
+      "name": "unicorn",
+      "repo": "https://github.com/unicorn-engine/unicorn",
+      "version": "2.1.4",
+      "sha256": null,
+      "category": "emulator",
+      "platforms": [
+        "macos-arm64"
+      ],
+      "runs_on": "macos-arm64-native",
+      "entry": ".venv/bin/python",
+      "test": "test.sh",
+      "status": "pass",
+      "notes": "Python bindings (unicorn 2.1.4 from PyPI) installed into a uv venv at .venv/. Upstream tag 2.1.4 targets commit 1730bd8d4ce6dbca658637f4b7dec81a7eff3a12. Smoke test emulates MIPS32 BE, ARM Thumb and PPC32 BE snippets and checks result registers. Test run 2026-10-16T12:04:53Z.",
+      "folder": "unicorn"
+    }
+  ]
+}

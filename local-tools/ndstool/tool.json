@@ -1,0 +1,13 @@
+{
+  "name": "ndstool",
+  "repo": "https://github.com/devkitPro/ndstool",
+  "version": "76e8b681bb225d945a48852821e03114e6c7ce1c",
+  "sha256": null,
+  "category": "rom-packer",
+  "platforms": ["nds"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/ndstool",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Release 2.3.1 built from upstream source at the pinned commit with clang++ (no archive download, so sha256 is null). Smoke test: test.sh packs tiny ARM9/ARM7 blobs plus a NitroFS file into a .nds, checks the header info, extracts and cmp-checks the binaries and the file. Needs arm-none-eabi-gcc (Homebrew) for the test inputs. Passed 2026-10-16."
+}

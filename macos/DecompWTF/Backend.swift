@@ -20,6 +20,8 @@ final class Backend: ObservableObject {
     @Published private(set) var docker: DockerState = .unknown
     @Published private(set) var logTail = ""
     @Published private(set) var startedAt: Date?
+    /// The running server's API, for the native screens.
+    @Published private(set) var api: DecompAPI?
 
     private var process: Process?
     private var server: (port: Int, secret: String)?
@@ -136,6 +138,7 @@ final class Backend: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.searchPath
         env["PYTHONUNBUFFERED"] = "1"
+        // decomp.wtf finds the reverse-engineering tools (local-tools/) itself; DECOMP_LOCAL_TOOLS, when set, passes through.
         proc.environment = env
         proc.standardOutput = log
         proc.standardError = log
@@ -209,6 +212,7 @@ final class Backend: ObservableObject {
     }
 
     private func setRunning(_ s: (port: Int, secret: String)) {
+        api = DecompAPI(port: s.port, secret: s.secret)
         phase = .running(Self.openURL(s))
         watch(generation, s)
     }

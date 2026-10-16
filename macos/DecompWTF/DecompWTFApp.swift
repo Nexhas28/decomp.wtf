@@ -7,13 +7,15 @@ struct DecompWTFApp: App {
     @StateObject private var backend = Backend()
     @StateObject private var web = WebController()
     @StateObject private var updater = Updater()
+    @StateObject private var projects = Projects()
 
     var body: some Scene {
         Window("decomp.wtf", id: "main") {
             ContentView()
                 .environmentObject(backend)
                 .environmentObject(web)
-                .frame(minWidth: 900, minHeight: 600)
+                .environmentObject(projects)
+                .frame(minWidth: 1000, minHeight: 600)
                 .onAppear {
                     delegate.backend = backend
                     if backend.phase == .checking {
@@ -29,6 +31,10 @@ struct DecompWTFApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var backend: Backend?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { Appearance.apply(Appearance.saved) }
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
@@ -60,7 +66,7 @@ struct AppCommands: Commands {
             Button("Open the Demo Game") { web.openDemo() }
             Divider()
             Button("Continue a Public Decomp…") { web.go("#/catalog") }
-            Button("Join a Team…") { web.run("document.getElementById('navJoin')?.click();") }
+            Button("Join a Team…") { web.joinTeam() }
         }
         CommandGroup(after: .sidebar) {
             Button("Back") { web.goBack() }
@@ -70,12 +76,19 @@ struct AppCommands: Commands {
             Button("Reload Page") { web.reload() }
                 .keyboardShortcut("r")
             Divider()
+            Menu("Appearance") {
+                Button("System") { web.setTheme("") }
+                Button("Light") { web.setTheme("light") }
+                Button("Dark") { web.setTheme("dark") }
+            }
+            Divider()
         }
         CommandMenu("Tools") {
             Button("Agents & Models") { web.go("#/agents") }
             Button("Compilers & Tools") { web.go("#/tools") }
             Button("Settings") { web.go("#/settings") }
                 .keyboardShortcut(",")
+            Button("Anthropic API Key…") { web.openAPIKeySetting() }
             Divider()
             Button("Show Projects Folder in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([Backend.home])

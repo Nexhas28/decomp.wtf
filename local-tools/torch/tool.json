@@ -1,0 +1,13 @@
+{
+  "name": "torch",
+  "repo": "https://github.com/HarbourMasters/Torch",
+  "version": "v1.0.0",
+  "sha256": null,
+  "category": "asset-extractor",
+  "platforms": ["macos-arm64", "linux", "windows"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/torch",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from source at tag v1.0.0 (commit bb39229) with CMake 4.4.2 and Apple clang 21, with -DCMAKE_POLICY_VERSION_MINIMUM=3.5, -DFMT_CONSTEVAL= for bundled fmt, and a compiler wrapper adding -Wno-parentheses -Wno-chained-comparison (upstream src/audio/AudioManager.cpp uses chained comparisons that Apple clang 21 rejects). Those flags are not in the repo; the binary in bin/ is the result. The test uses only self-made inputs (a text folder and a 64 KB fake ROM). Verified 2026-10-16."
+}

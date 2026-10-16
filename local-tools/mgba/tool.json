@@ -1,0 +1,13 @@
+{
+  "name": "mgba",
+  "repo": "https://github.com/mgba-emu/mgba",
+  "version": "143adf5 (upstream dev build, reports 0.11-1-143adf5; latest tag 0.10.5)",
+  "sha256": null,
+  "category": "emulator-debugger",
+  "platforms": ["gba"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/mgba-headless",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Prebuilt arm64 binaries bin/mgba (GUI) and bin/mgba-headless (CLI). Headless run stops at SWI 3 and returns r0 as exit code; CLI debugger test sets a breakpoint, checks r0 and disassembly. The test builds its own tiny GBA ROM with arm-none-eabi-as/ld (Homebrew). Binary sha256: mgba a 95d6ba7c050dd1e11eabb0c8d88d4bd5fa8382291aefd2721407de73c3d76b34, mgba-headless a3ce0612ba64cbc846a8ec3498c19fe54debef277c41a0299e60355769b610d3. No build log or scratchpad build dir was present, so the link from these binaries to commit 143adf5 is by embedded version string only."
+}

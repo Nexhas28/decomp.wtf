@@ -33,7 +33,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from .. import __version__, hostenv, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
-from . import agents, chat, collab, connect, tools, updates
+from . import agents, chat, collab, connect, localtools, tools, updates
 from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
@@ -407,7 +407,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"version": __version__, "build": build_id, "install": updates.installed(), **hostenv.info(),
                 "platform": toolchains.current_platform(), "home": hostenv.shown_path(home.parent),
                 "log_file": hostenv.shown_path(home / "logs" / "decomp.log"),
-                "projects": projects, "toolchains": tcs, "agents": agents.detect(),
+                "projects": projects, "toolchains": tcs, "local_tools": localtools.summary(), "agents": agents.detect(),
                 "api_presets": agents.API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
                 "platform_status": PLATFORM_STATUS,
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
@@ -828,6 +828,18 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         tid, accept = str(data.get("id", "")), bool(data.get("accept_license"))
         return JSONResponse({"job": jobs.start("toolchain", lambda log: (toolchains.install(tid, accept_license=accept, log=log)
                                                                          and {"id": tid}))})
+
+    @mcp.custom_route("/api/localtools/test", methods=["POST"])
+    async def api_localtools_test(request: Request) -> Response:
+        """A local tool's own smoke test (local-tools/<tool>/test.sh): does it work on this computer?"""
+        if (bad := guard(request, write=True)):
+            return bad
+        name = str((await body(request)).get("tool", ""))
+        try:
+            ok, log = await call(localtools.test, name)
+        except NetworkError as e:
+            return fail(e)
+        return JSONResponse({"ok": ok, "log": log})
 
     @mcp.custom_route("/api/agents/install", methods=["POST"])
     async def api_agent_install(request: Request) -> Response:

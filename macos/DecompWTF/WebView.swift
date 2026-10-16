@@ -34,6 +34,45 @@ final class WebController: ObservableObject {
         """)
     }
 
+    /// The page's "Join a team" dialog (its own nav button, hidden in the app), opened from the home screen so it
+    /// isn't behind the native overview.
+    func joinTeam() {
+        run("""
+        location.hash = "#/";
+        setTimeout(() => document.getElementById("navJoin")?.click(), 200);
+        """)
+    }
+
+    /// The page's agent launcher (its Start agents button), on the project's Agents tab.
+    func startAgents(_ slug: String) {
+        run("""
+        location.hash = \(Self.literal("#/p/\(slug)/agents"));
+        setTimeout(() => document.getElementById("phStart")?.click(), 400);
+        """)
+    }
+
+    /// The page's own appearance setting (System, Light or Dark); the page tells the app back, and the window follows.
+    func setTheme(_ theme: String) {
+        Appearance.apply(theme)
+        run("if (typeof setTheme === 'function') setTheme(\(Self.literal(theme)));")
+    }
+
+    /// One function's page (code, diff, attempts), as clicking its square on the page's map opens it.
+    func openFunction(_ slug: String, _ name: String) {
+        run("""
+        location.hash = \(Self.literal("#/p/\(slug)/functions"));
+        setTimeout(() => { if (typeof openFn === "function") openFn(\(Self.literal(name))); }, 400);
+        """)
+    }
+
+    /// Settings, with the Anthropic API key box ready to paste into.
+    func openAPIKeySetting() {
+        run("""
+        location.hash = "#/settings";
+        setTimeout(() => { const f = document.getElementById("anthropicKeySet"); if (f) { f.scrollIntoView({block: "center"}); f.focus(); } }, 500);
+        """)
+    }
+
     func openDemo() {
         run("""
         location.hash = "#/";
@@ -51,8 +90,9 @@ struct WebView: NSViewRepresentable {
     let url: URL
     let controller: WebController
     var onQuit: () -> Void = {}
+    var onRoute: (String) -> Void = { _ in }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onQuit: onQuit) }
+    func makeCoordinator() -> Coordinator { Coordinator(onQuit: onQuit, onRoute: onRoute) }
 
     /// Tells the app when the page's own Quit button has stopped decomp.wtf, so the window closes with it.
     private static let quitHook = """
@@ -67,12 +107,75 @@ struct WebView: NSViewRepresentable {
     })();
     """
 
+    /// Tells the app where the page is (its #/ route), so the native sidebar and overview follow it.
+    private static let routeHook = """
+    (() => {
+      const tell = () => window.webkit.messageHandlers.decompRoute.postMessage(location.hash || "#/");
+      window.addEventListener("hashchange", tell);
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", tell); else tell();
+    })();
+    """
+
+    /// The app draws its own sidebar: hide the page's (and its narrow-window menu bar), so there's only one.
+    /// Through element styles: the page's CSP blocks an added <style>.
+    private static let hideNav = """
+    (() => {
+      const hide = (el) => el && el.style.setProperty("display", "none", "important");
+      hide(document.getElementById("nav"));
+      hide(document.getElementById("navShade"));
+      document.querySelectorAll(".mbar").forEach(hide);
+      const app = document.querySelector(".app");
+      if (app) app.style.setProperty("grid-template-columns", "minmax(0, 1fr)", "important");
+    })();
+    """
+
+    /// Tells the app the page's appearance choice ("", "light" or "dark") now and whenever it changes.
+    private static let themeHook = """
+    (() => {
+      const root = document.documentElement;
+      const tell = () => window.webkit.messageHandlers.decompTheme.postMessage(root.dataset.theme || "");
+      new MutationObserver(tell).observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+      tell();
+    })();
+    """
+
+    /// The page keeps its Light/Dark choice per address, and decomp.wtf's port can change between launches, so the
+    /// app remembers it and hands it to the page before the page reads it.
+    private static func themeSeed() -> String {
+        """
+        (() => {
+          try {
+            const t = \(WebController.literal(Appearance.saved));
+            if (t) localStorage.setItem("decomp-wtf-theme", t); else localStorage.removeItem("decomp-wtf-theme");
+          } catch (e) {}
+        })();
+        """
+    }
+
+    @MainActor
+    static func installScripts(_ ucc: WKUserContentController) {
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(WKUserScript(source: themeSeed(), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: MacSkin.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: quitHook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: routeHook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: hideNav, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        ucc.addUserScript(WKUserScript(source: themeHook, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
-        config.userContentController.addUserScript(
-            WKUserScript(source: Self.quitHook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        Self.installScripts(config.userContentController)
         config.userContentController.add(context.coordinator, name: "decompQuit")
+        config.userContentController.add(context.coordinator, name: "decompRoute")
+        config.userContentController.add(context.coordinator, name: "decompTheme")
+        // A new appearance choice: the next page load starts with it too.
+        context.coordinator.themeObserver = NotificationCenter.default.addObserver(
+            forName: Appearance.changed, object: nil, queue: .main
+        ) { [weak ucc = config.userContentController] _ in
+            if let ucc { MainActor.assumeIsolated { Self.installScripts(ucc) } }
+        }
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         let view = WKWebView(frame: .zero, configuration: config)
         view.uiDelegate = context.coordinator
@@ -97,11 +200,22 @@ struct WebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         var loaded: URL?
         let onQuit: () -> Void
+        let onRoute: (String) -> Void
+        var themeObserver: NSObjectProtocol?
 
-        init(onQuit: @escaping () -> Void) { self.onQuit = onQuit }
+        deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
+
+        init(onQuit: @escaping () -> Void, onRoute: @escaping (String) -> Void) {
+            self.onQuit = onQuit
+            self.onRoute = onRoute
+        }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "decompQuit" { onQuit() }
+            if message.name == "decompRoute", let hash = message.body as? String { onRoute(hash) }
+            if message.name == "decompTheme", let theme = message.body as? String {
+                MainActor.assumeIsolated { Appearance.apply(theme) }
+            }
         }
 
         private static func isLocal(_ url: URL?) -> Bool {

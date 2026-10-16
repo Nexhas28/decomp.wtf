@@ -7,24 +7,38 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0B015859D9A229CBC3E018B9 /* Appearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F7D4DF01B12A2774932BC86 /* Appearance.swift */; };
+		29A4609BDA4D4736BB9DAFE4 /* Projects.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48820D615F3928438CA870EC /* Projects.swift */; };
 		32634909F7B7B2D6251F9867 /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD25FF4D125FB727855C6AD0 /* Updater.swift */; };
 		4B31F641C817689BFF2C573B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16EBE31B220CC54BAC9A3DB8 /* ContentView.swift */; };
+		4FD72E33E23FE1F7327A7D75 /* NativeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3FDEEE44323427126ECEC7B /* NativeViews.swift */; };
 		77AAEC6DA060A157584B08E3 /* Backend.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC10EA0D615D4460238C3A88 /* Backend.swift */; };
+		91EEE84AB0E8471DDD9A267F /* API.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B3B045F39CA966175AD7F12 /* API.swift */; };
+		96A4F609453434A2E55B3C78 /* MacSkin.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA14ACA1C785D74F2CE208FE /* MacSkin.swift */; };
+		A7CDF86706098F3ECE87424D /* FunctionMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 373D8F05FC8B6596684CE4DD /* FunctionMap.swift */; };
 		C0CA835B8764C06A81060805 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F68C2226496E6F9DA21F4A01 /* WebView.swift */; };
 		E7D9A068D1D3C0D3DA34B86A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E79CEEEC355ECE1B059336B1 /* Assets.xcassets */; };
 		EF10B5839CFFD454EE06C811 /* DecompWTFApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3D952781223173D9B7ECEFE /* DecompWTFApp.swift */; };
+		EF9BE11034E3CBD6DDF4FC81 /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		16EBE31B220CC54BAC9A3DB8 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		370FD69C84D613FACEDC2100 /* DecompWTF.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DecompWTF.entitlements; sourceTree = "<group>"; };
+		373D8F05FC8B6596684CE4DD /* FunctionMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FunctionMap.swift; sourceTree = "<group>"; };
 		3B5A0B83DE406535F3455711 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3F7D4DF01B12A2774932BC86 /* Appearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Appearance.swift; sourceTree = "<group>"; };
+		48820D615F3928438CA870EC /* Projects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Projects.swift; sourceTree = "<group>"; };
+		7B3B045F39CA966175AD7F12 /* API.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = API.swift; sourceTree = "<group>"; };
 		A3D952781223173D9B7ECEFE /* DecompWTFApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecompWTFApp.swift; sourceTree = "<group>"; };
 		AD25FF4D125FB727855C6AD0 /* Updater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Updater.swift; sourceTree = "<group>"; };
 		CC10EA0D615D4460238C3A88 /* Backend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Backend.swift; sourceTree = "<group>"; };
 		DA348D9C1728F1FDC87D98A3 /* DecompWTF.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DecompWTF.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E3FDEEE44323427126ECEC7B /* NativeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViews.swift; sourceTree = "<group>"; };
 		E79CEEEC355ECE1B059336B1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EA14ACA1C785D74F2CE208FE /* MacSkin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSkin.swift; sourceTree = "<group>"; };
 		F68C2226496E6F9DA21F4A01 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
+		FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -47,12 +61,19 @@
 		88A8F0A5961D7D136F530AE1 /* DecompWTF */ = {
 			isa = PBXGroup;
 			children = (
+				7B3B045F39CA966175AD7F12 /* API.swift */,
+				3F7D4DF01B12A2774932BC86 /* Appearance.swift */,
 				E79CEEEC355ECE1B059336B1 /* Assets.xcassets */,
 				CC10EA0D615D4460238C3A88 /* Backend.swift */,
 				16EBE31B220CC54BAC9A3DB8 /* ContentView.swift */,
 				370FD69C84D613FACEDC2100 /* DecompWTF.entitlements */,
 				A3D952781223173D9B7ECEFE /* DecompWTFApp.swift */,
+				373D8F05FC8B6596684CE4DD /* FunctionMap.swift */,
+				FFEF2216CD1F4A5CFFE0A6AA /* Glass.swift */,
 				3B5A0B83DE406535F3455711 /* Info.plist */,
+				EA14ACA1C785D74F2CE208FE /* MacSkin.swift */,
+				E3FDEEE44323427126ECEC7B /* NativeViews.swift */,
+				48820D615F3928438CA870EC /* Projects.swift */,
 				AD25FF4D125FB727855C6AD0 /* Updater.swift */,
 				F68C2226496E6F9DA21F4A01 /* WebView.swift */,
 			);
@@ -129,9 +150,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				91EEE84AB0E8471DDD9A267F /* API.swift in Sources */,
+				0B015859D9A229CBC3E018B9 /* Appearance.swift in Sources */,
 				77AAEC6DA060A157584B08E3 /* Backend.swift in Sources */,
 				4B31F641C817689BFF2C573B /* ContentView.swift in Sources */,
 				EF10B5839CFFD454EE06C811 /* DecompWTFApp.swift in Sources */,
+				A7CDF86706098F3ECE87424D /* FunctionMap.swift in Sources */,
+				EF9BE11034E3CBD6DDF4FC81 /* Glass.swift in Sources */,
+				96A4F609453434A2E55B3C78 /* MacSkin.swift in Sources */,
+				4FD72E33E23FE1F7327A7D75 /* NativeViews.swift in Sources */,
+				29A4609BDA4D4736BB9DAFE4 /* Projects.swift in Sources */,
 				32634909F7B7B2D6251F9867 /* Updater.swift in Sources */,
 				C0CA835B8764C06A81060805 /* WebView.swift in Sources */,
 			);

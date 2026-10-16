@@ -507,6 +507,7 @@ a.ghost, a.primary { text-decoration: none; }
 .cat-card h4 { margin: 0; font-size: 15.5px; letter-spacing: -.01em; line-height: 1.25; overflow-wrap: anywhere; }
 .cat-card .meta { font: 11.5px/1.45 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .cat-card .meta b { color: var(--ink); font-weight: 600; }
+.lt-head { margin-top: 36px; }
 .tool-card.ok { border-color: color-mix(in srgb, var(--match) 25%, var(--line)); }
 .tc-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tc-top b { font-size: 14.5px; margin-right: auto; }

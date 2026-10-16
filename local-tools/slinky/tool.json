@@ -1,0 +1,13 @@
+{
+  "name": "slinky",
+  "repo": "https://github.com/decompals/slinky",
+  "version": "0.6.0",
+  "sha256": null,
+  "category": "linker-script-generator",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/slinky-cli",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from source at tag 0.6.0 (commit d01d5c1) with cargo install --locked --path slinky-cli --root local-tools/slinky. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure."
+}

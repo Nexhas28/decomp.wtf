@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-nds-loader",
+  "repo": "https://github.com/pedro-javierf/NTRGhidra",
+  "version": "v1.5.1 (commit 9e0674c0b36ef9b816dbe7833a68b17327edc1b9, patched for headless use, built for Ghidra 12.1.4)",
+  "sha256": "fff003c977599d5ffdf09c5f68fdcbfaf1a1d00d8a73b7c29044db6b77bb6ffe",
+  "category": "ghidra-extension",
+  "platforms": ["nds"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261016_NTRGhidra.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "sha256 is of the locally built extension zip (built from the repo with ntrghidra-headless-prompts.patch, which only skips the loader's GUI dialogs under analyzeHeadless). Upstream README claims support up to Ghidra 12.0.4 but it compiles and loads on 12.1.4 unchanged. Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched. Only the ARM9 homebrew path is smoke-tested."
+}

@@ -1,0 +1,13 @@
+{
+  "name": "n64sym",
+  "repo": "https://github.com/shygoo/n64sym",
+  "version": "ccf4600f3389f1a84bde23339225cf372fdf7712",
+  "sha256": null,
+  "category": "symbol-identification",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/n64sym",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from a fresh git clone (master, commit ccf4600, last pushed 2023-03-27; latest tag v0.9a) in the scratchpad. Upstream Makefile does not link on macOS: builtin signature asm symbol needs a leading underscore, -static flag fails, and miniz is already included by n64sym.cpp. Built manually with those fixes; bin/ holds only n64sym (sha256 f597e7e9e134c3b683ce9e2afc21ebd0b7a6fa6bba48adbd3b1c82e8a41e4169) and n64sig (sha256 61952439e0906ebcc293fb8b571c6759e1cc907082ea46b5ba52c1c5ca8b137f). MIT licence."
+}
