@@ -88,18 +88,18 @@ def test_propose_merge_validates_and_records(net, alice):
         db.execute("UPDATE functions SET vram=0x80001000, rom_offset=0x10, size=16 WHERE id=1")
         db.execute("UPDATE functions SET vram=0x80001010, rom_offset=0x20, size=16 WHERE id=2")
         db.execute("UPDATE functions SET vram=0x80001020, rom_offset=0x30, size=16 WHERE id=3")
-        db.execute("UPDATE functions SET asm='sb $s2, 0x10($a0)' WHERE id=1")  # fragment shape
+        db.execute("UPDATE functions SET asm='sb $s2, 0x10($a0)' WHERE id=3")  # the tail fragment
         db.execute("UPDATE functions SET asm='addiu $sp, $sp, -0x20' WHERE id=2")  # real prologue
-    out = net.propose_merge("func_001", "func_002")
+    out = net.propose_merge("func_003", "func_002")  # the fragment is the tail (same direction as merge)
     assert "Merge proposed" in out
     row = net.store.one("SELECT * FROM merge_proposals")
     assert row is not None and row["continues_id"] == 2
-    brief = net.get_function("func_001")
+    brief = net.get_function("func_003")
     assert "Boundary merge proposals" in brief and "continues func_002" in brief
     with pytest.raises(NetworkError, match="not adjacent"):
-        net.propose_merge("func_001", "func_003")
+        net.propose_merge("func_003", "func_001")  # skips func_002
     with pytest.raises(NetworkError, match="doesn't look like a fragment"):
-        net.propose_merge("func_002", "func_003")
+        net.propose_merge("func_002", "func_001")  # adjacent, but func_002 has a prologue
 
 
 def test_legacy_best_marked_unverified_and_revalidated(net, alice, monkeypatch):
