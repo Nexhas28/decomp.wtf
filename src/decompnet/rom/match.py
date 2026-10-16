@@ -216,6 +216,16 @@ class _Linker:
                          f"func_80001234), or give that address this name first with rename_symbol.")
         return addr
 
+    #: How far (in bytes) a reference to the candidate's own data may sit from the ROM's to be placed by it
+    NEAR = 16
+
+    def nearby(self, off: int, rtype: int) -> int | None:
+        """The address of the ROM's closest reference of the same kind within NEAR bytes of `off` (the earlier one
+        on a tie), for a candidate whose code reaches its own data a few instructions earlier or later."""
+        hits = sorted((abs(o - off), o, addr) for o, (t, addr) in self.target_at.items()
+                      if t == rtype and o != off and abs(o - off) <= self.NEAR)
+        return hits[0][2] if hits else None
+
     def address(self, raw: list[dict], k: int, fn_shndx: int, fn_start: int) -> int | None:
         r = raw[k]
         if r["type"] == R_MIPS_GPREL16:
@@ -249,11 +259,22 @@ class _Linker:
             addr = base + named[1]
         else:
             want = self.target_at.get(r["off"])
-            if want is None or want[0] != r["type"]:
+            placed = self.local_map.get((shndx, off))
+            near = None if placed is not None or (want and want[0] == r["type"]) else self.nearby(r["off"], r["type"])
+            if want is not None and want[0] == r["type"]:
+                addr = want[1]
+            elif placed is not None:
+                # the other half of a %hi/%lo pair whose first half is already placed (a jump table built as
+                # lui/addiu while the ROM folds the %lo into the load): the instructions differ and the diff shows
+                # it, but the table is the ROM's and its contents are still checked
+                addr = placed
+            elif near is not None:
+                # scheduled an instruction or two away from the ROM's: the same reference, placed the same way
+                addr = near
+            else:
                 label = f"{named[0]}+0x{named[1]:X}" if named else f"{self.elf.get_section(shndx).name}+0x{off:X}"
                 self.problem(f"your code refers to {label} where the ROM's code has no address")
                 return None
-            addr = want[1]
             prev = self.local_map.setdefault((shndx, off), addr)
             if prev != addr:
                 self.problem(f"{self.elf.get_section(shndx).name}+0x{off:X} is used for two different ROM addresses")

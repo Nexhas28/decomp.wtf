@@ -410,7 +410,7 @@ def test_a_match_the_host_rejects_stays_open(judged):
     guest, link, agent, answer, asked = judged
     res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
     assert not res["matched"] and res["score"] == 230 and "host scored 230" in res["text"]
-    assert "decomp-assembler" in res["text"] and asked == [("shop_open", "void shop_open(void) {} /* MATCHES */")]
+    assert "decomp-*" in res["text"] and asked == [("shop_open", "void shop_open(void) {} /* MATCHES */")]
     fn = _fn(guest)
     assert fn["status"] == "open" and fn["matched_source"] is None and fn["best_score"] == 230
     assert "MATCHES" in fn["best_source"]
@@ -436,18 +436,38 @@ def test_an_unreachable_host_saves_no_match(judged):
     assert fn["status"] == "open" and fn["best_score"] is None  # nothing pretends to be a 0
 
 
-def test_sources_with_compiler_comments_are_judged_by_the_host(judged):
+def test_sources_with_compiler_comments_only_the_host_defines_are_judged_by_the_host(judged):
     guest, link, agent, answer, asked = judged
-    src = "/* decomp-assembler: maspsx-2.79-div */\nvoid shop_open(void) {}"
+    src = "/* decomp-assembler: maspsx-2.79-ladefer */\nvoid shop_open(void) {}"
     answer["host"] = {"score": 12, "matched": False}
     res = guest.attempt(agent, "shop_open", src, "test")
-    assert res["score"] == 12 and not res["matched"] and "only the host applies" in res["text"]
+    assert res["score"] == 12 and not res["matched"] and "only the host defines" in res["text"]
+    assert "This copy's diff (score 40 here)" in res["text"]  # the host sends a score only: the diff is this copy's
     assert _fn(guest)["best_score"] == 12 and _last_attempt(guest) == 12  # the host's score, everywhere
     answer["host"] = {"score": 0, "matched": True}  # this copy can't match it, the host can
     res = guest.attempt(agent, "shop_open", src + " ", "test")
     assert res["matched"] and _fn(guest)["status"] == "matched" and _fn(guest)["matched_source"] == src + " "
     plain = guest.attempt(agent, "func_80010000", "void func_80010000(void) {}", "test")  # no comments: not asked
     assert plain["score"] == 40 and [f for f, _ in asked] == ["shop_open", "shop_open"]
+
+
+def test_sources_with_compiler_comments_this_copy_applies_are_judged_here(judged):
+    guest, link, agent, answer, asked = judged
+    src = "/* decomp-assembler: maspsx-2.79-div */ /* decomp-cflags: -fforce-addr */\nvoid shop_open(void) {}"
+    res = guest.attempt(agent, "shop_open", src, "test")
+    assert res["score"] == 40 and asked == []  # judged here like any source; exact results still go to the host
+
+
+def test_a_host_match_of_a_function_cut_another_size_isnt_one_here(judged):
+    """The host merged a false split (its function is 92 bytes, this copy's 4): its match is of other code."""
+    guest, link, agent, answer, asked = judged
+    answer["host"] = {"score": 0, "matched": True, "size": 92}
+    res = guest.attempt(agent, "shop_open", "/* decomp-cflags: -fno-foo */ void shop_open(void) {}", "test")
+    assert not res["matched"] and "host's function is 92 bytes" in res["text"]
+    assert _fn(guest)["status"] == "open"
+    answer["host"] = {"score": 0, "matched": True, "size": _fn(guest)["size"]}
+    res = guest.attempt(agent, "shop_open", "/* decomp-cflags: -fno-foo */ void shop_open(void) {} ", "test")
+    assert res["matched"] and _fn(guest)["status"] == "matched"
 
 
 def test_the_first_sync_reopens_matches_the_host_never_confirmed(pair):
@@ -579,6 +599,39 @@ def test_a_host_match_this_copy_cant_rebuild_still_counts(pair):
     assert _fn(guest)["status"] == "open"  # the other overlay at that address is untouched
     guest.apply_remote_match("test", 0x80100000, "int x;", "bea.claude-1", "ovl_other_func_80100000")
     assert _fn(guest)["status"] == "open"  # unknown name, ambiguous address: never guessed
+
+
+def test_a_host_match_of_a_function_cut_another_size_is_not_taken(pair):
+    host, guest, link, client, code = pair
+    size = _fn(guest)["size"]
+    guest.apply_remote_match("test", 0, "int merged;", "bea.claude-1", "shop_open", size=size + 88)
+    fn = _fn(guest)
+    assert fn["status"] == "open" and fn["meta"] is None  # not a host-only match: the host's function is other code
+    guest.apply_remote_match("test", 0, "int merged;", "bea.claude-1", "shop_open", size=size)
+    assert _fn(guest)["status"] == "matched"
+
+
+def test_the_room_state_carries_each_matchs_size(pair):
+    host, guest, link, client, code = pair
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched', matched_source='int a;', size=92 WHERE name='shop_open'")
+    taken = []
+    guest.apply_remote_match = lambda slug, vram, src, agent, name=None, size=None: taken.append((name, size))
+    link.sync()
+    assert ("shop_open", 92) in taken
+
+
+def test_the_first_sync_reopens_host_only_matches_of_another_cut(pair):
+    host, guest, link, client, code = pair
+    remote = guest._remote_agent("bea.claude-1")
+    with guest.store.tx() as db:  # an older copy took the host's match of its merged function by name
+        db.execute("UPDATE functions SET status='matched', matched_source='int m;', matched_agent_id=?, size=4, "
+                   "meta=? WHERE name='shop_open'", (remote, json.dumps({"host_only": "x", "keep": 1})))
+    with host.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched', matched_source='int m;', size=92 WHERE name='shop_open'")
+    link.sync()
+    fn = _fn(guest)
+    assert fn["status"] == "open" and fn["best_source"] == "int m;" and json.loads(fn["meta"]) == {"keep": 1}
 
 
 def test_the_first_sync_reopens_room_matches_the_room_doesnt_have(pair):

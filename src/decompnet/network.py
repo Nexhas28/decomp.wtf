@@ -19,11 +19,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import linkblock, policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
-from .compiler import compile_source
+from . import directives, linkblock, policy, retrieval, scheduler, scoring, snapshots, telemetry, toolchains, validity
+from .compiler import CompileResult, compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .compiler_profiles import effective_compiler
-from .project import compiler_config, maspsx_variant_config, variant_compiler_config
+from .project import compiler_config, maspsx_config, maspsx_variant_config, variant_compiler_config
 from .store import Store
 
 CLAIM_TTL = 30 * 60
@@ -629,9 +629,55 @@ class Network:
         """Compile with the project's compiler for `fn` (the default, or the profile its function, segment or
         address selects, see compiler_profiles); without `fn`, the default compiler. Arch-specific lanes
         override this (Game Boy: see app.engine.RomNetwork._compile)."""
+        try:
+            cc = self._compiler_for(proj, source, fn)
+        except toolchains.ToolchainError as e:
+            return CompileResult(False, None, f"this source's decomp-* compiler comments need a tool this copy "
+                                              f"can't run: {e}")
+        return compile_source(cc, header, source)
+
+    @staticmethod
+    def _same_platform_compilers(toolchain: str | None) -> frozenset[str]:
+        """Registry compilers a `decomp-compiler` comment may switch to: the same platform and CPU as `toolchain`."""
+        try:
+            here = toolchains.get(toolchain) if toolchain else None
+        except toolchains.ToolchainError:
+            here = None
+        if here is None or not here.platform:
+            return frozenset()
+        return frozenset(t.id for t in toolchains.registry().values()
+                         if t.kind == "compiler" and t.platform == here.platform and t.arch == here.arch)
+
+    def _directives(self, proj, source: str, fn=None) -> directives.Directives:
+        cfg = json.loads(proj["config"])
+        toolchain = effective_compiler(cfg, fn).get("toolchain") if cfg.get("compiler") else None
+        return directives.parse(source, self._same_platform_compilers(toolchain))
+
+    def _compiler_for(self, proj, source: str, fn=None):
+        """The compile `source` asks for: the project's compiler for `fn` (see compiler_profiles), then the
+        source's own decomp-compiler / decomp-cflags / decomp-assembler comments (see directives)."""
         root = Path(proj["root"])
         cfg = json.loads(proj["config"])
-        return compile_source(compiler_config(root, {**cfg, "compiler": effective_compiler(cfg, fn)}), header, source)
+        compiler = effective_compiler(cfg, fn)
+        d = self._directives(proj, source, fn)
+        if d.compiler and d.compiler != compiler.get("toolchain"):
+            flags = compiler.get("flags")
+            compiler = {k: v for k, v in compiler.items() if k not in ("cmd", "profile", "flags")}
+            compiler["toolchain"] = d.compiler
+            if flags is not None:  # the project's flags (-O2 -G8) are the game's, whichever compiler builds it
+                compiler["flags"] = flags
+        if d.cflags:
+            compiler = {**compiler, "flags": [*compiler.get("flags", toolchains.get(compiler["toolchain"]).flags
+                                                               if "toolchain" in compiler else []), *d.cflags]}
+        full = {**cfg, "compiler": compiler}
+        if d.assembler == "gnu-modern":
+            cc = variant_compiler_config(root, full)
+            if cc is None:
+                raise toolchains.ToolchainError("the modern MIPS binutils aren't installed")
+            return cc
+        if d.assembler and directives.ASSEMBLERS[d.assembler] is not None:
+            return maspsx_config(root, full, directives.ASSEMBLERS[d.assembler])
+        return compiler_config(root, full)
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
@@ -709,7 +755,11 @@ class Network:
 
     def _variant_attempt(self, fn, proj, source: str, ctx, base_diff):
         """Compile `source` with each variant; return the best strictly-better (result, cand, verdict,
-        problems, diff), or None. `base_diff` None means the base compile itself failed."""
+        problems, diff), or None. `base_diff` None means the base compile itself failed. A source whose decomp-*
+        compiler comments this copy applies has chosen its build: it is judged as written, never through a variant
+        (with only comments this copy can't apply, it is built as if it had none, variants included)."""
+        if self._directives(proj, source, fn).applied:
+            return None
         best = None
         for vcfg in self._variant_configs(proj):
             vres = compile_source(vcfg, ctx["header"], source)
@@ -1199,7 +1249,10 @@ class Network:
             # so the reply, the attempt and the best agree; the function stays open and the claim is kept
             self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False, compiled=True,
                          snapshot=snap)
-            return {"text": judged["text"], "score": judged["score"], "matched": False}
+            text = judged["text"]
+            if not self._hash_only(fn) and not d.bytes_match:  # the host sends a score only: show this copy's diff
+                text += f"\n\nThis copy's diff (score {d.score} here):\n{d.render()}"
+            return {"text": text, "score": judged["score"], "matched": False}
         if judged is not None and not matched_now:
             # ...or it matched a source this copy can't build the same way (decomp-* compiler comments)
             refused = self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, snapshot=snap,
