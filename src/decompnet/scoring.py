@@ -70,6 +70,8 @@ _CS = {
     ("ppc", True): (capstone.CS_ARCH_PPC, capstone.CS_MODE_32 | capstone.CS_MODE_BIG_ENDIAN),
     ("arm", False): (capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM),
     ("thumb", False): (capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB),
+    # Sharp LR35902: capstone has no back end for it, so the fork decodes it itself (rom/sm83.py)
+    ("sm83", False): ("sm83", 0),
 }
 
 _REG = re.compile(
@@ -83,7 +85,7 @@ _TOKEN = re.compile(r"[\w.$<>+@-]+|\S")
 
 # Versioned preparation components (P3.1 cache key; S-06).
 NORMALISATION_POLICY = "normalise-v1"  # reloc symbolization rules below
-DECODER_VERSION = f"capstone-{capstone.__version__}"
+DECODER_VERSION = f"capstone-{capstone.__version__}+sm83-1"  # + the fork's own SM83 decoder
 ALIGNMENT_VERSION = "sequence-v1"  # baseline SequenceMatcher alignment (S-07 gate)
 SUMMARY_SCHEMA_VERSION = 1  # P3.4 structured mismatch summary
 _PREPARE_CACHE_LIMIT = 512
@@ -116,7 +118,10 @@ def percent_text(p: float | None) -> str:
 _decoder_local = threading.local()
 
 
-def _decoder(arch: int, mode: int) -> capstone.Cs:
+def _decoder(arch, mode):
+    if arch == "sm83":  # our own decoder, capstone-shaped (see rom/sm83.py)
+        from .rom import sm83
+        return sm83.Decoder()
     cache = getattr(_decoder_local, "cache", None)
     if cache is None:
         cache = _decoder_local.cache = {}
