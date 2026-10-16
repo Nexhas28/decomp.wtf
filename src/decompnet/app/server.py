@@ -304,22 +304,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     # rooms this computer belongs to reconnect (members keep their place; their agents wait while the host is away)
     net.restore_links()
 
-    # helpers that were working when the app last stopped carry on
-    resume = [r for r in settings.data.get("running_agents", []) if isinstance(r, dict)]
-    for r in resume:
-        try:
-            net.project_row(r["slug"])
-            options = dict(r.get("options") or {})
-            if r["kind"] == "api":
-                saved = settings.endpoint(str(options.get("endpoint") or "")) if options.get("endpoint") else (
-                    next((e for e in settings.endpoints() if e["base_url"] == options.get("base_url")), None))
-                if saved is None and options.get("endpoint"):
-                    continue  # its endpoint was removed since
-                if saved is not None:  # as the endpoint is now, with its key
-                    options.update(_session_options(saved))
-            manager.start(r["kind"], r["slug"], 1, options)
-        except (NetworkError, ValueError, KeyError):
-            continue
+    # Helpers never carry on across a restart: whatever the last run left (a crash, a kill, a quit that didn't
+    # finish) is stopped now and its identity's token rotated, so nothing reconnects on its own. New helpers are
+    # started by a person, from the Agents tab.
+    left = [r for r in settings.data.get("running_agents", []) if isinstance(r, dict)]
+    if left:
+        stopped = manager.disown(left)
+        if stopped:
+            logging.getLogger("decomp.wtf").info("stopped %d helper process(es) left by the previous run", stopped)
+        settings.data["running_agents"] = []
+        settings.save()
 
     mcp = tools.build_mcp(net, agent_of)
     chat.register(mcp, net, manager, jobs, settings, port, secret)

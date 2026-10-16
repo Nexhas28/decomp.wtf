@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,6 +29,8 @@ import httpx
 from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
+
+log = logging.getLogger("decomp.wtf")
 
 class Fatal(RuntimeError):
     """A helper can't work until the user changes something (shown as the helper's error, not retried)."""
@@ -926,10 +929,33 @@ class Manager:
         threading.Thread(target=run, daemon=True, name=f"start-files-{slug}").start()
 
     def running(self) -> list[dict]:
-        """The helpers that should keep working: resumed by the server after the app restarts."""
-        return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
-                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()
-                and not s.options.get("team")]  # a Team Call ends with the app: it isn't resumed
+        """The helpers at work right now, with their process ids and agent names: remembered so that after a
+        crash or a kill the next start can stop any that outlived the app and shut their identities (disown).
+        Helpers are never resumed: a person starts new ones."""
+        return [{"kind": s.kind, "slug": s.slug, "agent": s.agent_name,
+                 "pid": s.proc.pid if s.proc is not None and s.proc.poll() is None else None,
+                 "options": {k: v for k, v in s.options.items() if k != "api_key"}}
+                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
+
+    def disown(self, left: list[dict]) -> int:
+        """What a previous run left behind (its `running` list): any helper process still alive is stopped with
+        everything it started, and each helper identity's token is rotated so a stray that survived can't reconnect
+        and carry on. Returns how many processes were stopped. Only a process that is still the group leader we
+        made (start_new_session) and looks like an agent runner is touched: pids get reused."""
+        stopped = 0
+        for r in left:
+            pid = r.get("pid")
+            if isinstance(pid, int) and pid > 1 and _stray_helper(pid):
+                _kill_group(pid)
+                stopped += 1
+            name = r.get("agent")
+            if isinstance(name, str) and name and getattr(self.net, "store", None) is not None:
+                try:
+                    if self.net.store.one("SELECT id FROM agents WHERE name=?", name) is not None:
+                        self.net.local_agent(name)  # a fresh token: the one the stray holds stops working
+                except Exception as e:  # best-effort: never keep the app from starting
+                    log.info("disown %s: %s", name, e)
+        return stopped
 
     # -- Team Call: three models on one function until it matches
 
@@ -1034,7 +1060,7 @@ class Manager:
                                else "every helper stopped (see the Agents tab)")
 
     def stop(self, sid: str | None = None) -> None:
-        """Stop one helper (for good) or all of them (the app is quitting: they resume next time)."""
+        """Stop one helper, or all of them (the app is quitting). Nothing resumes: a person starts new helpers."""
         for s in list(self.sessions.values()):
             if sid in (None, s.id):
                 s.stop.set()
@@ -1042,8 +1068,7 @@ class Manager:
                     _terminate(s.proc)
                 if s.state not in ("error",):
                     s.state = "stopped"
-        if sid is not None:
-            self.persist(self.running())
+        self.persist(self.running())
 
     def remove(self, sid: str) -> None:
         self.stop(sid)
@@ -1391,6 +1416,7 @@ class Manager:
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 start_new_session=True)
         s.proc = proc
+        self.persist(self.running())  # with its pid: a crash leaves this behind for the next start to clean up
         errors: collections.deque = collections.deque(maxlen=20)
 
         def feed_prompt():
@@ -1664,5 +1690,48 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
 def _terminate(proc: subprocess.Popen) -> None:
     try:  # the agent with everything it started: terminate() would leave the rest working, and spending
         os.killpg(proc.pid, 15)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+#: What an agent runner's command line contains (one of these), for telling a stray helper from a reused pid.
+_RUNNER_MARKS = ("claude", "codex", "opencode", "agy", "antigravity", "mcp_agent", ".decomp/agents/", "decomp-agent")
+
+
+def _stray_helper(pid: int) -> bool:
+    """Whether `pid` is a helper this app started and lost: alive, still the leader of the process group we made
+    for it (start_new_session: its group id is its pid), and running an agent program."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+        out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    command = out.strip().lower()
+    return bool(command) and any(mark in command for mark in _RUNNER_MARKS)
+
+
+def _kill_group(pid: int) -> None:
+    """Stop a process group: a polite request first, then after two seconds whatever is still there."""
+    try:
+        os.killpg(pid, 15)
+    except (OSError, ProcessLookupError):
+        return
+    for _ in range(20):
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            return
+    try:
+        os.killpg(pid, 9)
     except (OSError, ProcessLookupError):
         pass

@@ -172,3 +172,52 @@ def test_helpers_get_the_read_diff_and_match_loop_skills_in_their_prompt():
     assert "| Marker |" in text and "Release-note words" in text
     assert "name: read-diff" not in text and not text.startswith("---")  # front matter is not for the helper
     assert skill_text("no-such-skill") == ""
+
+
+def test_helpers_are_remembered_with_pid_and_agent_but_never_resumed(tmp_path, monkeypatch):
+    """What `running` records is for cleaning up after a crash, not for resuming: the pid and the agent name."""
+    import subprocess
+    from types import SimpleNamespace
+    m = _manager(tmp_path, monkeypatch, "claude")
+    m.persist = lambda running: None
+    alive = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        s = agents.Session("claude-7", "claude", "Claude Code", "demo", "claude-7", {"model": "tiered"})
+        s.state, s.proc = "working", alive
+        t = agents.Session("team-opus-1", "claude", "Team Call", "demo", "team-opus-1", {"team": {"function": "f"}})
+        t.state = "working"
+        m.sessions = {s.id: s, t.id: t}
+        rows = m.running()
+        assert {r["agent"] for r in rows} == {"claude-7", "team-opus-1"}  # a Team Call's processes are strays too
+        assert next(r for r in rows if r["agent"] == "claude-7")["pid"] == alive.pid
+        assert next(r for r in rows if r["agent"] == "team-opus-1")["pid"] is None
+    finally:
+        alive.kill()
+
+
+def test_disown_stops_stray_helper_groups_and_rotates_their_tokens(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    from types import SimpleNamespace
+    m = _manager(tmp_path, monkeypatch, "claude")
+    rotated = []
+    m.net = SimpleNamespace(store=SimpleNamespace(one=lambda *a: {"id": 1} if a[-1] != "gone" else None),
+                            local_agent=lambda name: rotated.append(name))
+    # a helper that outlived the app: its own process group, running something that looks like an agent runner
+    runner = tmp_path / "bin" / "claude"
+    runner.write_text("#!/bin/sh\nsleep 300\n")
+    stray = subprocess.Popen([str(runner)], start_new_session=True)
+    # a process whose pid is not ours to kill: not a group leader we made (same group as this test)
+    bystander = subprocess.Popen(["sleep", "300"])
+    try:
+        time.sleep(0.3)
+        n = m.disown([{"agent": "claude-3", "pid": stray.pid}, {"agent": "gone", "pid": bystander.pid},
+                      {"agent": "claude-4", "pid": None}, {"agent": "claude-5", "pid": 2_147_483_000}])
+        assert n == 1
+        assert stray.wait(timeout=5) != 0  # stopped by the signal
+        assert bystander.poll() is None  # untouched
+        assert rotated == ["claude-3", "claude-4", "claude-5"]  # every remembered identity, dead process or not
+    finally:
+        bystander.kill()
+        if stray.poll() is None:
+            stray.kill()
