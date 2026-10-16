@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import struct
@@ -121,6 +122,43 @@ def _preview(data: bytes | None, kind: str) -> str:
     if len(text) >= 3 and all(32 <= c < 127 or c in (9, 10) for c in text):
         return json.dumps(text.decode("ascii"))
     return data[:16].hex(" ")
+
+
+def _lockdown_settings() -> dict:
+    """Operator fleet lockdown (added after a runaway agent swarm): a small JSON file in the app home
+
+        <DECOMP_HOME>/.decomp/settings.json   {"lockdown": true, "allowed_agents": ["name", ...]}
+
+    While `lockdown` is true, the app refuses to CREATE new agent identities — an existing identity keeps
+    working (tokens still rotate), and names in `allowed_agents` are always allowed. Nothing else about
+    the app changes. `DECOMP_LOCKDOWN=1` forces it on and `DECOMP_LOCKDOWN=0` forces it off, which is what
+    the tests use. Unreadable or malformed settings mean "no lockdown": a broken file must never lock the
+    app out."""
+    data: dict = {}
+    home = Path(os.environ.get("DECOMP_HOME", str(Path.home() / "Decomp"))).expanduser()
+    try:
+        loaded = json.loads((home / ".decomp" / "settings.json").read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, ValueError):
+        data = {}
+    forced = os.environ.get("DECOMP_LOCKDOWN")
+    if forced is not None:
+        data["lockdown"] = forced.strip().lower() not in ("", "0", "false", "no", "off")
+    return data
+
+
+def _lockdown_refuses(name: str) -> str | None:
+    """The refusal message when the lockdown forbids creating `name` as a NEW identity, else None."""
+    settings = _lockdown_settings()
+    if not settings.get("lockdown"):
+        return None
+    allowed = {str(a).strip().lower() for a in (settings.get("allowed_agents") or [])}
+    if name.strip().lower() in allowed:
+        return None
+    return (f"refusing to create a new agent identity {name!r}: this machine is in fleet lockdown "
+            f"(a runaway swarm was spawning worker agents). Existing identities still work. To allow it, "
+            f"add the name to allowed_agents in <DECOMP_HOME>/.decomp/settings.json or set lockdown to false.")
 
 
 class RomNetwork(Network):
@@ -2092,6 +2130,8 @@ class RomNetwork(Network):
         else:
             raise NetworkError("too many chat sessions at once")
         if row is None:
+            if (why := _lockdown_refuses(name)):
+                raise NetworkError(why)
             token = self.register_agent(name, "you", trusted=True, origin="chat")
             if client:
                 with self.store.tx() as db:
@@ -2119,5 +2159,7 @@ class RomNetwork(Network):
                 db.execute("UPDATE agents SET token_hash=?, origin=CASE origin WHEN 'chat' THEN 'local' ELSE origin END "
                            "WHERE id=?", (_hash_token(token), row["id"]))
         else:
+            if (why := _lockdown_refuses(name)):
+                raise NetworkError(why)
             token = self.register_agent(name, "you", trusted=True, origin="local")
         return self.authenticate(token), token
