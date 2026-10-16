@@ -142,7 +142,22 @@ def path(tid: str, linux: bool | None = None) -> Path:
 
 def installed(tid: str, linux: bool | None = None) -> dict | None:
     m = path(tid, linux) / MANIFEST
-    return json.loads(m.read_text(encoding="utf-8")) if m.exists() else None
+    if not m.exists():
+        return None
+    manifest = json.loads(m.read_text(encoding="utf-8"))
+    tc = registry().get(tid)
+    if tc and not (tc.via_linux if linux is None else linux) and _stale(tc, manifest):
+        return None  # reinstalled from the build bundled with this decomp.wtf
+    return manifest
+
+
+def _stale(tc: Toolchain, manifest: dict) -> bool:
+    """Whether an install predates the build bundled with this copy of decomp.wtf for this computer (an older
+    bundled build, or the Rosetta one used before there was a native build)."""
+    have = {(p.get("url"), p.get("sha256")) for p in manifest.get("parts", [])}
+    return any((f"bundled:{p['bundled']}", p["sha256"]) not in have if p.get("sha256")
+               else f"bundled:{p['bundled']}" not in {u for u, _ in have}
+               for p in tc.parts_for() if p.get("bundled"))
 
 
 def require(tid: str, linux: bool | None = None) -> Path:
@@ -174,6 +189,21 @@ def _download(url: str, dest: Path, log) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "decompnet-toolchain-installer"})
     with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
+
+
+def prebuilt_dir() -> Path:
+    """Where the compilers bundled with this copy of decomp.wtf are (the Mac builds from macos/toolchains/build.sh):
+    $DECOMPNET_PREBUILT (the Mac app points it into its Resources), else the checkout's macos/toolchains/prebuilt."""
+    env = os.environ.get("DECOMPNET_PREBUILT")
+    return Path(env).expanduser() if env else Path(__file__).resolve().parents[2] / "macos" / "toolchains" / "prebuilt"
+
+
+def _bundled(part: dict) -> Path:
+    archive = prebuilt_dir() / part["bundled"]
+    if not archive.is_file():
+        raise ToolchainError(f"this copy of decomp.wtf doesn't include its Mac build {part['bundled']} (looked in "
+                             f"{archive.parent}): run macos/toolchains/build.sh to build it")
+    return archive
 
 
 def _deb_data(deb: Path, out: Path) -> Path:
@@ -301,13 +331,17 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
         downloads = root() / ".downloads"
         downloads.mkdir(parents=True, exist_ok=True)
         for part in parts:
-            archive = downloads / Path(part["url"]).name
-            if not archive.exists() or (part.get("sha256") and _sha256(archive) != part["sha256"]):
-                _download(part["url"], archive, log)
+            if part.get("bundled"):  # shipped with decomp.wtf (prebuilt_dir), not downloaded
+                archive, origin = _bundled(part), f"bundled:{part['bundled']}"
+            else:
+                archive, origin = downloads / Path(part["url"]).name, part["url"]
+                if not archive.exists() or (part.get("sha256") and _sha256(archive) != part["sha256"]):
+                    _download(part["url"], archive, log)
             digest = _sha256(archive)
             if part.get("sha256") and digest != part["sha256"]:
-                archive.unlink()
-                raise ToolchainError(f"checksum mismatch for {part['url']}: expected {part['sha256']}, got {digest}")
+                if not part.get("bundled"):  # never delete the bundled copy
+                    archive.unlink()
+                raise ToolchainError(f"checksum mismatch for {origin}: expected {part['sha256']}, got {digest}")
             if not part.get("sha256"):
                 log(f"  no pinned checksum in the registry; pinning on first use: sha256 {digest}")
             if part.get("binary"):  # a plain executable, not an archive
@@ -319,7 +353,7 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
                     for f in dest.rglob("*"):
                         if f.is_file():
                             os.chmod(f, 0o755)
-            pinned.append({"url": part["url"], "sha256": digest})
+            pinned.append({"url": origin, "sha256": digest})
         if linux and wsl.wanted() and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader: bring ours
             n = wsl.wrap_i386(dest, wsl.path(path("runtime-i386", linux=True)))
             log(f"  {n} 32-bit programs start through the pinned 32-bit runtime")

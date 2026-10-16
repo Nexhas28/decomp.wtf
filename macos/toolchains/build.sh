@@ -4,25 +4,31 @@
 #
 #   macos/toolchains/build.sh [binutils-2.6|gcc-2.7.2-kmc|gcc-2.7.2-psx|gcc-2.8.1-psx|agbcc ...]   (default: all)
 #
-# Needs Apple's command line tools (clang, make, bison) and curl; agbcc also needs Homebrew's arm-none-eabi-gcc
-# for its own libc build check. Every source is pinned by sha256. These are the same sources as the Linux builds
-# the community matches against, built the same way, with three Mac-only changes (see patches/):
+# Needs Apple's command line tools (clang, make) and curl. Every source is pinned by sha256; with the same Xcode a
+# rebuild gives the same bytes. These are the same sources as the Linux builds
+# the community matches against, built the same way, with these Mac-only changes (see patches/):
 #   * gcc-arm64-protos.h: GCC 2.x calls its variadic diagnostics (error, warning, pedwarn...) without prototypes;
 #     on Apple arm64 that passes the arguments where the callee doesn't look, and the compiler crashed on some
 #     warnings. Forced into the cc1/cc1plus objects only (the driver and cpp have their own, static, versions).
 #   * glibc-qsort.c: qsort with glibc's (stable merge sort) order, linked into every program, so ties sort the
 #     way they do on Linux.
 #   * -ffp-contract=off: no fused multiply-add in the compilers' own arithmetic.
+#   * const-double-halves.pl: floating-point constants kept in two 32-bit halves, as on the 32-bit Linux hosts
+#     (completes the fix decompals/mips-gcc-2.7.2 started; without it float constants came out wrong).
+#   * KMC only: the host's double word order, which xm-arm.h gets wrong for arm64.
+#   * GCC 2.7.2 only: GCC 2.8's handling of NON_LVALUE_EXPR in the constant pool (see fix_272_varasm).
 # Each archive is checked byte-for-byte against the Linux build by macos/toolchains/verify.sh.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="$HERE/prebuilt"
 PATCHES="$HERE/patches"
-WORK="$(mktemp -d)"
+WORK=/tmp/decompwtf-toolchains-build   # a fixed path: it ends up in the binaries' debug info (one build at a time)
+rm -rf "$WORK"; mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"   # the system compiler, not a cross one
 unset CC CXX CFLAGS
+export ZERO_AR_DATE=1   # no object timestamps in the link, so a rebuild gives the same bytes
 JOBS="$(sysctl -n hw.ncpu)"
 HOST="$(uname -m)-apple-darwin"
 [ "$(uname -s)" = Darwin ] || { echo "build.sh runs on macOS" >&2; exit 1; }
@@ -56,7 +62,7 @@ CCW="$WORK/cc"
 pack() {  # name dir files...  -> prebuilt/<name>-macos-arm64.tar.gz, reproducible (fixed owner, times, order)
     local name="$1" dir="$2"; shift 2
     mkdir -p "$OUT"
-    for f in "$@"; do [ -d "$dir/$f" ] || strip -S "$dir/$f" 2>/dev/null || true; done
+    (cd "$dir" && find "$@" -type f -perm -u+x -exec strip -S {} \; 2>/dev/null) || true
     (cd "$dir" && find "$@" -print0 | sort -z | xargs -0 touch -h -t 200001010000 \
         && tar --format ustar --no-mac-metadata --no-xattrs --no-acls --uid 0 --gid 0 --uname root --gname root -cf - $(find "$@" ! -type d | sort) | gzip -n9 \
         > "$OUT/$name-macos-arm64.tar.gz")
@@ -81,11 +87,21 @@ gcc_second_pass() {  # srcdir cflags
         -e 's/\(\*errfn\) \(fmt, ARGSLIST\)/(*(void (*) (char *, ...)) errfn) (fmt, ARGSLIST)/' "$d/cp/errfn.c"
     # an upstream call missing its decl argument (only reached when reporting that error)
     sed -i '' 's/error_with_decl ("implementation-reserved name `%s'"'"' used");/error_with_decl (thunk, "implementation-reserved name `%s'"'"' used");/' "$d/cp/method.c"
-    printf '%s\0' "${srcs[@]}" | xargs -0 sed -i '' -E \
+    # (only files that have them: touching any other, version.c say, makes make re-run configure)
+    printf '%s\0' "${srcs[@]}" | xargs -0 grep -lE '^(extern[[:space:]]+)?void[[:space:]]+[a-z_]+[[:space:]]*\(\)(, error \(\))?;' \
+        | tr '\n' '\0' | xargs -0 sed -i '' -E \
         -e 's/^(extern[[:space:]]+)?void[[:space:]]+(error|warning|pedwarn|fatal|sorry|really_sorry|error_with_decl|warning_with_decl|pedwarn_with_decl|error_for_asm|warning_for_asm|error_with_file_and_line|warning_with_file_and_line|pedwarn_with_file_and_line|asm_fprintf)[[:space:]]*\(\);//' \
         -e 's/^extern void pedwarn \(\), error \(\);//'
 
     make -C "$d" CC="$CCW" CFLAGS="$f -include $PATCHES/gcc-arm64-protos.h" cc1 cc1plus
+}
+
+# GCC 2.7.2's constant pool hashes and compares a NON_LVALUE_EXPR (from casts in static initialisers) through
+# uninitialised variables; on arm64 that crashes. GCC 2.8 treats it like NOP_EXPR, which is what this does
+# (verified to give the Linux build's output on every case that crashed).
+fix_272_varasm() {
+    sed -i '' 's/code == NOP_EXPR || code == CONVERT_EXPR)/code == NOP_EXPR || code == CONVERT_EXPR || code == NON_LVALUE_EXPR)/' "$1/varasm.c"
+    [ "$(grep -c 'code == NON_LVALUE_EXPR)' "$1/varasm.c")" = 2 ] || { echo "varasm.c fix didn't apply" >&2; exit 1; }
 }
 
 build_binutils26() {  # decompals/mips-binutils-2.6: the GNU assembler of KMC GCC and the PlayStation GCCs
@@ -110,7 +126,13 @@ build_kmc() {  # decompals/mips-gcc-2.7.2: GCC 2.7.2 configured like the KMC com
     f="-DDARWIN -std=gnu89 $COMMON_CFLAGS -Wno-implicit-function-declaration"
     (cd "$d" && CC="$CCW" ./configure --target=mips-mips-gnu --prefix=/opt/cross --with-gnu-as --disable-gprof \
         --disable-gdb --disable-werror --host=arm-apple-darwin --build=arm-apple-darwin)
+    # configured as an ARM host it gets xm-arm.h, written for the old ARM FPA whose doubles store their two words
+    # high first; Apple's arm64 stores them like x86, and infinities and NaNs came out wrong
+    perl "$PATCHES/const-double-halves.pl" "$d"
+    sed -i '' 's/^#define HOST_FLOAT_WORDS_BIG_ENDIAN 1$/#define HOST_FLOAT_WORDS_BIG_ENDIAN 0/' "$d/config/arm/xm-arm.h"
+    grep -q '^#define HOST_FLOAT_WORDS_BIG_ENDIAN 0$' "$d/config/arm/xm-arm.h" || { echo "xm-arm.h fix didn't apply" >&2; exit 1; }
     touch "$d/c-parse.c"   # committed; old yacc files don't build with modern bison
+    fix_272_varasm "$d"
     make -C "$d" CC="$CCW" CFLAGS="$f" xgcc cc1 cc1plus cpp cccp g++
     gcc_second_pass "$d" "$f"
     "$d/cc1" -quiet "$d/test.c" -o /dev/null
@@ -141,11 +163,13 @@ build_psx() {  # $1 = 2.7.2 | 2.8.1: GNU GCC with decompals/old-gcc's PlayStatio
             patch -u -p1 configure -i "$og/patches/configure.patch"
             patch -u -p1 config/mips/mips.h -i "$og/patches/mipsel-2.7.patch"
             patch -su -p1 < "$og/patches/psx-2.5.7.patch"
+            fix_272_varasm .
         else
             patch -u -p1 obstack.h -i "$og/patches/obstack-2.8.1.h.patch"
             patch -u -p1 config/mips/mips.h -i "$og/patches/mips.patch"
             patch -su -p1 < "$og/patches/psx.patch"
         fi
+        perl "$PATCHES/const-double-halves.pl" .
         fetch https://raw.githubusercontent.com/gcc-mirror/gcc/74af13c174714dd3b9f1ded4b39955f003c16361/config.guess \
             7d1e3c79b86de601c3a0457855ab854dffd15163f53c91edac54a7be2e9c931b config.guess
         fetch https://raw.githubusercontent.com/gcc-mirror/gcc/6fad101f3063d722e3348d07dc93cf737f8709e4/config.sub \

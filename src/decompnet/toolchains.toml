@@ -9,7 +9,11 @@
 # An empty sha256 means "pin on first install" (trust on first use); the installer records it.
 #
 # Each part lists the platforms it is for (linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64,
-# windows-x86_64). Apple Silicon Macs run the x86_64 builds through Rosetta 2.
+# windows-x86_64). A part with `bundled = "<file>"` instead of a url ships with decomp.wtf itself: the
+# installer takes it from $DECOMPNET_PREBUILT (the Mac app's Resources) or the checkout's macos/toolchains/prebuilt,
+# and checks its sha256 like a download. On Apple Silicon the period compilers (KMC GCC, PSX GCC, agbcc, binutils
+# 2.6) are such native arm64 builds, made by macos/toolchains/build.sh: no Rosetta 2 and no Docker. Other x86_64
+# macOS builds still run on Apple Silicon through Rosetta 2.
 # On Windows, a toolchain with only a linux-x86_64 build is installed from that build and runs inside
 # WSL 2 (wsl.py); a part for wsl-x86_64 replaces the Linux one there.
 
@@ -36,7 +40,7 @@ name = "GCC 2.7.2 (KMC-compatible) + binutils 2.6"
 platform = "N64"
 arch = "mips"
 license = "GPL-2.0"
-source = "decompals/mips-gcc-2.7.2 v0.1, decompals/mips-binutils-2.6 v0.3"
+source = "decompals/mips-gcc-2.7.2 v0.1, decompals/mips-binutils-2.6 v0.3, built natively for Apple Silicon by macos/toolchains/build.sh"
 description = "GCC 2.7.2 built to reproduce the KMC compiler used by many N64 games, with the matching assembler."
 cc = ["{tc}/gcc", "-B{tc}/", "-c"]
 flags = ["-G0", "-mips3", "-mgp32", "-mfp32", "-O2"]
@@ -51,18 +55,26 @@ platforms = ["linux-x86_64"]
 [["gcc-2.7.2-kmc".parts]]
 url = "https://github.com/decompals/mips-gcc-2.7.2/releases/download/v0.1/gcc-2.7.2-mac.tar.gz"
 sha256 = "5923ea59b97d39d65d684a3ef2f25cd1cbcaf2fd0b5cf6a7f1a4804500a770e0"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
 [["gcc-2.7.2-kmc".parts]]
 url = "https://github.com/decompals/mips-binutils-2.6/releases/download/v0.3/binutils-2.6-mac.tar.gz"
 sha256 = "ab21ad5908fb7776a4b0c596cc82f216876e3b5d108c7c7c1f33543b3f3fce4c"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
+[["gcc-2.7.2-kmc".parts]]
+bundled = "gcc-2.7.2-kmc-macos-arm64.tar.gz"
+sha256 = "df695bdf52e158167b18c87c9120d9f5674536f249fefb1419ce98c5186a7883"
+platforms = ["macos-arm64"]
+[["gcc-2.7.2-kmc".parts]]
+bundled = "binutils-2.6-macos-arm64.tar.gz"
+sha256 = "8185f2f2042e78b55c68502b1347199d47a1fc37c7f2f03598981f4b56e4e2f0"
+platforms = ["macos-arm64"]
 
 ["gcc-2.7.2-psx"]
 name = "GCC 2.7.2 for PlayStation + binutils 2.6"
 platform = "PS1"
 arch = "mipsel"
 license = "GPL-2.0"
-source = "decompals/old-gcc 0.17 (gcc-2.7.2-psx), decompals/mips-binutils-2.6 v0.3"
+source = "decompals/old-gcc 0.17 (gcc-2.7.2-psx), decompals/mips-binutils-2.6 v0.3, built natively for Apple Silicon by macos/toolchains/build.sh"
 description = "GCC 2.7.2 with the PlayStation patches, the C compiler family behind PSY-Q, with the GNU assembler."
 cc = ["{tc}/gcc", "-B{tc}/", "-c", "-Wa,-EL"]
 flags = ["-O2", "-G8"]
@@ -77,18 +89,26 @@ platforms = ["linux-x86_64"]
 [["gcc-2.7.2-psx".parts]]
 url = "https://github.com/decompals/old-gcc/releases/download/0.17/gcc-2.7.2-psx-macos.tar.gz"
 sha256 = "4280894661c9792bc19f5c970c283d35381937fb44e479a91d0c044c95fcd208"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
 [["gcc-2.7.2-psx".parts]]
 url = "https://github.com/decompals/mips-binutils-2.6/releases/download/v0.3/binutils-2.6-mac.tar.gz"
 sha256 = "ab21ad5908fb7776a4b0c596cc82f216876e3b5d108c7c7c1f33543b3f3fce4c"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
+[["gcc-2.7.2-psx".parts]]
+bundled = "gcc-2.7.2-psx-macos-arm64.tar.gz"
+sha256 = "9307e6a6d81db33a6ed117ac03fbb466d154e1de6ac5de6ad4c1f5a6cf91a134"
+platforms = ["macos-arm64"]
+[["gcc-2.7.2-psx".parts]]
+bundled = "binutils-2.6-macos-arm64.tar.gz"
+sha256 = "8185f2f2042e78b55c68502b1347199d47a1fc37c7f2f03598981f4b56e4e2f0"
+platforms = ["macos-arm64"]
 
 ["gcc-2.8.1-psx"]
 name = "GCC 2.8.1 for PlayStation + binutils 2.6"
 platform = "PS1"
 arch = "mipsel"
 license = "GPL-2.0"
-source = "decompals/old-gcc 0.17 (gcc-2.8.1-psx), decompals/mips-binutils-2.6 v0.3"
+source = "decompals/old-gcc 0.17 (gcc-2.8.1-psx), decompals/mips-binutils-2.6 v0.3, built natively for Apple Silicon by macos/toolchains/build.sh"
 description = "GCC 2.8.1 with the PlayStation patches (later PSY-Q versions), with the GNU assembler."
 cc = ["{tc}/gcc", "-B{tc}/", "-c", "-Wa,-EL"]
 flags = ["-O2", "-G8"]
@@ -103,11 +123,19 @@ platforms = ["linux-x86_64"]
 [["gcc-2.8.1-psx".parts]]
 url = "https://github.com/decompals/old-gcc/releases/download/0.17/gcc-2.8.1-psx-macos.tar.gz"
 sha256 = "bab0c6ea1f394573d5aabbdd7b37e36aceeb83c522141d946a87a9f58c199ea0"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
 [["gcc-2.8.1-psx".parts]]
 url = "https://github.com/decompals/mips-binutils-2.6/releases/download/v0.3/binutils-2.6-mac.tar.gz"
 sha256 = "ab21ad5908fb7776a4b0c596cc82f216876e3b5d108c7c7c1f33543b3f3fce4c"
-platforms = ["macos-x86_64", "macos-arm64"]
+platforms = ["macos-x86_64"]
+[["gcc-2.8.1-psx".parts]]
+bundled = "gcc-2.8.1-psx-macos-arm64.tar.gz"
+sha256 = "fe926a1d4b8ef0ffcf9debbe1a6195babad96cd2cf8bae902ab9d05b28d6b97e"
+platforms = ["macos-arm64"]
+[["gcc-2.8.1-psx".parts]]
+bundled = "binutils-2.6-macos-arm64.tar.gz"
+sha256 = "8185f2f2042e78b55c68502b1347199d47a1fc37c7f2f03598981f4b56e4e2f0"
+platforms = ["macos-arm64"]
 
 ["ee-gcc-2.96"]
 name = "EE-GCC 2.96"
@@ -348,7 +376,7 @@ name = "agbcc"
 platform = "GBA"
 arch = "arm"
 license = "GPL-2.0"
-source = "pret/agbcc release"
+source = "pret/agbcc release, built natively for Apple Silicon by macos/toolchains/build.sh"
 description = "The GCC 2.95-based compiler behind most Game Boy Advance games, as rebuilt by the pret community."
 cc = ["{tc}/bin/agbcc"]
 flags = ["-mthumb-interwork", "-O2"]
@@ -359,6 +387,10 @@ cmd = ["/bin/sh", "-c", "src=\"$1\"; obj=\"$2\"; inc=\"$3\"; shift 3; \"{tc:arm-
 url = "https://github.com/pret/agbcc/releases/download/release/agbcc.tar.gz"
 sha256 = "bcf0197e3e27d8e08506a142e25fa68ea7f6679a98347a6406804eb3f9ff4d29"
 platforms = ["linux-x86_64"]
+[[agbcc.parts]]
+bundled = "agbcc-macos-arm64.tar.gz"  # bin/, include/, lib/ like pret's release
+sha256 = "e44334fad0d1d2aee9116189b0a0cc19401766fdb656a4fd1e3c043c9eceaca3"
+platforms = ["macos-arm64"]
 
 [maspsx]
 name = "maspsx"

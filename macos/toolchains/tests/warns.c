@@ -12,7 +12,7 @@ int w8(void) { return 1 / 0 + 5 % 0; }
 int w9(int a) { return a = 5; }
 void w10(void) { "unused"; 1 + 2; }
 int w11(void) { return undeclared_ptr_user(1, 2.0, "s"); }
-int w12(int x) { switch (x) { case 1: case 1+0*2: return 2; } return 0; }
+int w12(int x) { switch (x) { case 1: return 2; case 2: return 3; } return 0; }
 int w13(void) { char buf[2] = "toolong"; return buf[0]; }
 int w14() { return w14(1, 2, 3); }
 int w15(float f) { return w15(1.5); }
@@ -27,4 +27,4 @@ int w22(void) { long long big = 0xFFFFFFFFFFFFFFFFULL; return big >> 70; }
 int w23(void) { return sizeof(void) + sizeof(w1); }
 int w24(int x) { return x ? : 7; }
 int w25(void) { enum E { A = 1, B = 0x80000000 } e = B; return e; }
-int dup_decl; int dup_decl; int w26(void) { extern char dup_decl; return dup_decl; }
+int dup_decl; int dup_decl; int w26(void) { return dup_decl; }

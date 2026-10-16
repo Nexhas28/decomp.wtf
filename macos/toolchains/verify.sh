@@ -58,6 +58,7 @@ if command -v csmith >/dev/null; then
         csmith --seed "$i" --no-safe-math --no-packed-struct -o "$C/src/cs$i.c" 2>/dev/null || true
         csmith --seed "$((i + 100000))" --float --no-safe-math --no-packed-struct --max-funcs 6 -o "$C/src/fl$i.c" 2>/dev/null || true
     done
+    python3 -I "$HERE/dehex.py" "$C"/src/fl*.c
 else
     echo "csmith not found (brew install csmith): checking zlib and the hand-written tests only" >&2
 fi
