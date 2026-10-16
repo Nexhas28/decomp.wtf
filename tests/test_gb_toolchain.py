@@ -95,3 +95,35 @@ def test_the_decoder_covers_the_instruction_set_scoring_will_see():
             code = bytes([op]) if op2 is None else bytes([0xCB, op]) if op == 0xCB else bytes([op, op2])
             text, ln = sm83.decode(code, 0)
             assert text and ln >= 1
+
+
+@needs_toolchain
+def test_the_whole_app_path_matches_a_real_game_boy_function(tmp_path):
+    """Import -> claim -> diff -> MATCH, through the same engine code the app runs, on a synthetic
+    cartridge whose function body is exactly `ret` (what C `void f(void) {}` compiles to)."""
+    from decompnet.app.engine import RomNetwork
+    from tests.test_gb import make_rom
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "work")
+    rom = tmp_path / "game.gb"
+    rom.write_bytes(make_rom(size=0x8000, code=b"\xc9"))       # one `ret` at 0x150
+    slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    cfg = __import__("json").loads(proj["config"])
+    assert cfg["arch"] == "sm83" and cfg["compiler"]["toolchain"] == gb_build.TOOLCHAIN
+    fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND target=? AND status='open'",
+                       proj["id"], b"\xc9")
+    assert fn is not None, "a one-instruction function must be claimable"
+    agent = net.authenticate(net.register_agent("gb-tester"))
+    net.claim(agent, function=fn["name"])
+    out = net.compile_and_diff(agent, fn["name"], f"void {fn['name']}(void) {{ }}\n")
+    assert "MATCH" in out, out
+    assert net.store.one("SELECT status FROM functions WHERE id=?", fn["id"])["status"] == "matched"
+    assert net.store.one("SELECT matched_agent_id FROM functions WHERE id=?", fn["id"])["matched_agent_id"] == agent.id
+
+
+@needs_toolchain
+def test_the_lane_refuses_a_candidate_that_does_not_define_the_function(tmp_path):
+    """A candidate must define the function the app is judging — the failure is reported, not scored."""
+    with pytest.raises(Exception):
+        gb_build.build_payload("void something_else(void) { }", name="func_000b58")

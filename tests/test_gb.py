@@ -228,7 +228,7 @@ def test_functions_are_disassembled_with_names_and_refs():
     entry_call = by_addr[0x150]
     assert entry_call.n_insns >= 2
     assert "call $0200" in entry_call.asm
-    assert (0, 0x200) in entry_call.refs
+    assert (0, 10, 0x200) in entry_call.refs  # (offset, kind=call, address)
     assert all(f.size > 0 and f.asm for f in fns)
     # the entry point is disassembled too (nop · jp $0150)
     assert by_addr[0x100].asm.startswith("000100  nop")
@@ -247,8 +247,8 @@ def test_split_reads_a_rom_file(tmp_path):
 
 
 def test_import_creates_a_readable_project(tmp_path):
-    """End to end: a .gb file imports as a project with disassembled functions, marked as assembly
-    (not claimable) because the matching lane has no compiler yet."""
+    """End to end: a .gb file imports as a project with disassembled functions. Claimable when the
+    pinned GBDK-2020 toolchain is installed (the matching lane is live); assembly-only when it isn't."""
     from decompnet.app.engine import RomNetwork
 
     net = RomNetwork(tmp_path / "app.db", tmp_path / "work")
@@ -257,11 +257,15 @@ def test_import_creates_a_readable_project(tmp_path):
     slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
     proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
     cfg = __import__("json").loads(proj["config"])
+    from decompnet.rom import gb_build
+
     assert cfg["platform"] == "gb" and cfg["arch"] == "sm83"
-    assert cfg["compiler"]["toolchain"] == "" and cfg["compiler"]["provenance"] == "unavailable"
+    lane = gb_build.available()
+    assert cfg["compiler"]["toolchain"] == (gb_build.TOOLCHAIN if lane else "")
+    assert cfg["compiler"]["provenance"] == ("explicit" if lane else "unavailable")
     fns = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
     assert len(fns) > 3
-    assert all(f["status"] == "asm" for f in fns), "no claimable work until a compiler lane exists"
+    assert all(f["status"] == ("open" if lane else "asm") for f in fns)
     assert all(f["asm"] and f["n_insns"] > 0 for f in fns)
     entry = net.store.one("SELECT * FROM functions WHERE project_id=? AND vram=256", proj["id"])
     assert entry is not None and "jp $0150" in entry["asm"]

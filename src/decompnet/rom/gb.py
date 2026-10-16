@@ -151,7 +151,7 @@ class GbFunction:
     code: bytes
     n_insns: int
     asm: str
-    refs: list = field(default_factory=list)   # (offset_in_function, target) call references
+    refs: list = field(default_factory=list)   # (offset, kind, address): 10 = call, as the GBA lane uses
     asm_only: bool = False
 
     @property
@@ -160,15 +160,19 @@ class GbFunction:
 
 
 def _extent(data: bytes, addr: int, next_addr: int, max_len: int = 0x400) -> bytes:
-    """A function's bytes: from its start to the next known start, or to 8 bytes past its first
-    terminating instruction, whichever comes first (never past `max_len`)."""
+    """A function's bytes: from its start **up to and including** its terminating instruction, or to the
+    next known start when it runs into one first (never past `max_len`).
+
+    Exact extents matter for matching: a candidate compiled from C produces the function and nothing
+    else, so padding the target with the bytes that follow it would make an otherwise perfect match
+    impossible. Data that follows a function belongs to whatever the next candidate is."""
     hard = min(next_addr, addr + max_len, len(data))
     off = addr
     while off < hard:
         text, ln = sm83.decode(data[off:], off)
         off += max(1, ln)
         if sm83.is_return(text):
-            return data[addr:min(off + 8, hard)]
+            return data[addr:off]
     return data[addr:hard]
 
 
@@ -188,10 +192,10 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
             continue
         refs = []
         for off, text, _ln in insns:
-            if text.startswith("call "):
-                tgt = sm83.call_target(code, off - addr)
-                if tgt is not None:
-                    refs.append((off - addr, tgt))
+            if text.startswith(("call ", "jp ")) and "$" in text:
+                target = int(text.rsplit("$", 1)[1], 16)
+                if 0 <= target < len(data) and not (addr <= target < addr + len(code)):
+                    refs.append((off - addr, 10, target))  # 10 = a call edge (kind 10, as the GBA lane)
         out.append(GbFunction(name=f"func_{addr:06x}", vram=addr, rom=addr, code=code,
                               n_insns=len(insns), asm=sm83.asm_text(code, addr, width=6), refs=refs))
     log(f"found {len(out)} functions in {len(data) // BANK_SIZE} banks")

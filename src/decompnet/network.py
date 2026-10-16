@@ -411,6 +411,7 @@ class Network:
         return row["name"] if row else "?"
 
     def _compile(self, proj, header: str, source: str):
+        """Arch-specific lanes may override this (Game Boy: see app.engine.RomNetwork._compile)."""
         root = Path(proj["root"])
         return compile_source(compiler_config(root, json.loads(proj["config"])), header, source)
 
