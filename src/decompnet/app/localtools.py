@@ -31,20 +31,26 @@ MAX_TEXT = 12_000
 
 # ------------------------------------------------------------------ where they are
 
-def _candidates() -> list[Path]:
-    """DECOMP_LOCAL_TOOLS, the checkout this decomp.wtf runs from, and (when that checkout is a git worktree) the main
-    checkout: the programs are built once, in one place, and aren't in git."""
-    env = os.environ.get("DECOMP_LOCAL_TOOLS")
+def checkout_folders(name: str, env: str) -> list[Path]:
+    """Where a folder at the checkout's root may be: $`env`, the checkout this decomp.wtf runs from, and (when that
+    checkout is a git worktree) the main checkout."""
+    given = os.environ.get(env)
     repo = Path(__file__).resolve().parents[3]
-    out = ([Path(env).expanduser()] if env else []) + [repo / "local-tools"]
+    out = ([Path(given).expanduser()] if given else []) + [repo / name]
     git = repo / ".git"
     if git.is_file():  # "gitdir: <main>/.git/worktrees/<name>"
         text = git.read_text(errors="replace").strip()
         if text.startswith("gitdir:"):
             gitdir = Path(text.split(":", 1)[1].strip())
             if gitdir.parent.name == "worktrees":
-                out.append(gitdir.parent.parent.parent / "local-tools")
+                out.append(gitdir.parent.parent.parent / name)
     return out
+
+
+def _candidates() -> list[Path]:
+    """DECOMP_LOCAL_TOOLS, this checkout's local-tools/, the main checkout's: the programs are built once, in one
+    place, and aren't in git."""
+    return checkout_folders("local-tools", "DECOMP_LOCAL_TOOLS")
 
 
 def folder() -> Path | None:
