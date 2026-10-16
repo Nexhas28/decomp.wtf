@@ -127,3 +127,29 @@ def test_the_lane_refuses_a_candidate_that_does_not_define_the_function(tmp_path
     """A candidate must define the function the app is judging — the failure is reported, not scored."""
     with pytest.raises(Exception):
         gb_build.build_payload("void something_else(void) { }", name="func_000b58")
+
+
+@needs_toolchain
+@pytest.mark.parametrize("code, c_source, what", [
+    (bytes.fromhex("ea0021c9"), "typedef unsigned char u8;\nvoid {n}(u8 v) {{ *(volatile u8 *)0x2100 = v; }}\n",
+     "a sound-register write: ld ($2100), a"),
+    (bytes.fromhex("e0f2c9"), "typedef unsigned char u8;\nvoid {n}(u8 v) {{ *(volatile u8 *)0xFFF2 = v; }}\n",
+     "an HRAM write: ldh ($ff00+$f2), a"),
+])
+def test_real_game_shapes_match_through_the_app(tmp_path, code, c_source, what):
+    """Non-trivial Game Boy code, not just stubs: the shapes the lane must reproduce are volatile
+    register writes — the idiom the brief teaches — and they must match through the whole app path."""
+    from decompnet.app.engine import RomNetwork
+    from tests.test_gb import make_rom
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "work")
+    rom = tmp_path / "game.gb"
+    rom.write_bytes(make_rom(size=0x8000, code=code))
+    slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    proj = net.store.one("SELECT * FROM projects WHERE slug=?", slug)
+    fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND target=?", proj["id"], code)
+    assert fn is not None, f"expected the {what} function to be discovered"
+    agent = net.authenticate(net.register_agent("gb-shape"))
+    net.claim(agent, function=fn["name"])
+    out = net.compile_and_diff(agent, fn["name"], c_source.format(n=fn["name"]))
+    assert "MATCH" in out, f"{what}: {out}"

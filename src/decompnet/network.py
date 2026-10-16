@@ -959,7 +959,12 @@ class Network:
         try:
             proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
             ctx = self._context(fn["project_id"], fn["unit"])
-            cfg = compiler_config(Path(proj["root"]), json.loads(proj["config"]))
+            raw = json.loads(proj["config"])
+            if str(raw.get("arch") or "").lower() == "sm83":
+                # The probe is a GCC `-Wuninitialized` check: SDCC/GBDK has no equivalent flag, so on the
+                # Game Boy lane it is skipped rather than run with flags the compiler would reject.
+                return validity.Validity(ok=True, detail="guard not applicable to the Game Boy lane (SDCC)")
+            cfg = compiler_config(Path(proj["root"]), raw)
         except Exception:  # pragma: no cover - defensive: never block on guard setup
             return validity.Validity(ok=True, detail="guard skipped: context unavailable")
         return validity.check(cfg, ctx["header"], source, compile_source)

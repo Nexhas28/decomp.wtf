@@ -806,9 +806,36 @@ class RomNetwork(Network):
         self._xrefs[proj["id"]] = {"calls": calls, "called_by": called_by, "uses": uses, "used_by": used_by}
         return self._xrefs[proj["id"]]
 
+    GB_NOTES = (
+        "### Game Boy (SDCC via GBDK-2020)",
+        "- **Define the function with its own name** (e.g. `void func_000b58(void) { }`): the compiled "
+        "object must contain the symbol the app is judging, or the compile is reported as an error.",
+        "- Calling convention (`sdcccall(1)`): byte arguments arrive in A, E, B, D, C; the return value "
+        "leaves in A. Write C and let the target assembly tell you which registers it used.",
+        "- Hardware registers and any absolute memory are **volatile pointers**: "
+        "`*(volatile u8 *)0xFFF2 = v;` compiles to `ldh ($ff00+$f2), a`, `*(volatile u8 *)0x2100 = v;` "
+        "compiles to `ld ($2100), a`, and `return *(volatile u8 *)0xC000;` reads a RAM byte.",
+        "- To call another function, declare it and call it by name (`void func_004006(void);` … "
+        "`func_004006();`) — the ROM's own address is substituted, so the call is byte-exact.",
+        "- SDCC turns a call in tail position into `jp`; if the target does `call … ; ret`, give the "
+        "call something to do afterwards (a following statement, or return a value).",
+        "- There is no m2c draft for SM83: the target assembly is the specification.",
+    )
+
     def _extra_brief(self, fn, proj) -> list[str]:
         if not self.is_rom(proj):
             return []
+        shared = self._extra_brief_shared(fn, proj)
+        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
+            # Game Boy agents need the calling convention and the register idioms: nothing about SM83 is
+            # guessable from other platforms, and the lane has no machine draft to start from.
+            return self._gb_brief(fn, proj) + shared
+        return shared
+
+    def _gb_brief(self, fn, proj) -> list[str]:
+        return ["", *self.GB_NOTES]
+
+    def _extra_brief_shared(self, fn, proj) -> list[str]:
         syms = self.symbols(proj["id"])
         x = self.xrefs(proj)
         lines = ["", "### Where it lives",

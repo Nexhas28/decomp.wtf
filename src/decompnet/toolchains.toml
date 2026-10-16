@@ -515,7 +515,8 @@ arch = "sm83"
 license = "MIT (GBDK-2020) + GPL-2.0 (SDCC)"
 source = "gbdk-2020/gbdk-2020 4.5.0 (SDCC 4.5.1 + sdasgb + sdldgb + makebin + libraries)"
 description = "The C toolchain for Game Boy and Game Boy Color: SDCC's Sharp SM83 back end with its assembler, linker and libraries. Candidates are compiled through decompnet.rom.gb_build (sdcc -S, sdasgb -l, then the listing's instruction bytes), because SM83 has no ELF object format in this pipeline and capstone has no SM83 decoder (rom/sm83.py provides one). Pass the project's symbol table to gb_build and external references resolve to the ROM's own addresses."
-cc = ["{tc}/bin/sdcc", "-msm83", "-c", "-I{include}"]
+# The release tarball nests everything under gbdk/, which is how the installer lays it out.
+cc = ["{tc}/gbdk/bin/sdcc", "-msm83", "-c", "-I{include}"]
 flags = ["--opt-code-speed"]
 [["gbdk-2020".parts]]
 url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-macos-arm64.tar.gz"
