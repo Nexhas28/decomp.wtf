@@ -647,16 +647,23 @@ async function poll(first) {
       { verification: live.overview.verification || (S.ov && S.ov.verification) || null });
     let mapDirty = false;
     const rescanned = !first && live.events.some((ev) => ev.kind === "rescan");
+    // Only news gets a toast: rejoining a room catches up on everything it did meanwhile, with the events' own
+    // (old) times, and a catch-up is one summary, not a toast per match.
+    const fresh = (ev) => !first && (!ev.created_at || Date.now() / 1000 - ev.created_at < 120);
+    const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
       if (["match", "split", "rename", "rescan"].includes(ev.kind)) mapDirty = true;
-      if (ev.kind === "match" && !first) {
+      if (!fresh(ev)) continue;
+      if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
-        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
+        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) matches.push(ev);
       }
-      if (ev.kind === "autopilot" && !first) toast(`Autopilot: ${esc(ev.detail)}`, "match");
-      if (ev.kind === "link" && !first) toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
+      if (ev.kind === "autopilot") toast(`Autopilot: ${esc(ev.detail)}`, "match");
+      if (ev.kind === "link") toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
     }
+    if (matches.length > 3) toast(`${matches.length} functions matched`, "match");
+    else for (const ev of matches) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
     if (rescanned) {
       S.scores.clear(); S.flash.clear(); S.stats = null;
       S.diffKey = null;
