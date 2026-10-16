@@ -55,7 +55,7 @@ def stubs(net):
         log = "batch fixture: deterministic compile error"
         obj = None
 
-    net._compile = lambda proj, header, source: (calls.append(1) or FakeResult())
+    net._compile = lambda proj, header, source, fn=None: (calls.append(1) or FakeResult())
     net._evaluate = lambda fn, proj, obj: (FakeCand(fn["name"], fn["fingerprint"]), None, [])
     return {"calls": calls, "Broken": Broken}
 
@@ -76,7 +76,7 @@ def test_c01_batch_compiles_once_and_verdicts_are_independent(net, alice, stubs)
 
 
 def test_c01b_shared_compile_error_reported_per_function(net, alice, stubs):
-    net._compile = lambda proj, header, source: stubs["Broken"]()
+    net._compile = lambda proj, header, source, fn=None: stubs["Broken"]()
     out = net.attempt_many(alice, [f"func_00{i}" for i in range(1, 7)], "int x;")
     assert out.count("❌ COMPILE ERROR") == 6
     assert net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=1 AND status='matched'")["n"] == 0

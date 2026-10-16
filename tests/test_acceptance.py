@@ -89,7 +89,7 @@ class ForgedCand:
 def stub_compile_eval(net, monkeypatch, cand=None, hook=None) -> None:
     """net._compile succeeds (running `hook` first, once per compile call) and net._evaluate
     returns the given candidate (a fingerprint match by default)."""
-    def compile_(proj, header, source):
+    def compile_(proj, header, source, fn=None):
         if hook:
             hook()
         return FakeResult()
@@ -117,7 +117,7 @@ def test_v01_header_change_between_compile_and_acceptance_is_historical(net, ali
     fn = net.store.one("SELECT * FROM functions WHERE id=1")
     fired = {"n": 0}
 
-    def compile_under_race(proj, header, source):
+    def compile_under_race(proj, header, source, fn=None):
         fired["n"] += 1
         if fired["n"] == 1:  # the concurrent header edit, exactly once
             with net.store.tx() as db:
@@ -150,7 +150,7 @@ def test_v01b_scored_path_stale_compile_is_historical_too(net, alice, monkeypatc
         db.execute("UPDATE functions SET target=?, fingerprint=NULL WHERE id=1", (b"\x03\xe0\x00\x08",))
     fired = {"n": 0}
 
-    def compile_under_race(proj, header, source):
+    def compile_under_race(proj, header, source, fn=None):
         fired["n"] += 1
         if fired["n"] == 1:
             with net.store.tx() as db:
@@ -227,7 +227,7 @@ def test_v04_reloc_change_before_acceptance_is_rejected(net, alice, monkeypatch)
     accepted (plan V-04)."""
     fired = {"n": 0}
 
-    def compile_under_race(proj, header, source):
+    def compile_under_race(proj, header, source, fn=None):
         fired["n"] += 1
         if fired["n"] == 1:
             with net.store.tx() as db:
@@ -250,7 +250,7 @@ def test_v05_compiler_profile_change_is_stale(net, alice, monkeypatch):
     match (plan V-05)."""
     fired = {"n": 0}
 
-    def compile_under_race(proj, header, source):
+    def compile_under_race(proj, header, source, fn=None):
         fired["n"] += 1
         if fired["n"] == 1:
             with net.store.tx() as db:
@@ -274,7 +274,7 @@ def test_v06_revision_bump_makes_evidence_historical(net, alice, monkeypatch):
     the old identity until revalidated (plan V-06)."""
     fired = {"n": 0}
 
-    def compile_under_race(proj, header, source):
+    def compile_under_race(proj, header, source, fn=None):
         fired["n"] += 1
         if fired["n"] == 1:
             with net.store.tx() as db:
@@ -307,7 +307,7 @@ def test_v07_unit_edit_re_tests_only_its_own_protected_matches(net, alice, monke
     match_fn(net, alice, fn2, "int f(void) { return 2; }")
     compiled = []
 
-    def compile_(proj, header, source):
+    def compile_(proj, header, source, fn=None):
         compiled.append(source)
         return FakeResult()
 

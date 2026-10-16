@@ -74,7 +74,7 @@ def test_attempt_path_records_stages_when_enabled(tmp_path, monkeypatch):
         log = ""
         obj = b"x"
 
-    net._compile = lambda proj, header, source: FakeResult()
+    net._compile = lambda proj, header, source, fn=None: FakeResult()
     net._evaluate = lambda fn, proj, obj: (None, None, [])
 
     telemetry.enable(True)

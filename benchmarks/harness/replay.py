@@ -77,7 +77,7 @@ def stub_compiler(mode: str):
         def __init__(self, ok, log="", obj=None):
             self.ok, self.log, self.obj = ok, log, obj
 
-    def fake(proj, header, source):
+    def fake(proj, header, source, fn=None):  # fn: the merged _compile passes the function
         if mode == "compile-error":
             return FakeResult(False, "replay: deterministic compile error")
         return FakeResult(True, "", b"\x00replay")

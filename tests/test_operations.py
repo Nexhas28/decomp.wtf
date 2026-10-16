@@ -186,7 +186,7 @@ def test_o02d_conservative_path_works_with_every_flag_off(tmp_path, monkeypatch)
         def fingerprint() -> str:
             return FP
 
-    monkeypatch.setattr(net, "_compile", lambda proj, header, src: FakeResult())
+    monkeypatch.setattr(net, "_compile", lambda proj, header, src, fn=None: FakeResult())
     monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (Hit(), None, []))
     out = net.attempt(alice, "func_001", "int func_001(void) { return 1; }", "fixture")
     assert out["matched"] is True and out["score"] == 0
@@ -319,7 +319,7 @@ def test_o06_soak_claim_release_attempt_cycles_leave_no_leaked_state(tmp_path, m
             return FP
 
     mode = {"hit": False}
-    monkeypatch.setattr(net, "_compile", lambda proj, header, src: FakeResult())
+    monkeypatch.setattr(net, "_compile", lambda proj, header, src, fn=None: FakeResult())
     monkeypatch.setattr(net, "_evaluate",
                         lambda fn, proj, obj: (Hit() if mode["hit"] else Miss(), None, []))
     for i in range(45):
@@ -366,7 +366,7 @@ def test_o07_pause_acceptance_retains_evidence_and_resume_restores(tmp_path, mon
         def fingerprint() -> str:
             return FP
 
-    monkeypatch.setattr(net, "_compile", lambda proj, header, src: FakeResult())
+    monkeypatch.setattr(net, "_compile", lambda proj, header, src, fn=None: FakeResult())
     monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (Hit(), None, []))
 
     source = "int func_001(void) { return 1; }"

@@ -20,6 +20,7 @@ from pathlib import Path
 from . import policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
+from .compiler_profiles import effective_compiler
 from .project import compiler_config, maspsx_variant_config, variant_compiler_config
 from .store import Store
 
@@ -445,10 +446,13 @@ class Network:
         row = self.store.one("SELECT name FROM agents WHERE id=?", agent_id) if agent_id else None
         return row["name"] if row else "?"
 
-    def _compile(self, proj, header: str, source: str):
-        """Arch-specific lanes may override this (Game Boy: see app.engine.RomNetwork._compile)."""
+    def _compile(self, proj, header: str, source: str, fn=None):
+        """Compile with the project's compiler for `fn` (the default, or the profile its function, segment or
+        address selects, see compiler_profiles); without `fn`, the default compiler. Arch-specific lanes
+        override this (Game Boy: see app.engine.RomNetwork._compile)."""
         root = Path(proj["root"])
-        return compile_source(compiler_config(root, json.loads(proj["config"])), header, source)
+        cfg = json.loads(proj["config"])
+        return compile_source(compiler_config(root, {**cfg, "compiler": effective_compiler(cfg, fn)}), header, source)
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
@@ -460,7 +464,7 @@ class Network:
         the single compile + evaluate + score step shared by attempt() and by remote-result re-verification.
         Returns (result, candidate, verdict, problems, diff); diff is None for hash-only projects and when
         no candidate came out of the object. The caller is responsible for snapshot/acceptance checks."""
-        result = self._compile(proj, ctx["header"], source)
+        result = self._compile(proj, ctx["header"], source, fn)
         if not result.ok:
             alt = self._variant_attempt(fn, proj, source, ctx, None)
             if alt is None:
@@ -594,6 +598,9 @@ class Network:
                 raise NetworkError(f"{proj['slug']} has one header per source file: pass `function` to get the "
                                    f"header that function compiles against")
             ctx = self._context(proj["id"])
+        if ctx is None:
+            return (f"// {proj['slug']} has no context.h yet: it is created on import, or with edit_context; "
+                    f"candidates compile with an empty header until then")
         return (f"// context.h for {proj['slug']} — version {ctx['version']} "
                 f"(prepended to every compile as #include \"context.h\")\n{ctx['header']}")
 
@@ -703,6 +710,17 @@ class Network:
                     "changes." % (wall_signature(note), fn["name"], WALL_COOLDOWN // 3600))
         return out
 
+    def clear_claims(self, project: str | None = None) -> int:
+        """Drop every claim in a project, whoever holds it (the user's "cut them all"). The agents holding
+        them aren't told, so stop them first; their best attempts and notes stay. Returns how many there were."""
+        proj = self._project(project)
+        with self.store.tx() as db:
+            n = db.execute("DELETE FROM claims WHERE function_id IN (SELECT id FROM functions WHERE project_id=?)",
+                           (proj["id"],)).rowcount
+            if n:
+                self._event(db, proj["id"], None, "claims", f"{n} claim{'s' if n != 1 else ''} cleared")
+        return n
+
     def get_function(self, function: str, project: str | None = None, agent: Agent | None = None) -> str:
         return self._brief(self._function(function, project), agent, header="VIEW")
 
@@ -804,7 +822,7 @@ class Network:
         ctx = self._context(proj["id"], fn["unit"])
         snap = snapshots.capture(fn, proj, ctx)
         with telemetry.span("attempt.compile", origin=agent.name):
-            result = self._compile(proj, ctx["header"], source)
+            result = self._compile(proj, ctx["header"], source, fn)
 
         if not result.ok:
             # A jump-table (or other assembly-level) rejection: the PSY-Q pipeline could assemble it, so
@@ -1029,9 +1047,15 @@ class Network:
             # retained as search evidence, never accepted while the project's acceptance is paused.
             matched = False
         with self.store.tx() as db:
-            cur = db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
-                             "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
-            attempt_id = cur.lastrowid
+            # A rescan can archive the highest attempt rows. Keep live-feed IDs above that watermark
+            # instead of reusing SQLite rowids.
+            next_id = db.execute(
+                "SELECT MAX(COALESCE((SELECT MAX(id) FROM attempts),0),"
+                "COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='attempt_id_floor'),0))+1"
+            ).fetchone()[0]
+            db.execute("INSERT INTO attempts(id,function_id,agent_id,score,compiled,context_version,source,created_at,via) "
+                       "VALUES(?,?,?,?,?,?,?,?,?)", (next_id, fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
+            attempt_id = next_id
             if snapshot is not None:
                 db.execute(
                     "INSERT INTO attempt_snapshots(attempt_id, project_id, function_id, function_revision, "
@@ -1225,7 +1249,7 @@ class Network:
         out = []
         for fn in todo:
             ctx = self._context(proj["id"], fn["unit"])
-            result = self._compile(proj, ctx["header"], fn["best_source"])
+            result = self._compile(proj, ctx["header"], fn["best_source"], fn)
             if not result.ok:
                 out.append(f"❌ {fn['name']}: best no longer compiles under v{ctx['version']} — "
                            f"stays unverified (historical only)")
@@ -1443,7 +1467,7 @@ class Network:
 
         def check(fn) -> tuple[str, str] | None:
             res = self._compile(proj, header_for(fn) if header_for else header,
-                                (sources or {}).get(fn["id"], fn["matched_source"]))
+                                (sources or {}).get(fn["id"], fn["matched_source"]), fn)
             if not res.ok:
                 return fn["name"], "no longer compiles: " + res.log.strip().splitlines()[0][:200] if res.log.strip() else "compile failed"
             cand, verdict, _ = self._evaluate(fn, proj, res.obj)
