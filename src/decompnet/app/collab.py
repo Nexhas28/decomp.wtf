@@ -606,6 +606,10 @@ class Link:
         if st.get("context"):
             net.apply_remote_context(slug, st["context"]["header"], st["context"]["version"])
             self.cursor["v"] = st["context"]["version"]
+        if self.cursor["e"] == 0 and st.get("matched") is not None:
+            # the first sync carries every match the host has: a match made here that it doesn't have was
+            # never confirmed by the room's judge (an older copy accepted it locally)
+            net.reopen_unconfirmed(slug, {m["vram"] for m in st["matched"]})
         for m in st.get("matched") or []:
             net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host")
         for b in st.get("best") or []:

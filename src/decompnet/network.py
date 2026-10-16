@@ -1118,6 +1118,11 @@ class Network:
 
         return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
 
+    def _second_judge(self, agent: Agent, fn, source: str) -> dict | None:
+        """Another judge an exact result must also pass before it is accepted here (RomNetwork: a room's host).
+        None: there is none. Otherwise {"matched", "score", "text"}; "text" explains a refusal."""
+        return None
+
     def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool,
                variants: bool = True) -> dict:
         """Evaluate one compiled object against fn's target and record the result: the single evaluator +
@@ -1169,6 +1174,13 @@ class Network:
                                "evidence; the function stays open and your claim is kept. Revalidate "
                                f"and call resume_acceptance('{proj['slug']}'), then re-run."),
                     "score": score, "matched": False}
+
+        if matched_now and (judged := self._second_judge(agent, fn, source)) is not None and not judged["matched"]:
+            # exact here, but the judge that counts (a room's host) says otherwise: kept as an attempt with that
+            # judge's score (none when it couldn't say), the function stays open and the claim is kept
+            self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False, compiled=True,
+                         snapshot=snap)
+            return {"text": judged["text"], "score": judged["score"], "matched": False}
 
         if self._hash_only(fn):
             refused = self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,

@@ -364,3 +364,110 @@ def test_an_old_host_or_an_unknown_compiler(pair):
     with pytest.raises(NetworkError, match="can't use the room host's compiler settings"):
         link.sync()
     assert "gcc-from-the-future" in link.error and _cfg(guest) == before  # loud, and nothing half-applied
+
+
+# -- the room's host is the judge (an older host that sends no compiler settings: its verdicts are stubbed)
+
+@pytest.fixture
+def judged(pair, monkeypatch):
+    """The member's compiler and scorer stubbed: a source with MATCHES in it is exact here, anything else scores
+    40. `host` holds what the stubbed host answers to /collab/attempt (an exception: unreachable)."""
+    from types import SimpleNamespace
+
+    from decompnet import scoring, validity
+
+    host, guest, link, client, code = pair
+    with guest.store.tx() as db:
+        db.execute("UPDATE functions SET target=? WHERE project_id=1", (b"\0" * 8,))
+    monkeypatch.setattr(guest, "_compile", lambda proj, header, source, fn=None: SimpleNamespace(ok=True, obj=source, log=""))
+    monkeypatch.setattr(guest, "_evaluate", lambda fn, proj, obj: (SimpleNamespace(fingerprint=lambda: "fp", src=obj), None, []))
+    monkeypatch.setattr(guest, "_target_obj", lambda fn, proj: None)
+    monkeypatch.setattr(guest, "_validity", lambda fn, source: validity.Validity(ok=True))
+    monkeypatch.setattr(guest, "_worth_variant", lambda verdict, d: False)
+    for quiet in ("_evidence", "_permuter_handoff"):
+        monkeypatch.setattr(guest, quiet, lambda *a, **k: "")
+    real_diff = scoring.diff
+    monkeypatch.setattr(scoring, "diff", lambda target, cand: real_diff(target, cand) if target is not None else
+                        scoring.DiffResult(0 if "MATCHES" in cand.src else 40, 100, [], "MATCHES" in cand.src))
+    answer, asked = {"host": {"score": 230, "matched": False}}, []
+
+    def attempt(agent, function, source):
+        asked.append((function, source))
+        if isinstance(answer["host"], Exception):
+            raise answer["host"]
+        return answer["host"]
+    monkeypatch.setattr(link, "attempt", attempt)
+    monkeypatch.setattr(link, "call", lambda *a, **k: "")
+    agent, _ = guest.local_agent("claude-1")
+    return guest, link, agent, answer, asked
+
+
+def _fn(guest, name="shop_open"):
+    return guest.store.one("SELECT * FROM functions WHERE name=?", name)
+
+
+def test_a_match_the_host_rejects_stays_open(judged):
+    guest, link, agent, answer, asked = judged
+    res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
+    assert not res["matched"] and res["score"] == 230 and "host scored 230" in res["text"]
+    assert "decomp-assembler" in res["text"] and asked == [("shop_open", "void shop_open(void) {} /* MATCHES */")]
+    fn = _fn(guest)
+    assert fn["status"] == "open" and fn["matched_source"] is None and fn["best_score"] == 230
+    assert "MATCHES" in fn["best_source"]
+    assert guest.store.one("SELECT COUNT(*) AS n FROM verification_receipts")["n"] == 0
+    assert guest.store.one("SELECT COUNT(*) AS n FROM events WHERE kind='match'")["n"] == 0
+    assert guest.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])["agent_id"] == agent.id
+
+
+def test_a_match_the_host_confirms_is_kept(judged):
+    guest, link, agent, answer, asked = judged
+    answer["host"] = {"score": 0, "matched": True}
+    res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
+    assert res["matched"] and "host confirmed" in res["text"] and len(asked) == 1
+    assert _fn(guest)["status"] == "matched"
+
+
+def test_an_unreachable_host_saves_no_match(judged):
+    guest, link, agent, answer, asked = judged
+    answer["host"] = NetworkError("the room's host isn't reachable right now")
+    res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
+    assert not res["matched"] and "NOT saved as a match" in res["text"]
+    fn = _fn(guest)
+    assert fn["status"] == "open" and fn["best_score"] is None  # nothing pretends to be a 0
+
+
+def test_sources_with_compiler_comments_are_judged_by_the_host(judged):
+    guest, link, agent, answer, asked = judged
+    src = "/* decomp-assembler: maspsx-2.79-div */\nvoid shop_open(void) {}"
+    answer["host"] = {"score": 12, "matched": False}
+    res = guest.attempt(agent, "shop_open", src, "test")
+    assert res["score"] == 12 and not res["matched"] and "this copy scored 40" in res["text"]
+    assert _fn(guest)["best_score"] == 12
+    answer["host"] = {"score": 0, "matched": True}  # this copy can't match it, the host can
+    res = guest.attempt(agent, "shop_open", src + " ", "test")
+    assert res["matched"] and _fn(guest)["status"] == "matched" and _fn(guest)["matched_source"] == src + " "
+    plain = guest.attempt(agent, "func_80010000", "void func_80010000(void) {}", "test")  # no comments: not asked
+    assert plain["score"] == 40 and [f for f, _ in asked] == ["shop_open", "shop_open"]
+
+
+def test_the_first_sync_reopens_matches_the_host_never_confirmed(pair):
+    host, guest, link, client, code = pair
+    remote = guest._remote_agent("bea.claude-1")
+    local, _ = guest.local_agent("claude-1")
+    with guest.store.tx() as db:  # an older copy accepted these locally; the host has none of them
+        db.execute("UPDATE functions SET status='matched', matched_source='int a;', matched_agent_id=? "
+                   "WHERE name='shop_open'", (local.id,))
+        db.execute("UPDATE functions SET status='matched', matched_source='int b;', matched_agent_id=? "
+                   "WHERE name='func_80010000'", (remote,))
+    with host.store.tx() as db:  # ...except that the host matched func_80010000 itself
+        db.execute("UPDATE functions SET status='matched', matched_source='int b;' WHERE name='func_80010000'")
+    link.sync()
+    fn = _fn(guest)
+    assert fn["status"] == "open" and fn["best_source"] == "int a;" and fn["matched_source"] is None
+    assert _fn(guest, "func_80010000")["status"] == "matched"  # mirrored from the room: never touched
+    assert any("reopened 1 match" in e["detail"] for e in guest.store.all("SELECT detail FROM events WHERE kind='collab'"))
+    with guest.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched', matched_source='int a;', matched_agent_id=? "
+                   "WHERE name='shop_open'", (local.id,))
+    link.sync()  # later syncs leave matches alone: only the first one carries the host's full list
+    assert _fn(guest)["status"] == "matched"
