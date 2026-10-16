@@ -903,6 +903,7 @@ class Manager:
         # without a config the default behaviour is unchanged. Measurements persist here.
         self.routing_config = lambda: {}
         self.routing = Routing(home / "agents" / "model-routing.json")
+        self.research_config = lambda: {}  # set by the server: Settings' "researcher" (model, effort)
         self.on_prepare = lambda slug: None  # set by the server: helpers are starting on this project (auto-fixer scan)
 
     # -- control
@@ -928,7 +929,9 @@ class Manager:
             # The launcher's default (tiered), or no model at all (the chat agent's start_agents): the role's model
             # instead, never the CLI's own default or the match-tuned routing. A model picked by name is kept.
             if kind == "claude" and options.get("model") in (TIERED, None, ""):
-                options["model"], options["effort"] = RESEARCH_MODEL, RESEARCH_EFFORT
+                cfg = self.research_config() or {}
+                options["model"] = cfg.get("model") or RESEARCH_MODEL
+                options["effort"] = cfg.get("effort") if cfg.get("effort") in EFFORTS else RESEARCH_EFFORT
         if options.get("model") == TIERED:
             if kind != "claude":
                 raise ValueError("tiered models (Haiku, Sonnet or Opus per function) are for Claude Code helpers")
@@ -1364,10 +1367,15 @@ class Manager:
                 except Exception:
                     pass  # measurement is best-effort: never fail the loop for it
             if ok and not fixer and not s.stop.is_set() and self._progress(agent.id) == before:
-                s.error = ("the session ended without writing a research note" if role == RESEARCHER else
-                           "the session ended without compiling anything") + " (check the agent's output)"
-                s.push("error", s.error)
-                ok = False
+                if s.options.get("keep_going") and role != RESEARCHER:
+                    # the launcher's "keep going" tick box: a session that gave up without compiling (walls,
+                    # releases) doesn't count towards the three failures that stop a helper; real errors still do
+                    s.push("info", "the session ended without compiling anything; keeping going (you ticked Keep going)")
+                else:
+                    s.error = ("the session ended without writing a research note" if role == RESEARCHER else
+                               "the session ended without compiling anything") + " (check the agent's output)"
+                    s.push("error", s.error)
+                    ok = False
             if s.stop.is_set():
                 break
             if s.signed_out:

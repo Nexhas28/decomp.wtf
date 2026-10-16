@@ -404,3 +404,30 @@ def test_in_a_room_a_researched_function_is_not_handed_out_again_before_its_note
     assert sent == [("/collab/note", {"text": RESEARCH_PREFIX + "tips", "function": "a_small"})]
     assert net.store.one("SELECT COUNT(*) AS n FROM notes")["n"] == 0  # the note is the host's, not here yet
     assert net.research_candidates("fixture", r.id, 1)[0]["name"] == "b_mid"
+
+
+def test_the_researchers_model_is_a_setting(net, monkeypatch):
+    mcp, manager, security = build(net, net.workspace / ".decomp", 6497, "k")
+    monkeypatch.setattr(agents.Manager, "_run", lambda self, s: None)
+    c = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"), base_url="http://127.0.0.1:6497")
+    c.cookies.set("decomp_live", "k")
+    h = {"X-Decomp": "1"}
+    assert c.get("/api/researcher").json()["settings"] == {"model": agents.RESEARCH_MODEL, "effort": agents.RESEARCH_EFFORT}
+    assert c.post("/api/researcher", json={"effort": "warp"}, headers=h).status_code == 400
+    r = c.post("/api/researcher", json={"model": "claude-opus-5-5", "effort": "high"}, headers=h)
+    assert r.json()["settings"] == {"model": "claude-opus-5-5", "effort": "high"}
+    r = c.post("/api/agents/start", json={"kind": "claude", "slug": "fixture", "options": {"role": "researcher",
+                                                                                          "model": "tiered"}}, headers=h)
+    s = manager.sessions[r.json()["started"][0]]
+    assert (s.options["model"], s.options["effort"]) == ("claude-opus-5-5", "high")
+
+
+def test_keep_going_reaches_the_helper(net, monkeypatch):
+    mcp, manager, security = build(net, net.workspace / ".decomp", 6498, "k")
+    monkeypatch.setattr(agents.Manager, "_run", lambda self, s: None)
+    c = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"), base_url="http://127.0.0.1:6498")
+    c.cookies.set("decomp_live", "k")
+    r = c.post("/api/agents/start", json={"kind": "claude", "slug": "fixture", "options": {"model": "tiered",
+                                                                                          "keep_going": True}},
+               headers={"X-Decomp": "1"})
+    assert manager.sessions[r.json()["started"][0]].options["keep_going"] is True

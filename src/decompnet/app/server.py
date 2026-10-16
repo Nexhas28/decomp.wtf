@@ -289,6 +289,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     fixer = fixermod.Fixer(net, manager, config=lambda: settings.data.get("auto_fixer") or {})
     net.on_note = fixer.observe
     manager.on_prepare = fixer.scan
+    manager.research_config = lambda: settings.data.get("researcher") or {}
     net.fixer = fixer
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
 
@@ -1039,6 +1040,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             options["billing"] = "api"
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
+        if given.get("keep_going") is True:  # sessions that compile nothing don't stop the helper (real errors do)
+            options["keep_going"] = True
         role = str(given.get("role") or "")
         if role:  # a job other than matching (Research: write notes); focus doesn't apply to it
             if role not in agents.ROLES:
@@ -1188,6 +1191,30 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             except (NetworkError, ValueError) as e:
                 return fail(e)
         return JSONResponse(out)
+
+    @mcp.custom_route("/api/researcher", methods=["GET", "POST"])
+    async def api_researcher(request: Request) -> Response:
+        """The model and effort for researchers: the function page's Research button, and Job: Research with the
+        launcher's Tiered (or no) model. GET them; POST {model?, effort?} saves."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        cur = dict(settings.data.get("researcher") or {})
+        if request.method == "POST":
+            data = await body(request)
+            if "model" in data:
+                model = str(data["model"] or "").strip()
+                if model and not re.fullmatch(r"[A-Za-z0-9._:\[\]-]{1,80}", model):
+                    return fail(ValueError("that isn't a model name, like claude-sonnet-5-5"))
+                cur["model"] = model or agents.RESEARCH_MODEL
+            if "effort" in data:
+                if data["effort"] not in agents.EFFORTS:
+                    return fail(ValueError(f"the effort is one of {', '.join(agents.EFFORTS)}"))
+                cur["effort"] = data["effort"]
+            settings.data["researcher"] = cur
+            settings.save()
+        return JSONResponse({"settings": {"model": cur.get("model") or agents.RESEARCH_MODEL,
+                                          "effort": cur.get("effort") or agents.RESEARCH_EFFORT},
+                             "models": fixermod.MODELS, "efforts": list(agents.EFFORTS)})
 
     @mcp.custom_route("/api/function-help", methods=["GET", "POST"])
     async def api_function_help(request: Request) -> Response:
