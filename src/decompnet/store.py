@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS candidates(
   source TEXT NOT NULL, source_digest TEXT NOT NULL, parent_id INTEGER,
   evidence TEXT, score_version INTEGER, created_at REAL);
 CREATE INDEX IF NOT EXISTS idx_candidates_fn ON candidates(function_id);
+CREATE TABLE IF NOT EXISTS function_walls(
+  function_id INTEGER NOT NULL, signature TEXT NOT NULL, reason TEXT, at REAL,
+  PRIMARY KEY(function_id, signature));
+CREATE TABLE IF NOT EXISTS merge_proposals(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, continues_id INTEGER NOT NULL,
+  at REAL, evidence TEXT);
 CREATE TABLE IF NOT EXISTS reference_sources(
   entry_id TEXT NOT NULL, project_id INTEGER,
   repository TEXT NOT NULL, revision TEXT NOT NULL, source_location TEXT NOT NULL,
@@ -97,6 +103,7 @@ MIGRATIONS = [
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
     ("functions", "revision", "INTEGER NOT NULL DEFAULT 1"),   # split/merge/target change = new revision (Section 18.2)
     ("projects", "matched_epoch", "INTEGER NOT NULL DEFAULT 0"),  # incremented on every acceptance (P1.4 epochs)
+    ("functions", "best_verified", "INTEGER NOT NULL DEFAULT 1"),  # 0: legacy best scored before snapshots; revalidate before trusting
 ]
 
 
