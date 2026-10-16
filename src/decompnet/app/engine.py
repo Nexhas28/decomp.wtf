@@ -1863,6 +1863,13 @@ class RomNetwork(Network):
         try:
             got = link.attempt(agent, fn["name"], source)
         except NetworkError as e:
+            if "isn't reachable" not in str(e):  # the host answered, with a refusal
+                known = not str(e).startswith("no function")
+                return {"matched": False, "score": None, "text": (
+                    f"❌ The room's host didn't take this attempt ({e}). NOT saved as a match." if known else
+                    f"❌ The room's host has no function {fn['name']} (this copy splits or names this part of the "
+                    "game differently), so the room can't judge or keep a match for it. Work on another function "
+                    "(claim_function), or ask the host to split or name it the same way.")}
             if exact:
                 return {"matched": False, "score": None,
                         "text": f"⚠️ This copy scored 0, but the room's host couldn't be reached to confirm it ({e}). "
@@ -1878,16 +1885,23 @@ class RomNetwork(Network):
                         + " (this source has decomp-* compiler comments that only the host applies, so this copy's "
                           "score doesn't count; the host's does). Keep iterating."}
 
-    def reopen_unconfirmed(self, slug: str, host_matched: set[int]) -> list[str]:
-        """Member side, first sync with the room: matches made here (by this copy's agents, not mirrored from
-        the room) that the host doesn't have were never confirmed by the judge that counts. Reopen them, their
-        source kept as the best so far. Returns their names."""
+    def reopen_unconfirmed(self, slug: str, host_matched: list[dict]) -> list[str]:
+        """Member side, first sync with the room: the host's full list of matches arrives, and a match here that
+        isn't on it was never confirmed by the judge that counts. That covers this copy's own agents' matches
+        (an older copy accepted them locally) and matches credited to the room that the room doesn't have (an
+        older copy applied a host match to the wrong overlay at the same address). Reopen them, their source
+        kept as the best so far. Compared by name; by address only where neither side has two functions there
+        (overlays reuse addresses, and names for them can differ between copies). Returns their names."""
+        names = {m["name"] for m in host_matched if m.get("name")}
+        host_at: dict[int, int] = {}
+        for m in host_matched:
+            host_at[m["vram"]] = host_at.get(m["vram"], 0) + 1
         proj = self._project(slug)
-        rows = self.store.all(
-            "SELECT f.id, f.name, f.vram FROM functions f LEFT JOIN agents a ON a.id=f.matched_agent_id "
-            "WHERE f.project_id=? AND f.status='matched' AND COALESCE(a.origin, '') != 'remote' "
-            "AND COALESCE(a.name, '') NOT LIKE '@%'", proj["id"])
-        rows = [r for r in rows if r["vram"] is not None and r["vram"] not in host_matched]
+        here = {r["vram"]: r["n"] for r in self.store.all(
+            "SELECT vram, COUNT(*) AS n FROM functions WHERE project_id=? GROUP BY vram", proj["id"])}
+        rows = self.store.all("SELECT id, name, vram FROM functions WHERE project_id=? AND status='matched'", proj["id"])
+        rows = [r for r in rows if r["name"] not in names
+                and not (host_at.get(r["vram"]) == 1 and here.get(r["vram"]) == 1)]
         if not rows:
             return []
         with self.store.tx() as db:
@@ -1898,7 +1912,7 @@ class RomNetwork(Network):
                            "matched_at=NULL, revision=revision+1 WHERE id=?", (r["id"],))
             db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (proj["id"],))
             self._event(db, proj["id"], None, "collab",
-                        f"reopened {len(rows)} match{'es' if len(rows) != 1 else ''} the room's host never confirmed "
+                        f"reopened {len(rows)} match{'es' if len(rows) != 1 else ''} the room's host doesn't have "
                         f"(their code is kept as the best so far): " + ", ".join(r["name"] for r in rows[:10])
                         + (", ..." if len(rows) > 10 else ""))
         return [r["name"] for r in rows]
@@ -2003,16 +2017,21 @@ class RomNetwork(Network):
             db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
                        (project_id, aid, kind, detail, created_at))
 
-    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str) -> None:
+    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str, name: str | None = None) -> None:
         """Member side: the room's host reports this function matched. A remote report is never accepted on
         its own (plan X-01): the reported source is recompiled against the CURRENT local context and
         evaluated against the local target; only a real local match goes through the normal acceptance
-        path (_record: receipt, matched_epoch). A forged or stale report is recorded as historical."""
+        path (_record: receipt, matched_epoch). When this copy can't reproduce it (the host compiled with
+        decomp-* comments or a compiler this copy lacks) the attempt is kept as historical evidence, and in a
+        linked room, where the host is the judge, the function is still marked matched as the host's (no
+        receipt: nothing was verified here). Found by name (overlays reuse addresses), else by a unique address."""
         proj = self._project(slug)
-        same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
-        if len(same) != 1:  # none, or several Game Boy banks at that address: never guess which one matched
-            return
-        fn = same[0]
+        fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", proj["id"], name) if name else None
+        if fn is None:
+            same = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
+            if len(same) != 1:  # none, or several overlays/banks at that address: never guess which one matched
+                return
+            fn = same[0]
         if fn["status"] == "matched":
             return
         ctx = self._context(proj["id"], fn["unit"])
@@ -2020,10 +2039,14 @@ class RomNetwork(Network):
             return
         agent = Agent(self._remote_agent(agent_name), "@" + agent_name, "room", True)
         snap = snapshots.capture(fn, proj, ctx)
-        result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        try:
+            result, cand, _, _, d = self._compile_and_evaluate(fn, proj, source, ctx)
+        except Exception:  # a compiler this copy lacks: not reproducible here
+            result, cand, d = None, None, None
+        compiled = bool(result is not None and result.ok and cand is not None)
         matched_now = False
         score = None
-        if result.ok and cand is not None:
+        if compiled:
             if self._hash_only(fn):
                 matched_now = cand.fingerprint() == fn["fingerprint"]
                 score = 0 if matched_now else None
@@ -2031,13 +2054,32 @@ class RomNetwork(Network):
                 matched_now = d.bytes_match
                 score = d.score
         ok, why = snapshots.check_current(self, proj, fn, snap)
-        if matched_now and ok:
-            self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap,
-                         object_digest=cand.fingerprint())
-        else:
-            self._record(fn, agent, score, source, ctx["version"], matched=False,
-                         compiled=result.ok and cand is not None, via="room", snapshot=snap,
-                         stale_reason=why or "remote match failed local verification")
+        if matched_now and ok and self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True,
+                                               via="room", snapshot=snap, object_digest=cand.fingerprint()) is None:
+            return
+        self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=compiled, via="room",
+                     snapshot=snap, stale_reason=why or "remote match failed local verification")
+        if self.cfg(proj).get("link"):
+            self._mark_host_match(fn["id"], agent, source)
+
+    HOST_ONLY = ("matched on the room's host, which judges the room; this copy can't rebuild it (decomp-* compiler "
+                 "comments or a compiler it lacks), so it carries no local receipt")
+
+    def _mark_host_match(self, function_id: int, agent: Agent, source: str) -> None:
+        """A room's match this copy can't reproduce: matched, credited to the host's agent, its source kept, and
+        meta.host_only saying why there is no verification receipt."""
+        with self.store.tx() as db:
+            row = db.execute("SELECT project_id, status, meta FROM functions WHERE id=?", (function_id,)).fetchone()
+            if row is None or row["status"] == "matched":
+                return
+            meta = json.loads(row["meta"] or "{}")
+            meta["host_only"] = self.HOST_ONLY
+            db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
+                       "best_score=0, best_source=?, meta=? WHERE id=?",
+                       (source, agent.id, time.time(), source, json.dumps(meta), function_id))
+            db.execute("DELETE FROM claims WHERE function_id=?", (function_id,))
+            db.execute("DELETE FROM search_budgets WHERE function_id=?", (function_id,))
+            db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (row["project_id"],))
 
     def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
         """A git project's room: who matched a function (the code itself arrives with the host's commits)."""
@@ -2136,7 +2178,9 @@ class RomNetwork(Network):
                 db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, sym["name"]))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, sym["name"], sym["address"], sym["size"], sym["kind"]))
-                db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
+                at = db.execute("SELECT COUNT(*) FROM functions WHERE project_id=? AND vram=?", (pid, sym["address"])).fetchone()[0]
+                if at == 1:  # several overlays at this address: which one the host means is unknown, rename none
+                    db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
                 for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
                                     "(matched_source IS NOT NULL OR best_source IS NOT NULL)", (pid,)).fetchall():
                     db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",

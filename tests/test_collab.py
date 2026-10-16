@@ -556,3 +556,53 @@ def test_release_always_reaches_the_host(claims):
     call.answer = NetworkError("you don't hold a claim on func_80010000")
     with pytest.raises(NetworkError, match="don't hold a claim"):  # held nowhere: still says so
         guest.release(agent, "func_80010000", "", "test")
+
+
+# -- the room's matches reaching a member
+
+def _overlay_twin(guest):
+    """Another overlay loaded at shop_open's address, as overlays are."""
+    with guest.store.tx() as db:
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram) "
+                   "VALUES(1,'ovl_warp_func_80100000',8,2,'ovl_warp',?)", (0x80100000,))
+
+
+def test_a_host_match_this_copy_cant_rebuild_still_counts(pair):
+    host, guest, link, client, code = pair
+    _overlay_twin(guest)
+    guest.apply_remote_match("test", 0x80100000, "int warp;", "bea.claude-1", "ovl_warp_func_80100000")
+    fn = _fn(guest, "ovl_warp_func_80100000")
+    assert fn["status"] == "matched" and fn["matched_source"] == "int warp;"  # found by name, not address
+    assert "room's host" in json.loads(fn["meta"])["host_only"]
+    assert guest.store.one("SELECT name FROM agents WHERE id=?", fn["matched_agent_id"])["name"] == "@bea.claude-1"
+    assert guest.store.one("SELECT COUNT(*) AS n FROM verification_receipts")["n"] == 0  # nothing verified here
+    assert _fn(guest)["status"] == "open"  # the other overlay at that address is untouched
+    guest.apply_remote_match("test", 0x80100000, "int x;", "bea.claude-1", "ovl_other_func_80100000")
+    assert _fn(guest)["status"] == "open"  # unknown name, ambiguous address: never guessed
+
+
+def test_the_first_sync_reopens_room_matches_the_room_doesnt_have(pair):
+    host, guest, link, client, code = pair
+    _overlay_twin(guest)
+    remote = guest._remote_agent("chat_52")
+    with guest.store.tx() as db:  # an older copy put the host's ovl_warp match on the wrong overlay
+        db.execute("UPDATE functions SET status='matched', matched_source='int w;', matched_agent_id=? "
+                   "WHERE name='shop_open'", (remote,))
+        db.execute("UPDATE functions SET status='matched', matched_source='int b;', matched_agent_id=? "
+                   "WHERE name='func_80010000'", (remote,))
+        db.execute("UPDATE functions SET name='main_func_80010000' WHERE name='func_80010000'")  # named differently
+    with host.store.tx() as db:
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,status,matched_source) "
+                   "VALUES(1,'ovl_warp_func_80100000',8,2,'ovl_warp',?,'matched','int w;')", (0x80100000,))
+        db.execute("UPDATE functions SET status='matched', matched_source='int b;' WHERE name='func_80010000'")
+    link.sync()
+    assert _fn(guest)["status"] == "open" and _fn(guest)["best_source"] == "int w;"
+    assert _fn(guest, "main_func_80010000")["status"] == "matched"  # same single address on both sides: kept
+    assert _fn(guest, "ovl_warp_func_80100000")["status"] == "matched"  # and the room's match landed by name
+
+
+def test_an_attempt_on_a_function_the_host_lacks_says_so(judged):
+    guest, link, agent, answer, asked = judged
+    answer["host"] = NetworkError("no function 'shop_open' in 'test'")
+    res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
+    assert not res["matched"] and "has no function shop_open" in res["text"] and _fn(guest)["status"] == "open"

@@ -609,9 +609,9 @@ class Link:
         if self.cursor["e"] == 0 and st.get("matched") is not None:
             # the first sync carries every match the host has: a match made here that it doesn't have was
             # never confirmed by the room's judge (an older copy accepted it locally)
-            net.reopen_unconfirmed(slug, {m["vram"] for m in st["matched"]})
+            net.reopen_unconfirmed(slug, st["matched"])
         for m in st.get("matched") or []:
-            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host")
+            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"))
         for b in st.get("best") or []:
             net.apply_remote_best(slug, b["vram"], b["score"], b["source"])
         for n in st.get("notes") or []:
