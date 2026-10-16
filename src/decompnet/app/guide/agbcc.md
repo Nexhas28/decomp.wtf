@@ -18,4 +18,5 @@ Project conventions (pret-style): `gSomething` globals, `sSomething` statics, `T
 `FAKEMATCH`/`NONMATCHING` markers for hacks. Look at how matched files in the project write similar code
 before inventing a trick.
 
-Calls into BIOS use `swi`; the project wraps them (`CpuSet`, `LZ77UnCompVram`...): use the wrappers.
+Calls into BIOS use `swi`; the project wraps them (`CpuSet`, `LZ77UnCompVram`...): use the wrappers The
+wrappers themselves (`swi n; bx lr`) are set aside as BIOS code: you won't be handed one.

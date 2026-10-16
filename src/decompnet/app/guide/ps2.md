@@ -18,3 +18,5 @@ Small data is `$gp`-relative (-G8 typical), so declare externs with their real s
 
 Libraries: Sony's libgraph, libdma, libpad, libcdvd, libkernl, libsd and libvu0 are linked as
 libraries; their prototypes are in the project's headers.
+Kernel calls (`li $v1, n; syscall; jr $ra; nop` stubs: CreateThread, WaitSema, FlushCache...) are set
+aside as BIOS code: you won't be handed one. Call them from C by name.

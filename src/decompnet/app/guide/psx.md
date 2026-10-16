@@ -18,6 +18,10 @@ instruction scheduling; the project picks them per file. Code is mostly C.
 Libraries: PSY-Q's libgte, libgpu, libgs, libspu, libcd, libetc, libapi and libc are usually linked
 as library objects, not decompiled; their names and prototypes are in the project's headers.
 
+BIOS calls: the three-instruction stubs `li $t2, 0xA0/0xB0/0xC0; jr $t2; li $t1, n` (and `syscall` stubs
+like EnterCriticalSection) are set aside as BIOS code, so you won't be handed one. Call them from C by name
+(`printf`, `malloc`, `OpenEvent`...) like any other function.
+
 GTE (the geometry coprocessor): `mtc2`/`mfc2`/`ctc2`/`cfc2`, `lwc2`/`swc2` and commands like
 `RTPS`/`NCLIP` come from PSY-Q's GTE macros (`gte_ldv0`, `gte_rtps`...). Use the project's macros;
 don't write raw assembly.

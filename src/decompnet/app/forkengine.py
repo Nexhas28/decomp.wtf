@@ -145,7 +145,9 @@ def _matched_in(rep: dict, broken: set[str] = frozenset()) -> set[tuple[str, str
 
 
 _INCLUDE_LINE = re.compile(r'^#\s*include\s*"[^"]+"\s*$')
-_ASM_KEYS = ("asm_twin", "asm_code")  # meta saying a function is hand-written assembly (kept by sync)
+# meta saying a function is hand-written assembly or a BIOS call (kept by sync)
+_ASM_KEYS = ("asm_twin", "asm_code", "bios")
+_KEPT_KEYS = _ASM_KEYS + ("for_agents",)  # and that a person gave it back to agents anyway
 _ASM_DEF = re.compile(r"\s*(?:(?:static|inline|extern)\s+)*asm\b")
 # a source file that includes another source file: Mario Party 6's REL runtime.c files are one line,
 # #include "src/Runtime.PPCEABI.H/runtime.c" (its asm helpers, which every module links a copy of)
@@ -620,9 +622,9 @@ class ForkEngine:
                     if sym in held.get(uname, ()):
                         fuzzy = None if fuzzy is None else min(fuzzy, 99.99)
                 if old is not None:
-                    meta.update({k: v for k, v in self._meta(old).items() if k in _ASM_KEYS})
+                    meta.update({k: v for k, v in self._meta(old).items() if k in _KEPT_KEYS})
                 status = "matched" if fuzzy is not None and fuzzy >= 100 else "open" if u and u.source else "nosource"
-                if status == "open" and any(meta.get(k) for k in _ASM_KEYS):
+                if status == "open" and any(meta.get(k) for k in _ASM_KEYS) and not meta.get("for_agents"):
                     status = "asm"  # hand-written assembly (here or in its twin elsewhere): not for agents
                 score = None if fuzzy is None else scaled(fuzzy, n)
                 vram = md.get("virtual_address")
@@ -1447,16 +1449,22 @@ class ForkEngine:
         src = self._current_source(ForkProject(Path(proj["root"])), fn)
         return bool(src and _ASM_DEF.match(src))
 
-    def mark_asm(self, fn, twin_name: str | None = None, reason: str | None = None) -> None:
-        """fn's code is a matched assembly function's (runtime helpers each module links its own copy of), or code
-        no compiler makes (`reason`: see handwritten.py): agents can't write it in C, so it's out of their way."""
+    def mark_asm(self, fn, twin_name: str | None = None, reason: str | None = None, bios: str | None = None) -> None:
+        """fn's code is a matched assembly function's (runtime helpers each module links its own copy of), code
+        no compiler makes (`reason`: see handwritten.py), or nothing but a BIOS call (`bios`: see bios.py): agents
+        can't write it in C, so it's out of their way."""
         meta = self._meta(fn)
+        if meta.get("for_agents"):  # a person gave it back to agents
+            return
         if twin_name:
             meta["asm_twin"] = twin_name
         if reason:
             meta["asm_code"] = reason
+        if bios:
+            meta["bios"] = bios
         with self.net.store.tx() as db:
-            db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", (json.dumps(meta), fn["id"]))
+            db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status IN ('open','asm')",
+                       (json.dumps(meta), fn["id"]))
 
     # ------------------------------------------------------------------ for agents
 
@@ -2392,7 +2400,8 @@ class ForkEngine:
                                       "ON a.id=t.agent_id WHERE t.function_id=? ORDER BY t.id", fn["id"])
         notes = self.net.store.all("SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a "
                                    "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
-        return {"name": fn["name"], "vram": fn["vram"] or 0, "rom_offset": 0, "size": fn["size"], "insns": fn["n_insns"],
+        return self.net.set_aside_info(fn) | {
+                "name": fn["name"], "vram": fn["vram"] or 0, "rom_offset": 0, "size": fn["size"], "insns": fn["n_insns"],
                 "status": fn["status"], "best": fn["best_score"], "asm": asm, "unit": fn["unit"],
                 "source": current or fn["best_source"], "source_kind": "matched" if fn["status"] == "matched" else
                 ("latest" if current else "best" if fn["best_source"] else None),
