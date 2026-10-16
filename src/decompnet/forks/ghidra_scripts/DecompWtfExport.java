@@ -27,6 +27,7 @@ import ghidra.program.model.block.BasicBlockModel;
 import ghidra.program.model.block.CodeBlock;
 import ghidra.program.model.block.CodeBlockIterator;
 import ghidra.program.model.block.CodeBlockReference;
+import ghidra.program.model.block.CodeBlockReferenceIterator;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
@@ -127,8 +128,10 @@ public class DecompWtfExport extends GhidraScript {
         Long thunkOf = null;
         if (thunk) {
             try {
-                Function target = ((ThunkFunction) f).getThunkedFunction(monitor);
-                if (target != null) thunkOf = target.getEntryPoint().getOffset();
+                // 12.1.4: ThunkFunction exposes the destination entry point directly (no monitor,
+                // no getThunkedFunction()).
+                Address destination = ((ThunkFunction) f).getDestinationFunctionEntryPoint();
+                if (destination != null) thunkOf = destination.getOffset();
             } catch (Exception e) {
                 rowErrors.add(f.getName() + ": thunk target: " + e);
             }
@@ -196,7 +199,10 @@ public class DecompWtfExport extends GhidraScript {
                     StringBuilder sb = new StringBuilder("{\"start\":").append(cb.getMinAddress().getOffset())
                             .append(",\"end\":").append(cb.getMaxAddress().getOffset()).append(",\"successors\":[");
                     boolean first = true;
-                    for (CodeBlockReference ref : cb.getDestinations(monitor)) {
+                    // 12.1.4: getDestinations returns a CodeBlockReferenceIterator (not Iterable)
+                    CodeBlockReferenceIterator destinations = cb.getDestinations(monitor);
+                    while (destinations.hasNext()) {
+                        CodeBlockReference ref = destinations.next();
                         if (!first) sb.append(',');
                         sb.append(ref.getDestinationAddress().getOffset());
                         first = false;

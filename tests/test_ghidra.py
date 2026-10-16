@@ -225,7 +225,10 @@ def test_admission_pins_language_spec_and_loader():
     admitted = ghidra.admit(TargetProfile(kind="object", processor="mips", bits=32, endian="little"),
                             elf32le_object())
     assert admitted.language_id == "MIPS:LE:32:default"
-    assert admitted.compiler_spec == "default" and admitted.loader == "Elf" and not admitted.auto
+    # an unpinned compiler spec is None (the language's own default): -cspec ids are per-language
+    # (x86:LE:64:default has no "default" spec), so the exporter only passes one when the caller pins it
+    assert admitted.compiler_spec is None and admitted.loader == "Elf" and not admitted.auto
+    assert "-loader" in admitted.script_args() and "ElfLoader" in admitted.script_args()
     raw = ghidra.admit(TargetProfile(kind="raw_region", processor="mips", bits=32, endian="big",
                                      memory_map=(MemoryRegion(name="text", file_offset=0, size=0x400, vaddr=0),)),
                       bytes(0x400))
@@ -523,20 +526,47 @@ def test_thunks_externals_and_noncontiguous_bodies_are_classified_not_dropped(tm
 
 # ---------------------------------------------------------------------------- G-09
 
-def test_real_lane_skips_cleanly_without_analyzeHeadless(tmp_path):
-    headless_exe = shutil.which("analyzeHeadless")
-    if headless_exe is None and not ghidra.available():
-        pytest.skip("analyzeHeadless (Ghidra) is not installed on this host: the real admitted-target lane "
-                    "needs the ghidra toolchain and Java 21+")
-    fixture = ROOT / "projects" / "demo-fork" / "build" / "expected" / "game.o"
-    if not fixture.exists():
-        pytest.skip("the demo-fork object isn't built on this host (needs the project's compilers)")
-    m = ghidra.analyze_object(fixture, tmp_path / "cache", timeout=600,
-                              profile=TargetProfile(kind="object", processor="mips", bits=32, endian="big"))
-    assert m.status == "complete" and "clamp_s32" in m.names()
-    d = m.by_name("clamp_s32")
-    assert d is not None and d.entry is not None and d.body_ranges
-    assert "return" in d.pseudocode.text
+def test_real_lane_imports_a_clang_object_with_identity_correct_dossiers(tmp_path, monkeypatch):
+    """G-09 real admitted-target lane: builds a tiny ELF object with clang, runs the full
+    analyzeHeadless import/export through forks.ghidra, and checks the dossier rows against the
+    fixture oracle (the object's own symbol table). Skips ONLY when neither the workspace Java
+    (~/Decomp/java) nor a system Java exists, or when Ghidra/clang are absent — with the provisioned
+    runtime this test RUNS. Bounded by analyze_object's 300s timeout."""
+    java = ghidra.java_home()
+    if java is None or ghidra.java_version() < 21 or ghidra.ghidra_home() is None:
+        pytest.skip("the real admitted-target lane needs a Java 21+ runtime (DECOMP_JAVA_HOME, "
+                    "~/Decomp/java or PATH) and a Ghidra install (DECOMP_GHIDRA_HOME, the toolchain "
+                    "registry or the pinned workspace install): none found on this host")
+    cc = shutil.which("clang")
+    if cc is None:
+        pytest.skip("clang is needed to build the tiny ELF fixture (-target x86_64-unknown-linux-gnu -c)")
+    # Ghidra's logs/preferences default to ~/Library/ghidra; keep all real-lane state inside tmp_path
+    monkeypatch.setenv("DECOMP_GHIDRA_USER_HOME", str(tmp_path / "ghuser"))
+    (tmp_path / "ghuser").mkdir()
+    src = tmp_path / "fixture.c"
+    src.write_text("int add3(int a, int b, int c) { return a + b + c; }\n"
+                   "int mul2(int a) { return a * 2; }\n")
+    obj = tmp_path / "fixture.o"
+    subprocess.run([cc, "-target", "x86_64-unknown-linux-gnu", "-c", str(src), "-o", str(obj)],
+                   check=True, capture_output=True)
+    nm = subprocess.run(["nm", str(obj)], capture_output=True, text=True, check=True).stdout
+    syms = {parts[-1]: int(parts[0], 16) for line in nm.splitlines()
+            if (parts := line.split()) and len(parts) >= 2}
+    assert {"add3", "mul2"} <= set(syms)
+    profile = TargetProfile(kind="object", processor="x86", bits=64, endian="little")
+    m = ghidra.analyze_object(obj, tmp_path / "cache", timeout=300, profile=profile)
+    assert m.status == "complete" and m.functions_exported == 2
+    assert sorted(m.names()) == ["add3", "mul2"]
+    assert m.language_id == "x86:LE:64:default"
+    add3 = m.by_name("add3")
+    assert add3 is not None and add3.pseudocode.status == "ok" and add3.body_ranges
+    assert add3.entry == 0x100000 + syms["add3"]  # ElfLoader object image base + the fixture's offset
+    assert "+" in add3.pseudocode.text  # the oracle's a+b+c survives decompilation
+    mul2 = m.by_name("mul2")
+    assert mul2 is not None and mul2.entry == 0x100000 + syms["mul2"]
+    assert m.coverage_for("pseudocode").get("ok") == 2
+    again = ghidra.analyze_object(obj, tmp_path / "cache", timeout=300, profile=profile)
+    assert again.from_cache and sorted(again.names()) == ["add3", "mul2"]  # the real cache round-trips
 
 
 # ---------------------------------------------------------------------------- G-10 / P7.6-P7.7
