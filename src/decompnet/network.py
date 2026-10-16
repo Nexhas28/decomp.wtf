@@ -1083,8 +1083,10 @@ class Network:
             raise NetworkError("matched functions can't be merged")
         a = (fn["vram"], fn["rom_offset"], fn["size"])
         b = (cont["vram"], cont["rom_offset"], cont["size"])
-        adjacent = (b[0] is not None and a[0] is not None and b[0] == a[0] + (a[2] or 0)) or \
-                   (b[1] is not None and a[1] is not None and b[1] == a[1] + (a[2] or 0))
+        # `function` is the tail: it starts where `continues` ends (same direction as merge_function,
+        # and the reverse of split_function, which cuts the tail off the head).
+        adjacent = (b[0] is not None and a[0] is not None and a[0] == b[0] + (b[2] or 0)) or \
+                   (b[1] is not None and a[1] is not None and a[1] == b[1] + (b[2] or 0))
         if not adjacent:
             raise NetworkError(f"{fn['name']} and {cont['name']} are not adjacent: no boundary to merge")
         if not _fragment_like(fn):
