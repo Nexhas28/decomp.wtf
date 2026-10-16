@@ -1,0 +1,13 @@
+{
+  "name": "radare2",
+  "repo": "https://github.com/radareorg/radare2",
+  "version": "6.2.4",
+  "sha256": null,
+  "category": "disassembler-framework",
+  "platforms": ["n64", "psx", "ps2", "gamecube", "wii", "nds", "gba", "gameboy"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/radare2",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "radare2 6.2.4 built natively for darwin-arm64 into local-tools/radare2 (bin, lib, share, include). test.sh passed on 2026-10-16 (9 checks: rasm2 MIPS/Thumb/PPC/SM83 disassembly, rasm2 MIPS and ARM assembly, radare2 ESIL emulation, and aaa/pdf on a self-built Thumb object when arm-none-eabi-gcc is present). The archive was not kept, so sha256 is null. The release tag 6.2.4 was confirmed on GitHub with gh. Binaries reference lib/ by absolute path inside this project."
+}

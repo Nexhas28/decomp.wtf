@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-psx-ldr",
+  "repo": "https://github.com/lab313ru/ghidra_psx_ldr",
+  "version": "2026.10.03",
+  "sha256": "32abacd90a5950b97a0756f67e991c3cc0f8a62edd5531890d91af68a9916255",
+  "category": "ghidra-extension",
+  "platforms": ["psx"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261004_ghidra_psx_ldr.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "sha256 is of the prebuilt release asset for Ghidra 12.1.4. Needs Java 21 and Ghidra 12.1.4. test.sh installs it into a throwaway user.home and imports a hand-made PS-X EXE with analyzeHeadless (-loader PsxLoader; the display name 'PSX Executables Loader' is rejected by -loader)."
+}

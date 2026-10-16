@@ -1,0 +1,13 @@
+{
+  "name": "n64recomp",
+  "repo": "https://github.com/N64Recomp/N64Recomp",
+  "version": "ffb39cdad1da5de07eaaa48bd1db4a89a7986771",
+  "sha256": null,
+  "category": "recompiler",
+  "platforms": ["n64", "rsp"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/N64Recomp",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Builds two CLIs from the repo: bin/N64Recomp (N64 MIPS ELF to C) and bin/RSPRecomp (RSP microcode to C). Built with CMake from a git clone at the pinned commit (no archive, so sha256 is null). test.sh generates a tiny big-endian MIPS ELF and a tiny RSP blob and checks the emitted C for both tools; PASS. Test inputs are self-made; no game data."
+}

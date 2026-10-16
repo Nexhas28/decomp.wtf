@@ -1,0 +1,13 @@
+{
+  "name": "asm-differ",
+  "repo": "https://github.com/simonlindholm/asm-differ",
+  "version": "0dd09af8f8008f1f880327cf0aca3b26d2562ea2",
+  "sha256": null,
+  "category": "assembly-differ",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python package installed from git commit into .venv (uv, Python 3.12). test.sh uses the decomp.wtf binutils-mips cache (mips-ps2-decompals-as) to build two MIPS objects and checks the diff score and identical-object case. Unlicense."
+}

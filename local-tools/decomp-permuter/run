@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entry point: decomp-permuter (permuter.py) with the bundled venv.
+# Other scripts: run import.py / strip_other_fns.py via: .venv/bin/python app/<script>
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/.venv/bin/python" "$HERE/app/permuter.py" "$@"

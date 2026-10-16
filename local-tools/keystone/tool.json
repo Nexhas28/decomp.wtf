@@ -1,0 +1,13 @@
+{
+  "name": "keystone",
+  "repo": "https://github.com/keystone-engine/keystone",
+  "version": "0.9.2",
+  "sha256": "2f7af62dab0ce6c2732dbb4f31cfa2184a8a149e280b96b92ebc0db84c6e50f5",
+  "category": "assembler",
+  "platforms": ["n64", "psx", "ps2", "gamecube", "nds", "gba", "arm", "mips", "ppc"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Keystone 0.9.2 (tag commit dc7932ef2b2c4a793836caec6ecab485005139d6). Installed as the keystone-engine PyPI sdist in .venv/ (sha256 is of the sdist, re-downloaded from files.pythonhosted.org and matched to the PyPI digest). bin/kstool and lib/libkeystone.0.dylib are the CLI and library for macOS arm64. test.sh passes: MIPS big-endian, Thumb, ARM and PPC bytes checked through kstool, plus the Python binding."
+}

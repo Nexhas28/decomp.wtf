@@ -1,0 +1,13 @@
+{
+  "name": "mapfile-parser",
+  "repo": "https://github.com/ethteck/mapfile_parser",
+  "version": "2.9.0",
+  "sha256": null,
+  "category": "linker-map-parser",
+  "platforms": ["n64", "psx", "ps2", "gamecube", "nds", "gba"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python package with Rust (pyo3/maturin) core, installed from source checkout at commit dd01f8c1cb3250c715d0b7f4f93076531c28dc00 (tag 2.9.0) into .venv via uv. No archive downloaded, so sha256 is null. test.sh parses a tiny GNU ld map through the Python API and the jsonify CLI; passes on macOS arm64 with Python 3.12."
+}

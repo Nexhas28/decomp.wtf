@@ -1,0 +1,13 @@
+{
+  "name": "pypcode",
+  "repo": "https://github.com/angr/pypcode",
+  "version": "v4.0.1",
+  "sha256": null,
+  "category": "disassembler",
+  "platforms": ["n64", "psx", "ps2", "gamecube", "nds", "gba"],
+  "runs_on": "macos-arm64-native",
+  "entry": ".venv/bin/python",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python bindings to Ghidra SLEIGH (disassembly and P-code lifting) for MIPS BE, ARM and PowerPC BE. Installed from PyPI pypcode 4.0.1 into .venv via uv (no archive hash recorded, so sha256 is null). test.sh passed 2026-10-16 on macOS arm64 with the venv interpreter (python 3.12)."
+}

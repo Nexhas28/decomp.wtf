@@ -1,0 +1,13 @@
+{
+  "name": "ds-rom",
+  "repo": "https://github.com/AetiasHax/ds-rom",
+  "version": "v0.8.0",
+  "sha256": null,
+  "category": "nds-rom-extract-build",
+  "platforms": ["nds"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/dsrom",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built with cargo (ds-rom-cli 0.8.0, rustc 1.98.1, aarch64-apple-darwin) from a source snapshot in scratchpad; snapshot has no .git so the commit is unverified. Upstream latest release v0.8.0 (2026-07-21, MIT). test.sh needs the sibling local-tools/ndstool/bin/ndstool and arm-none-eabi-gcc; it builds a tiny synthetic DS ROM, then runs dump, extract, build, extract, build and checks the round trip is byte-identical. The bundled fixtures/logogen.rs is a small generator for the synthetic header logo."
+}
