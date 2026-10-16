@@ -1151,6 +1151,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 return JSONResponse(await call(lambda: manager.stop_team(slug, function, "switched off")))
             if data.get("kind") == "nuke":
                 return JSONResponse(await call(lambda: manager.start_team(slug, function, billing="plan", kind="nuke")))
+            if data.get("kind") == "investigate":  # one Opus helper from the researchers' notes, on the Claude plan
+                return JSONResponse(await call(lambda: manager.start_team(slug, function, billing="plan",
+                                                                          kind="investigate")))
             return JSONResponse(await call(lambda: manager.start_team(slug, function)))
         except (NetworkError, ValueError) as e:
             return fail(e)
@@ -1227,7 +1230,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def state() -> dict:
             return {"fix": fixer.holds(slug, function), "fix_unavailable": fixer.why_not(slug),
-                    "research": manager.research_running(slug, function)}
+                    "research": manager.research_running(slug, function),
+                    "has_research": bool(net.research_notes(slug, function))}
         try:
             if request.method == "POST":
                 if data.get("job") == "research":

@@ -2187,6 +2187,13 @@ class RomNetwork(Network):
         self.require_fixer(agent)
         return boundary.queue_permuter(self, agent, self._project(project)["slug"], function, reason)
 
+    def research_notes(self, slug: str, function: str) -> str:
+        """The researchers' notes on a function (newest last), without their [research] mark; "" if none."""
+        fn = self._function(function, slug)
+        rows = self.store.all("SELECT text FROM notes WHERE function_id=? AND text LIKE ? ORDER BY id",
+                              fn["id"], RESEARCH_PREFIX + "%")
+        return "\n\n".join(r["text"].removeprefix(RESEARCH_PREFIX).strip() for r in rows)
+
     def add_research_note(self, agent: Agent, project: str | None, function: str, text: str) -> str:
         fn = self._function(function, project)
         with self._research_lock:
