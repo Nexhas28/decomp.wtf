@@ -143,6 +143,13 @@ final class Backend: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.searchPath
         env["PYTHONUNBUFFERED"] = "1"
+        // The native Apple Silicon compilers (macos/toolchains/prebuilt) ship inside the app, so an installed `decomp`
+        // command finds them too, not only a checkout. A checkout's own copy wins when the user runs one.
+        if env["DECOMPNET_PREBUILT"] == nil, checkout == nil,
+           let bundled = Bundle.main.resourceURL?.appendingPathComponent("prebuilt"),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            env["DECOMPNET_PREBUILT"] = bundled.path
+        }
         // decomp.wtf finds the reverse-engineering tools (local-tools/) itself; DECOMP_LOCAL_TOOLS, when set, passes through.
         proc.environment = env
         proc.standardOutput = log
