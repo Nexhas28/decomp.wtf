@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -55,17 +56,28 @@ def wall_signature(text: str) -> str | None:
 
 def _fragment_like(fn) -> bool:
     """The boundary-fragment shape perf-test observed: the entry instruction already uses a saved
-    register (live-in) with no stack-frame prologue — a function split in two by the disassembler."""
-    head = "\n".join((fn["asm"] or "").splitlines()[:3])
-    if not head:
+    register (live-in) with no stack-frame prologue — a function split in two by the disassembler.
+    Reads the first instruction in either stored form: plain mnemonic lines (walls/releases) or the
+    imported `/* rom vram word */  mnemonic operands` lines; labels and comments are not instructions."""
+    for line in (fn["asm"] or "").splitlines():
+        text = line.strip()
+        if not text or text.startswith((".", "#", "@")):
+            continue
+        if text.startswith("/*"):
+            if "*/" not in text:
+                continue
+            text = text.split("*/", 1)[1].strip()
+            if not text:
+                continue
+            break
+        if re.match(r"^(glabel|endlabel|jlabel|dlabel)\b", text):
+            continue  # labels aren't instructions
+        break
+    else:
         return False
-    first = next((line for line in (fn["asm"] or "").splitlines()
-                  if line.strip() and not line.lstrip().startswith((".", "/*", "#", "@"))), "")
-    if not first:
-        return False
-    if re.search(r"\baddiu\s+sp,\s*sp,\s*-", first) or re.search(r"\baddi\s+sp,\s*sp,\s*-", first):
+    if re.search(r"\baddiu\s+sp,\s*sp,\s*-", text) or re.search(r"\baddi\s+sp,\s*sp,\s*-", text):
         return False  # a real prologue: the frame is set up
-    return bool(re.search(r"\b(s[0-7]|ra|gp)\b", first))
+    return bool(re.search(r"\b(s[0-7]|ra|gp)\b", text))
 # Twins first (see app/twins.py): a function whose code the game has more than once (boost: how many more times)
 # and isn't too big or given up on, best value per instruction first; its twins (boost -1) last, as they match for
 # free once it does.
@@ -87,6 +99,144 @@ STRATEGIES = {
     # so its value here is just the admission key — never rendered into SQL.
     "priority": "",
 }
+
+# ---------------------------------------------------------------------------- A.3 escalation wiring
+# Cold-path helpers for stall_note/escalate only (P8.4). The claim/attempt hot paths never import or
+# touch the analysis broker (A-02: easy functions must not start providers); the lazy imports below
+# keep it that way.
+
+_ARCH_PROCESSORS = {"mips": ("mips", 32), "ppc": ("powerpc", 32), "x86": ("x86", 32),
+                    "x86_64": ("x86", 64), "arm": ("arm", 32), "thumb": ("arm", 32),
+                    "aarch64": ("aarch64", 64), "sh": ("sh", 32)}
+
+
+def _counts_from_rows(rows) -> dict:
+    """Structured mismatch counts (P3.4 schema keys) derived from the rendered diff rows — the same
+    classification the agent sees ('r' register, 's' stack offset, 'i' operand, 'o' reorder,
+    '<' deletion, '>' insertion). For duplicated identical instructions the reorder count may
+    over-count by the multiplicity: a policy input, never a score."""
+    counts = {k: 0 for k in ("register", "stack_offset", "operand", "insertion", "deletion", "reorder")}
+    kinds = {"r": "register", "s": "stack_offset", "i": "operand", "o": "reorder",
+             "<": "deletion", ">": "insertion"}
+    for mark, _, _ in rows:
+        kind = kinds.get(mark)
+        if kind is not None:
+            counts[kind] += 1
+    return counts
+
+
+def _action_advice(action, name: str, since: int, stale: str = "") -> str:
+    """The policy's next action, as one appended agent-facing line."""
+    lines = {
+        "permutation": (f"\n🧭 Next action: PERMUTATION — the last diff is structurally close with only "
+                        f"register/stack differences: keep guided permutation; analysis would not help yet."),
+        "investigate_function": (f"\n🧭 Next action: TARGETED INVESTIGATION — control-flow, boundary or "
+                                 f"jump-table uncertainty persists after {since} non-improving compiles: call "
+                                 f"escalate_function(\"{name}\") for evidence, ranked hypotheses and "
+                                 f"budget-capped candidate changes."),
+        "investigate_neighbourhood": (f"\n🧭 Next action: NEIGHBOURHOOD INVESTIGATION — conflicting "
+                                      f"cross-function evidence around {name}: escalate its callers/callees."),
+        "release_cooldown": (f"\n🧭 Next action: RELEASE {name} with structured notes (what you tried, "
+                             f"what's left) and take a cooldown — no progress and no new evidence expected."),
+        "m2c_draft": (f"\n🧭 Next action: M2C DRAFT — no m2c draft has been tried for {name} yet: generate "
+                      f"and compile it before any deeper analysis."),
+        "context_repair": ("\n🧭 Next action: CONTEXT REPAIR — repeated compile errors from missing "
+                           "declarations: fix the context/prototypes before mutating code."),
+        "profile_calibration": ("\n🧭 Next action: PROFILE CALIBRATION — the compiler profile stays "
+                                "doubtful: run a bounded calibration before more attempts."),
+        "data_literal_check": ("\n🧭 Next action: DATA/LITERAL CHECK — the code aligns but data/literals "
+                               "differ: focus on the unit's data tables, not generic code changes."),
+        "twin_source": ("\n🧭 Next action: TRY THE TWIN/COMPATIBLE SOURCE first — an exact twin or a "
+                        "promising compatible source exists; deeper analysis is not needed."),
+    }
+    text = lines.get(action.kind, "")
+    return (text + stale) if text else ""
+
+
+def _profile_for(proj, fn) -> dict | None:
+    """The admitted raw-region profile for one function's target bytes (P8.2/P7.1): the extractor's
+    coordinates are authoritative, so the function's own vram/rom_offset is the mapping origin."""
+    entry = _ARCH_PROCESSORS.get((proj["arch"] or "").lower())
+    code = fn["target"] if fn["target"] is not None else None
+    if entry is None or not code:
+        return None
+    processor, bits = entry
+    arch = (proj["arch"] or "").lower()
+    vaddr = fn["vram"] if fn["vram"] is not None else (fn["rom_offset"] or 0)
+    return {"kind": "raw_region", "processor": processor, "bits": bits,
+            "endian": "big" if proj["big_endian"] else "little",
+            "mode": "thumb" if arch == "thumb" else ("arm" if arch == "arm" else ""),
+            "memory_map": ({"name": "fn", "file_offset": 0, "size": len(code), "vaddr": vaddr},),
+            "metadata": {"function": fn["name"]}}
+
+
+def _escalation_advice(net, function_id: int, agent_id: int, since: int) -> str:
+    """A.3: consult the escalation policy with the last attempt's structured mismatch evidence and
+    append a next-action recommendation (permutation vs investigation vs release). Cold path only —
+    runs once an agent is actually stalled. When the attempt's snapshot is still current the last
+    source is recompiled and re-diffed for a real summary; otherwise the advice is marked historical."""
+    from .analysis.escalation import EscalationInputs, EscalationPolicy
+
+    attempt = net.store.one(
+        "SELECT id, score, source FROM attempts WHERE function_id=? AND agent_id=? AND compiled=1 "
+        "ORDER BY id DESC LIMIT 1", function_id, agent_id)
+    if attempt is None or not (attempt["source"] or "").strip():
+        return ""
+    fn = net.store.one("SELECT * FROM functions WHERE id=?", function_id)
+    proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+    snap_row = net.store.one("SELECT * FROM attempt_snapshots WHERE attempt_id=?", attempt["id"])
+    mismatch, score_percent, stale = None, None, ""
+    if snap_row is not None:
+        snap = {"schema": snapshots.SNAPSHOT_SCHEMA,
+                "function_revision": snap_row["function_revision"],
+                "context_version": snap_row["context_version"],
+                "context_digest": snap_row["context_digest"],
+                "target_digest": snap_row["target_digest"],
+                "compiler_digest": snap_row["compiler_digest"],
+                "scorer_version": snap_row["scorer_version"],
+                "policy_version": snap_row["policy_version"]}
+        ok, why = snapshots.check_current(net, proj, fn, snap)
+        if not ok:
+            stale = f" (historical attempt — {why}: revalidate before acting on this advice)"
+        else:
+            try:
+                _, _, _, _, d = net._compile_and_evaluate(fn, proj, attempt["source"], net._context(proj["id"], fn["unit"]))
+            except Exception:
+                d = None
+            if d is not None:
+                mismatch = scoring.mismatch_summary(_counts_from_rows(d.rows), bytes_match=d.bytes_match,
+                                                    score=d.score)
+                score_percent = (1 - d.score / max(1, d.max_score)) * 100
+    policy = getattr(net, "_escalation_policy", None) or EscalationPolicy()
+    action = policy.decide(EscalationInputs(
+        function_key=f"{proj['slug']}::{fn['name']}", snapshot=f"rev-{fn['revision']}",
+        mismatch=mismatch, score_percent=score_percent, attempts=since,
+        m2c_tried=bool(fn["seed"]), recent_progress=False, new_evidence_expected=False))
+    return _action_advice(action, fn["name"], since, stale)
+
+
+def _render_investigation(investigation, budget) -> str:
+    """The P8.5 investigation contract as agent-facing text (ranked hypotheses and minimal candidate
+    changes only — never raw provider output)."""
+    lines = [f"🧪 Investigation: {investigation.question}",
+             f"snapshot {investigation.snapshot} | provider {investigation.provider or 'n/a'} | "
+             f"status {investigation.status} | budget {budget.wall_seconds:g}s wall, "
+             f"{budget.worker_seconds:g}s worker"]
+    if investigation.facts:
+        lines.append(f"observed facts: {len(investigation.facts)} (each with an evidence id)")
+    hypotheses = investigation.ranked_hypotheses()[:3]
+    if hypotheses:
+        lines.append("ranked hypotheses:")
+        lines += [f"- {h.statement}" for h in hypotheses]
+    if investigation.unresolved:
+        lines.append("unresolved:")
+        lines += [f"- {u}" for u in investigation.unresolved[:3]]
+    if investigation.candidate_changes:
+        lines.append("minimal candidate changes (apply only through the protected edit path):")
+        lines += [f"- {c.kind} {c.target!r}: expected {c.expected_observation}"
+                  for c in investigation.candidate_changes]
+    lines.append(f"stopping condition: {investigation.stopping_condition}")
+    return "\n".join(lines)
 
 
 class NetworkError(Exception):
@@ -141,6 +291,8 @@ class Network:
         self.store = Store(db_path)
         self.claim_ttl = claim_ttl
         self._pool = ThreadPoolExecutor(max_workers=8)
+        self._paused_acceptance: dict[str, tuple[str, float]] = {}  # slug -> (reason, paused_at)
+        self._pause_lock = threading.Lock()
 
     # ------------------------------------------------------------------ agents
 
@@ -340,7 +492,12 @@ class Network:
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
                   strategy: str = "easiest"):
-        """Claim (or renew) a function and return its row, or None when nothing is left."""
+        """Claim (or renew) a function and return its row, or None when nothing is left.
+
+        A-02 invariant: this is the hottest path in the coordinator and it NEVER consults the analysis
+        broker — ordering is plain SQL over functions/search_budgets/events, and 'closest' results
+        always come from those tables. The brief for a walled function already shows its
+        function_walls rows (see _brief), so nothing here needs analysis either."""
         if strategy not in STRATEGIES:
             raise NetworkError(f"strategy must be one of {', '.join(STRATEGIES)}")
         proj = self._project(project) if (project or function is None) else None
@@ -567,6 +724,21 @@ class Network:
                          snapshot=snap, stale_reason=why)
             return {"text": self._stale_text(proj, fn, snap, why), "score": score, "matched": False}
 
+        if matched_now and self.acceptance_paused(proj["slug"]):
+            # Runbook 24.1 step 1: exact, but new acceptance is paused for this project. The result
+            # is retained as search evidence (attempt, snapshot, candidate) and the claim is kept so
+            # the holder can re-run after resume_acceptance — never accepted while paused.
+            self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=True,
+                         snapshot=snap)
+            reason = self._pause_reason(proj["slug"])
+            return {"text": (f"⏸ ACCEPTANCE PAUSED for {proj['slug']}"
+                             + (f" ({reason})" if reason else "")
+                             + ": this attempt matches byte-for-byte, but new acceptance is paused "
+                               "per runbook 24.1. The score, source and snapshot are retained as "
+                               "evidence; the function stays open and your claim is kept. Revalidate "
+                               f"and call resume_acceptance('{proj['slug']}'), then re-run."),
+                    "score": score, "matched": False}
+
         if self._hash_only(fn):
             self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
                          compiled=True, snapshot=snap)
@@ -616,9 +788,63 @@ class Network:
                 since += 1
         if since < after:
             return ""
-        return (f"\n\n⏭ No better in your last {since} compiles. release_function with notes (what you tried, what's "
-                "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
-                "keeps your best attempt for whoever comes next.")
+        nudge = (f"\n\n⏭ No better in your last {since} compiles. release_function with notes (what you tried, what's "
+                 "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
+                 "keeps your best attempt for whoever comes next.")
+        return nudge + _escalation_advice(self, function_id, agent_id, since)
+
+    def analysis_broker(self):
+        """The coordinator's analysis broker (P8). Built lazily with NO providers attached: the app
+        layer (the chat.py wiring) registers DirectGhidraProvider/ReaProvider on it. The lazy import
+        keeps the claim/attempt hot paths free of the broker (A-02)."""
+        from .analysis import Broker
+
+        broker = getattr(self, "_analysis_broker", None)
+        if broker is None:
+            broker = Broker()
+            self._analysis_broker = broker
+        return broker
+
+    def escalate(self, function: str, *, question: str | None = None, provider: str | None = None,
+                 budget: dict | None = None, project: str | None = None) -> str:
+        """A.3: a stalled agent asks the broker for a focused, budget-capped investigation of one
+        function (P8.5). Provider-optional: with no registered provider the agent gets explicit
+        guidance, never a silent guess; admission failures are reported verbatim. Candidates produced
+        here are bound to the function revision (A-06): a later context/target change demotes them to
+        historical evidence instead of letting them be applied as current."""
+        from .analysis.contracts import Budget, CapabilityError, TargetError
+
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        broker = self.analysis_broker()
+        profile = _profile_for(proj, fn)
+        if profile is None:
+            return (f"escalate_function: no admitted Ghidra profile for arch {proj['arch']!r} "
+                    f"({'big' if proj['big_endian'] else 'little'}-endian), or {fn['name']} has no "
+                    f"target bytes in the coordinator — escalation is unavailable for this project.")
+        wall = float((budget or {}).get("wall_seconds", 60.0))
+        cap = Budget(wall_seconds=wall, worker_seconds=wall,
+                     token_limit=int((budget or {}).get("token_limit", 8000)))
+        module = proj["slug"] or f"project-{proj['id']}"
+        key = f"{module}::{fn['name']}"
+        import shutil
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix="decompnet-escalate-"))
+        try:
+            artifact = tmp / f"{fn['name']}.bin"
+            artifact.write_bytes(fn["target"])
+            broker.register_target(module, artifact, profile, provider=provider,
+                                   mapping={"function": fn["name"], "vram": fn["vram"] or 0,
+                                            "rom_offset": fn["rom_offset"]})
+            investigation = broker.propose_investigation(
+                key, question or f"How should {fn['name']} be changed to reach an exact match?",
+                None, cap, snapshot=f"rev-{fn['revision']}", requester="escalate_function")
+            return _render_investigation(investigation, cap)
+        except (CapabilityError, TargetError) as e:
+            return f"escalate_function: {e}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
@@ -629,6 +855,11 @@ class Network:
         telemetry.count("attempt.record")
         now = time.time()
         compiled = score is not None if compiled is None else compiled
+        if matched and self.acceptance_paused(
+                self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]):
+            # Runbook 24.1 step 1, enforced for every ingress path (agents, permuter, jobs, twins):
+            # retained as search evidence, never accepted while the project's acceptance is paused.
+            matched = False
         with self.store.tx() as db:
             cur = db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
                              "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
@@ -718,6 +949,58 @@ class Network:
             out.append(f"- {r['origin']} ({'current-snapshot' if fresh else 'historical'}): "
                        f"{r['source'].strip().splitlines()[0] if r['source'].strip() else '(empty)'}")
         return "\n".join(out)
+
+    # --------------------------------------- acceptance pause (runbook 24.1)
+
+    def pause_acceptance(self, slug: str, reason: str = "") -> str:
+        """Runbook 24.1 step 1 (benchmarks/RUNBOOKS.md): pause NEW acceptance for one project while
+        read-only inspection stays up. The runbook this helper belongs to:
+
+          1. Pause new acceptance for the affected project/scope; read-only inspection stays up.
+          2. Retain the source, object, target, receipt (`verification_receipts`), snapshot
+             (`attempt_snapshots`) and relevant logs.
+          3. Compare dependency identities with the current project: context version/digest,
+             target digest, compiler profile identity (`toolchains.profile_identity`), matched epoch.
+          4. Classify: stale context / cache corruption / changed toolchain / changed target-layout /
+             policy drift.
+          5. Disable the affected optimisation (benchmarks/FEATURE-FLAGS.md), never the verification gate.
+          6. Re-evaluate affected accepted sources under a coherent current snapshot
+             (`Network.regression_test`).
+          7. Restore only validated current state; keep historical source (`candidates` table).
+          8. Add a deterministic regression fixture before re-enabling.
+
+        While paused, a byte-exact attempt is recorded as search evidence (score, source, snapshot,
+        candidate row) but NOT accepted: no status change, no receipt, no matched-epoch bump, and the
+        claim is kept so the holder can re-run after `resume_acceptance`. The pause is operator state
+        held in memory: a coordinator restart clears it — pause again if the condition persists."""
+        proj = self._project(slug)
+        reason = (reason or "").strip()[:200]
+        with self._pause_lock:
+            self._paused_acceptance[proj["slug"]] = (reason, time.time())
+        return (f"⏸ Acceptance paused for {proj['slug']}"
+                + (f": {reason}" if reason else "")
+                + ". Read-only inspection stays up; exact matches are retained as evidence, not accepted "
+                  "(runbook 24.1). Validate, then call resume_acceptance to lift the pause.")
+
+    def resume_acceptance(self, slug: str) -> str:
+        """Runbook 24.1 steps 7-8: lift the acceptance pause once the affected state was revalidated
+        under a coherent snapshot and a regression fixture exists. Re-running the retained attempt
+        (the claim was kept) accepts it through the ordinary verified path."""
+        proj = self._project(slug)
+        with self._pause_lock:
+            was = self._paused_acceptance.pop(proj["slug"], None)
+        if was is None:
+            return f"Acceptance for {proj['slug']} was not paused."
+        return (f"▶ Acceptance resumed for {proj['slug']}. Re-run the retained attempt "
+                f"(the claim was kept) to accept it through the ordinary verified path.")
+
+    def acceptance_paused(self, slug: str) -> bool:
+        with self._pause_lock:
+            return slug in self._paused_acceptance
+
+    def _pause_reason(self, slug: str) -> str:
+        with self._pause_lock:
+            return self._paused_acceptance.get(slug, ("", 0.0))[0]
 
     # ------------------------------------------------- legacy revalidation (PR-31)
 
@@ -812,6 +1095,27 @@ class Network:
         return (f"Merge proposed: {fn['name']} continues {cont['name']} (adjacent at "
                 f"{hex(fn['vram'] or 0)} / {hex(cont['vram'] or 0)}). Recorded for review; nothing was "
                 f"merged automatically.")
+
+    def _merge_proposal(self, fragment_id: int, continues_id: int):
+        """The latest reviewed proposal authorizing a merge of `fragment` into `continues` (C.4:
+        merges are executed only on this review evidence — never applied automatically)."""
+        return self.store.one(
+            "SELECT * FROM merge_proposals WHERE function_id=? AND continues_id=? ORDER BY id DESC LIMIT 1",
+            fragment_id, continues_id)
+
+    def _consume_merge_proposals(self, db, function_id: int) -> None:
+        """A merge consumed the reviewed evidence: every proposal touching the merged (deleted)
+        function is void once its boundary no longer exists."""
+        db.execute("DELETE FROM merge_proposals WHERE function_id=? OR continues_id=?",
+                   (function_id, function_id))
+
+    def _delete_function_rows(self, db, function_id: int) -> None:
+        """Remove one function's dependent rows (the function row itself the caller deletes): a
+        removed function must not leave dangling claims, attempts, budgets, walls or proposals."""
+        for table in ("claims", "attempts", "attempt_snapshots", "candidates", "notes", "function_walls",
+                      "twin_misses", "verification_receipts"):
+            db.execute(f"DELETE FROM {table} WHERE function_id=?", (function_id,))
+        db.execute("DELETE FROM search_budgets WHERE function_id=?", (function_id,))
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """A function just matched (subclasses try its code on its twins)."""

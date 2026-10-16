@@ -603,7 +603,10 @@ async function poll(first) {
   try {
     const live = await api(`/api/live?slug=${slug}&e=${S.e}&a=${S.a}&s=${encodeURIComponent(JSON.stringify(S.seq))}`);
     if (slug !== S.slug) return;
-    S.ov = live.overview;
+    // the live feed's overview is the engine's own (no server-side verification block): carry the
+    // truthful scope forward between /api/project and /api/state refreshes instead of flickering
+    S.ov = Object.assign({}, live.overview,
+      { verification: live.overview.verification || (S.ov && S.ov.verification) || null });
     let mapDirty = false;
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
@@ -654,6 +657,7 @@ async function poll(first) {
 async function loadStats() {
   if (!S.slug || S.tab !== "overview") return;
   try { S.stats = await api(`/api/stats?slug=${S.slug}`); } catch { return; }
+  try { S.cacheInfo = await api("/api/cache"); } catch { /* the app is going away: keep the last state */ }
   renderOverview();
 }
 
@@ -838,6 +842,65 @@ function renderOverview() {
   $("recentMatches").innerHTML = recent.length ? recent.map((f) => `<li><span class="ok">✓</span>${fnLink(f.name)}<span class="grow"></span><span class="muted small">${esc(f.matched_by || "")} · ${esc(since(f.matched_at))}</span></li>`).join("")
     : `<li class="muted small">No matches yet.</li>`;
   $("recentMatches").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+  renderTrust(S.ov);
+  renderCache(S.cacheInfo);
+}
+
+/* A.2/P11.7: the truthful verification scope — receipt coverage, the matched epoch, candidate
+   origins and the recorded wall/stall reasons. Counts, never a rounded green percent. */
+function overviewPanel(id) {
+  const cols = document.querySelector('.ptab[data-pane="overview"] .cols');
+  if (!cols) return null;
+  let p = document.getElementById(id);
+  if (!p) {
+    p = document.createElement("section");
+    p.id = id;
+    p.className = "panel";
+    p.hidden = true;
+    cols.append(p);
+  }
+  return p;
+}
+
+function renderTrust(ov) {
+  const p = overviewPanel("trustPanel");
+  if (!p || !ov) return;
+  const v = ov.verification;
+  if (!v) { p.hidden = true; return; }
+  p.hidden = false;
+  const matched = ov.matched || 0;
+  const receipts = v.receipts || 0;
+  const gap = matched - receipts;
+  const list = (obj) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${esc(k)} ×${n}`);
+  p.innerHTML = `<header class="panel-head"><h2>Verification</h2></header>
+    <p class="muted small">${receipts} of ${matched} matched functions have verification receipts · matched epoch ${v.matched_epoch ?? "?"}</p>
+    ${gap > 0 ? `<p class="bad small">${gap} matched function${gap === 1 ? "" : "s"} without a receipt: accepted before (or outside) snapshot verification.</p>` : `<p class="ok small">Every matched function has a receipt.</p>`}
+    <p class="muted small">candidate origins: ${list(v.origins).join(" · ") || "none recorded"}</p>
+    <p class="muted small">budget stall resets: ${list(v.stalls).join(" · ") || "none recorded"}</p>
+    <p class="muted small">known walls: ${list(v.walls).join(" · ") || "none recorded"}</p>`;
+}
+
+/* A.4/P2.8: the compile-cache diagnostics line — hits/misses, published entries, quarantined and
+   evicted entries; graceful when the cache is off or not created yet. */
+function renderCache(info) {
+  const p = overviewPanel("cachePanel");
+  if (!p) return;
+  if (!info) { p.hidden = true; return; }
+  p.hidden = false;
+  if (!info.enabled) {
+    p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2></header>
+      <p class="muted small">off — ${esc(info.reason || "not configured")}</p>`;
+    return;
+  }
+  const s = info.stats || {};
+  const total = (s.hits || 0) + (s.misses || 0);
+  const rate = total ? ` (${Math.round((100 * (s.hits || 0)) / total)}% hit rate)` : "";
+  const warns = [];
+  if (s.quarantined) warns.push(`<p class="bad small">${s.quarantined} quarantined: tampered or corrupt entries were never served.</p>`);
+  if (s.evicted) warns.push(`<p class="muted small">${s.evicted} evicted by quota.</p>`);
+  p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2></header>
+    <p class="muted small">${s.hits || 0} hits / ${s.misses || 0} misses${rate} · ${s.puts || 0} published · ${s.coalesced || 0} coalesced</p>${warns.join("")}
+    <p class="muted small" title="${esc(info.diagnose || "")}">${esc(info.dir || "")}</p>`;
 }
 
 function renderAgentsKpi(ov) {
