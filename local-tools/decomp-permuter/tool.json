@@ -1,0 +1,13 @@
+{
+  "name": "decomp-permuter",
+  "repo": "https://github.com/simonlindholm/decomp-permuter",
+  "version": "8556c81d80d1c1af98a858c8f4dc951357f29139",
+  "sha256": null,
+  "category": "matching-search",
+  "platforms": ["macos-arm64", "any-target-via-compiler"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python source copy of upstream main at commit 8556c81d (2026-10-06); no release tags exist upstream. Copied files checked against that commit: src/main.py, src/compiler.py, src/objdump.py, src/permuter.py, src/scorer.py, permuter.py. Smoke test builds a tiny MIPS function with the IDO 7.1 compiler from ~/Decomp/tools/vendor and runs the permuter in --debug and --stop-on-zero modes. Test depends on that IDO compiler and on the MIPS binutils in ~/Library/Application Support/decompnet/toolchains/binutils-mips. The app folder also carries prebuilt Windows/Linux systray binaries from upstream that are unused on macOS."
+}

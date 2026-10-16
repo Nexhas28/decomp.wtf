@@ -1,0 +1,13 @@
+{
+  "name": "gclib",
+  "repo": "https://github.com/LagoLunatic/gclib",
+  "version": "4e06db0004df411f1c806ad39b0e9a18ac4a1de5",
+  "sha256": null,
+  "category": "gamecube-file-formats",
+  "platforms": ["gamecube"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python library (v1.0.0) installed in .venv from a pinned git commit; no CLI, use via ./run script.py. Smoke test: Yaz0 round trip plus RARC build/save/re-read/extract. Optional PyFastBTI/PyFastTextureUtils speedups not installed."
+}

@@ -1,0 +1,13 @@
+{
+  "name": "ghidriff",
+  "repo": "https://github.com/clearbluejar/ghidriff",
+  "version": "v1.0.0",
+  "sha256": "32ad28c1b567ceef30b866eebecb1ce1c3703939648a9d0a6105554ac90914c2",
+  "category": "binary-diffing",
+  "platforms": ["x86", "x86_64", "arm", "mips", "ppc"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/ghidriff",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "PyPI wheel ghidriff-1.0.0-py3-none-any.whl (sha256 given) installed into .venv with pyghidra 3.1.0. Wrapper bin/ghidriff sets JAVA_HOME (JDK 21) and GHIDRA_INSTALL_DIR (Ghidra 12.1.4, read-only use). test.sh builds two self-made x86-64 ELFs where only foo() changes, diffs them headless and checks the JSON lists foo as modified and not bar. Needs clang, lld@21 and llvm@21 from Homebrew. Platforms are whatever Ghidra can analyze; only x86-64 was tested."
+}

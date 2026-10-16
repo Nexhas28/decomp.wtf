@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-n64-loader",
+  "repo": "https://github.com/zeroKilo/N64LoaderWV",
+  "version": "12.1.3 (commit 2bd537627513f0dd32678207c8dd3278016d6003, rebuilt for Ghidra 12.1.4)",
+  "sha256": "1641191b9a5f1a357df017fbac4e3aec21a124ee37a2e79a6c4c5c1007de8e91",
+  "category": "ghidra-extension",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261016_N64LoaderWV.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "sha256 is of the locally built extension zip (unmodified source, gradle buildExtension against Ghidra 12.1.4). Upstream release 12.1.3 zip was built for 12.1.3 and was not used. Repo has no license file. Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched."
+}

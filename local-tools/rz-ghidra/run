@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# rizin with the rz-ghidra decompiler (pdg) + sleigh disassembler plugins preloaded.
+# Usage: ./run -q -c 'aaa; s sym.main; pdg' file.elf
+H="$(cd "$(dirname "$0")" && pwd)"; P="$H/plugins"
+exec "$H/../rizin/bin/rizin" -c "L $P/core_ghidra.dylib; L $P/asm_ghidra.dylib; L $P/analysis_ghidra.dylib" "$@"

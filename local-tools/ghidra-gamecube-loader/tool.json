@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-gamecube-loader",
+  "repo": "https://github.com/Cuyler36/Ghidra-GameCube-Loader",
+  "version": "1.3.1 (commit 921504c9ddba6e8d9b3655b665a60f1a33306220, Ghidra 12.1 build)",
+  "sha256": "9892f28fc1e7f19bb3fcec7cfb4ad2ab7504503b571d93de8b142a6f7bec8ed0",
+  "category": "ghidra-extension",
+  "platforms": ["gamecube", "wii"],
+  "runs_on": "macos-arm64-native",
+  "entry": "GameCubeLoader-1.3.0-921504c-Ghidra_12.1.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "sha256 is of the prebuilt release asset zip (asset name says 1.3.0, release tag is 1.3.1). Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched. Headless imports need -loader-autoloadMaps false when no .map sits next to the DOL (otherwise a GUI dialog throws HeadlessException)."
+}

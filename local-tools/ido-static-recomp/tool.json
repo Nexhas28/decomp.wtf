@@ -1,0 +1,16 @@
+{
+  "name": "ido-static-recomp",
+  "repo": "https://github.com/decompals/ido-static-recomp",
+  "version": "d5aec59932034b8a20f23f471297a55c45dcbc45",
+  "sha256": null,
+  "category": "static-recompiler",
+  "platforms": [
+    "n64",
+    "irix"
+  ],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/recomp",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Recompiler only (no IDO binaries). Built from git clone at d5aec59 (v1.2-17) with make setup RELEASE=1 using bundled rabbitizer; bin/recomp sha256 112fb97d56720680ea170e2f33cf33db76abef53e7b549529046e874b601007a. runtime/ holds header.h, helpers.h, libc_impl.c/.h, version_info.c needed to compile recomp output. test.sh needs Homebrew llvm@21 and lld@21: it links a tiny self-written IRIX-shaped MIPS ELF, patches dynsym/GOT layout like IRIX ld, recompiles to C, builds natively and checks exit code 42. recomp rejects .symtab-only (static) ELFs; input must have .dynsym/.dynamic/.got/.reginfo and load high enough for libc_impl's MEM_REGION_START (0xfb00000) assert: text at 0x400100 aborted, 0x10000100 worked. No LICENSE file at repo root and GitHub reports no license (bundled tools/rabbitizer is MIT). The full git clone also fetched the repo's proprietary IRIX binaries under ido/ (32M); they were never used and the whole scratch clone was deleted after copying bin/ and runtime/."
+}

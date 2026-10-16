@@ -1,0 +1,13 @@
+{
+  "name": "gbadisasm",
+  "repo": "https://github.com/jiangzhengwenjz/gbadisasm",
+  "version": "940def2c91d678ee671716b8b44a2223c0ff2c62",
+  "sha256": null,
+  "category": "disassembler",
+  "platforms": ["gba"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/gbadisasm",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from source at pinned commit with make (bundled Capstone 3.0.5-rc2, ARM only). Binary sha256 59243b0f3d8b4ac48d9fa2325565257082fb1d9dcf2557501fac22a1535221b7. test.sh assembles a tiny ARM+Thumb ROM with arm-none-eabi-as/ld/objcopy (Homebrew), runs gbadisasm with a config, and greps output for thumb_func_start, muls, svc #3 and the literal-pool ldr. Passed on 2026-10-16. Repo has no license file and no release tags; version is a commit."
+}

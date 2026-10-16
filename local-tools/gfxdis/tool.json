@@ -1,0 +1,13 @@
+{
+  "name": "gfxdis",
+  "repo": "https://github.com/glankk/libgfxd",
+  "version": "gfxdis-0.7 (self-reported by binary; no tag or commit verified)",
+  "sha256": null,
+  "category": "disassembler",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/gfxdis.f3dex2",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Binaries bin/gfxdis.f3d, .f3db, .f3dex, .f3dex2, .f3dexb (Mach-O arm64) were left by an earlier partial attempt. Upstream glankk/gfxdis returns 404 on GitHub. glankk/libgfxd (MIT, pushed 2026-09-09, head 49ec1bb) is a display list library with no gfxdis CLI directory at its root and no tags, so the exact source for these binaries is unverified. test.sh passes on them in this run. Rebuild from a pinned source is still needed for provenance."
+}

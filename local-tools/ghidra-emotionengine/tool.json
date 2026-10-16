@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-emotionengine",
+  "repo": "https://github.com/chaoticgd/ghidra-emotionengine-reloaded",
+  "version": "v2.1.38 (commit fcc5deac45d8f5c27c632bfe0db928630939676e), release build for Ghidra 12.1.4",
+  "sha256": "e389ff3e921d9f7d4db2ece9906f808545ce4ff519d9e25a019b72ea509f240b",
+  "category": "ghidra-extension",
+  "platforms": ["ps2"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261004_ghidra-emotionengine-reloaded.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Official GitHub release zip (unmodified). Needs Java 21 and Ghidra 12.1.4; test.sh installs it into a throwaway user.home so the real Ghidra install is untouched. The bundled stdump helper binaries are x86_64 only (not used by the test)."
+}
