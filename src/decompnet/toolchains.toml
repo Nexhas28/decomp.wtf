@@ -538,3 +538,36 @@ platforms = ["linux-aarch64"]
 url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-win64.zip"
 sha256 = "266854ce92e3064871c5b28cd3436cc2a6cb136af9e7cf617140108f8c1c5890"
 platforms = ["windows-x86_64"]
+
+[mgbdis]
+name = "mgbdis"
+kind = "tool"
+license = "MIT"
+source = "mattcurrie/mgbdis v3.0"
+description = "Game Boy ROM disassembler that writes RGBDS assembly with proper code/data separation and its own label generation. The Game Boy split uses it when it is installed (assembling its output with rgbds reproduces the ROM byte for byte, which is the check that the split is faithful); without it the built-in call-graph split is used."
+# A plain script directory, not a Python package: ship the released source archive (it bundles png.py).
+[["mgbdis".parts]]
+url = "https://github.com/mattcurrie/mgbdis/archive/refs/tags/v3.0.tar.gz"
+sha256 = "f0f3d3b276cbee792815bece448257d220e51ed9400a0a02e8a68ac2b33e6b2d"
+platforms = ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64", "windows-x86_64"]
+
+["rgbds"]
+name = "RGBDS (rgbasm, rgblink, rgbfix)"
+kind = "tool"
+platform = "Game Boy / Game Boy Color"
+arch = "sm83"
+license = "MIT"
+source = "gbdev/rgbds v1.0.4"
+description = "The Game Boy assembler/linker/fixer the mgbdis split assembles its output with, and the standard toolchain for matching-grade Game Boy assembly work."
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-macos.zip"
+sha256 = "62d1669bbe3b2bf2cfc2e72076d3c8c00fc023a9cc15d458f0c723bd9d0312c4"
+platforms = ["macos-arm64", "macos-x86_64"]
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-linux-x86_64.tar.xz"
+sha256 = "3e19e50ea602e316be709160acaf0a708b1fa6d32d219ec541f244442895dbb7"
+platforms = ["linux-x86_64"]
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-win64.zip"
+sha256 = "bd1d7e386f290afd57f4ea9a7353bfcd4ae10884a94c5c1f2fc42a75db7f97e6"
+platforms = ["windows-x86_64"]

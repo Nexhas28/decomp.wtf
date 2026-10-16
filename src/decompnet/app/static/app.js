@@ -317,11 +317,11 @@ function identifyHead(head, file) {
 function notSupported(head, file) {
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
   const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
-  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy Advance and DS games.";
+  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy, Game Boy Color, Game Boy Advance and DS games.";
   if (text(0, 4) === "XEX2" || ext === "xex") return "That's an Xbox 360 program. Xbox 360 games aren't supported yet.";
   if (["nsp", "xci", "nso", "nro", "nca"].includes(ext) || text(0, 4) === "NSO0" || text(0, 4) === "PFS0") return "That's a Nintendo Switch file. Switch games aren't supported yet.";
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
-  if (["nes", "gb", "gbc", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
+  if (["nes", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
   if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
   if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
   if (ext === "apk") return "Android apps aren't supported yet.";
@@ -373,6 +373,10 @@ function setupCompilers(info) {
   else if (p === "psx") fillCompilers(select, "gcc-2.7.2-psx", "PS1");
   else if (p === "ps2") fillCompilers(select, "ee-gcc-2.96", "PS2");
   else if (p === "gba") fillCompilers(select, "agbcc", "GBA");
+  else if (p === "gb" || p === "gbc") {
+    $("compilerRow").hidden = true; note.hidden = false;
+    note.textContent = "Game Boy and Game Boy Color games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
+  }
   else if (p === "playstation") {
     $("compilerRow").hidden = true; note.hidden = false;
     note.textContent = "The compiler is picked from the disc: PSY-Q-era GCC for PlayStation, EE-GCC for PlayStation 2. You can change it later.";
