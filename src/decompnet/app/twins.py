@@ -27,6 +27,7 @@ from io import BytesIO
 from pathlib import Path
 
 from ..elfobj import _MASKS, Reloc, mask_relocs
+from .. import bios
 from ..handwritten import mips_reason, ppc_reason
 from ..network import NetworkError
 from .. import similarity, snapshots
@@ -34,7 +35,7 @@ from .. import similarity, snapshots
 log = logging.getLogger("decomp.wtf")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
-_CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
+_CACHE_VERSION = 3  # of twins.json: 2 added why code is hand-written assembly, 3 which code is a BIOS call
 # A twin's code that didn't match isn't tried again while none of its material dependencies (the adapted source,
 # the source function's identity and target, the destination target, both contexts, the compiler profile) changed.
 # When one does change it's tried again at once (plan P6.1). When nothing changed, a bounded cooldown applies: the
@@ -53,6 +54,7 @@ class Print:
     size: int
     addrs: list[int] = field(default_factory=list)  # ROM projects: the address each relocation fills in
     asm: str = ""  # why no compiler makes this code (see handwritten.py), or ""
+    bios: str = ""  # which BIOS call this code is nothing but (see bios.py), or ""
 
 
 def _mask(code: bytearray, relocs: list[tuple[int, int]], arch: str, order: str) -> None:
@@ -71,9 +73,9 @@ def _key(code: bytes, layout: list[tuple[int, int]]) -> str:
     return h.hexdigest()
 
 
-def object_prints(data: bytes) -> dict[str, Print]:
+def object_prints(data: bytes, platform: str = "") -> dict[str, Print]:
     """Fingerprints of every function an object file defines, by symbol (with, for PowerPC, whether its code is
-    hand-written assembly)."""
+    hand-written assembly, and on `platform` whether it's a BIOS call)."""
     from elftools.elf.elffile import ELFFile
     from elftools.elf.relocation import RelocationSection
 
@@ -111,7 +113,8 @@ def object_prints(data: bytes) -> dict[str, Print]:
             mine = [(o - lo, t, n) for o, t, n in rels if lo <= o < lo + s["st_size"]]
             out[s.name] = Print(_key(bytes(code[lo:lo + s["st_size"]]), [(o, t) for o, t, _ in mine]),
                                 [n for _, _, n in mine], s["st_size"],
-                                asm=(ppc_reason(raw[lo:lo + s["st_size"]]) or "") if arch == "ppc" else "")
+                                asm=(ppc_reason(raw[lo:lo + s["st_size"]]) or "") if arch == "ppc" else "",
+                                bios=bios.reason(raw[lo:lo + s["st_size"]], platform, order == "big") or "")
     return out
 
 
@@ -247,6 +250,7 @@ class Twins:
         if cache.get("_v") != _CACHE_VERSION:
             cache = {"_v": _CACHE_VERSION}
         rows = self.net.store.all("SELECT id, name, unit, meta FROM functions WHERE project_id=?", proj["id"])
+        platform = self.net.cfg(proj).get("platform") or ""
         by_unit: dict[str, list] = defaultdict(list)
         for r in rows:
             by_unit[r["unit"]].append(r)
@@ -263,17 +267,17 @@ class Twins:
             entry = cache.get(uname)
             if not entry or entry.get("mtime") != mtime:
                 try:
-                    prints = object_prints(unit.target.read_bytes())
+                    prints = object_prints(unit.target.read_bytes(), platform)
                 except Exception:  # an object pyelftools can't read: no twins for it
                     prints = {}
-                entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size, p.asm] for k, p in prints.items()}}
+                entry = {"mtime": mtime, "prints": {k: [p.key, p.refs, p.size, p.asm, p.bios] for k, p in prints.items()}}
                 cache[uname] = entry
                 changed = True
             for r in urows:
                 sym = json.loads(r["meta"] or "{}").get("symbol") or r["name"].split("@")[0]
                 p = entry["prints"].get(sym)
                 if p:
-                    out[r["id"]] = Print(p[0], p[1], p[2], asm=p[3] if len(p) > 3 else "")
+                    out[r["id"]] = Print(p[0], p[1], p[2], asm=p[3] if len(p) > 3 else "", bios=p[4] if len(p) > 4 else "")
         if changed:
             try:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -377,34 +381,52 @@ class Twins:
         return sum(1 for b, _ in updates if b > 0)
 
     def set_aside_asm(self, proj) -> int:
-        """Unmatched functions whose code no compiler makes (see handwritten.py) get status 'asm': out of agents'
-        way. Returns how many."""
+        """Unmatched functions whose code no compiler makes (see handwritten.py) or that are nothing but a BIOS call
+        (bios.py) get status 'asm': out of agents' way (a BIOS call's meta says which, and the GUI shows it as BIOS).
+        Never a matched function, nor one a person gave back to agents (meta "for_agents"). Returns how many were
+        taken out of agents' way."""
         if not self.net.fork_slug(proj["slug"]):
             return self._set_aside_rom_asm(proj)
         prints = self.prints(proj)
-        found = [fid for fid, p in prints.items() if p.asm]
+        found = [fid for fid, p in prints.items() if p.asm or p.bios]
         n = 0
         for at in range(0, len(found), 500):
             chunk = found[at:at + 500]
             for r in self.net.store.all(f"SELECT * FROM functions WHERE id IN ({','.join('?' * len(chunk))}) "
-                                        "AND status='open'", *chunk):
-                self.net.forks.mark_asm(r, reason=prints[r["id"]].asm)
-                n += 1
+                                        "AND status IN ('open','asm')", *chunk):
+                p, meta = prints[r["id"]], json.loads(r["meta"] or "{}")
+                if meta.get("for_agents") or (r["status"] == "asm" and (not p.bios or meta.get("bios") == p.bios)):
+                    continue
+                self.net.forks.mark_asm(r, reason=None if p.bios else p.asm, bios=p.bios or None)
+                n += r["status"] == "open"
         return n
 
     def _set_aside_rom_asm(self, proj) -> int:
-        """ROM projects on MIPS (N64, PlayStation, PlayStation 2): mips_reason on each open function's code."""
-        if (proj["arch"] or "mips") != "mips":
-            return 0
+        """ROM projects: BIOS calls (bios.py: PlayStation, PlayStation 2, Game Boy Advance), then on MIPS (N64,
+        PlayStation, PlayStation 2) mips_reason on each open function's code."""
         platform, big = self.net.cfg(proj).get("platform", ""), bool(proj["big_endian"])
-        marks = []
-        for r in self.net.store.all("SELECT id, target, meta FROM functions WHERE project_id=? AND status='open'", proj["id"]):
-            if (why := mips_reason(r["target"] or b"", big, platform)):
-                marks.append((json.dumps({**json.loads(r["meta"] or "{}"), "asm_code": why}), r["id"]))
+        mips = (proj["arch"] or "mips") == "mips"
+        marks, n = [], 0
+        for r in self.net.store.all("SELECT id, status, target, meta FROM functions WHERE project_id=? "
+                                    "AND status IN ('open','asm')", proj["id"]):
+            meta = json.loads(r["meta"] or "{}")
+            if meta.get("for_agents"):  # a person gave it back to agents
+                continue
+            code = r["target"] or b""
+            if (why := bios.reason(code, platform, big)):
+                if meta.get("bios") == why and r["status"] == "asm":
+                    continue
+                meta["bios"] = why
+            elif r["status"] == "open" and mips and (why := mips_reason(code, big, platform)):
+                meta["asm_code"] = why
+            else:
+                continue
+            marks.append((json.dumps(meta), r["id"]))
+            n += r["status"] == "open"
         if marks:
             with self.net.store.tx() as db:
-                db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", marks)
-        return len(marks)
+                db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status IN ('open','asm')", marks)
+        return n
 
     def _full_running(self, slug: str) -> bool:
         return (job := self.jobs.get(slug)) is not None and job.state == "running"

@@ -805,6 +805,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
         "/api/rescan": (p_rescan, ["POST"]),
+        "/api/set-aside": (lambda s, r, d: net.give_to_agents(s, str(d.get("name", "")), not d.get("set_aside")),
+                           ["POST"]),
     }
     for path, (fn, methods) in routes.items():
         mcp.custom_route(path, methods=methods)(with_project(fn))

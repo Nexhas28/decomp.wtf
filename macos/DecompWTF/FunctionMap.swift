@@ -83,7 +83,8 @@ struct FunctionMap: View {
     private var legend: some View {
         HStack(spacing: 12) {
             ForEach([("to do", MapPalette.open(scheme)), ("tried", MapPalette.tried(scheme)),
-                     ("working", MapPalette.work(scheme)), ("matched", MapPalette.match(scheme))], id: \.0) { item in
+                     ("working", MapPalette.work(scheme)), ("matched", MapPalette.match(scheme))]
+                    + (cells.contains { $0.status == "bios" } ? [("BIOS", MapPalette.bios(scheme))] : []), id: \.0) { item in
                 HStack(spacing: 5) {
                     RoundedRectangle(cornerRadius: 2).fill(item.1).frame(width: 9, height: 9)
                     Text(item.0)
@@ -105,7 +106,7 @@ struct FunctionMap: View {
                     let rect = CGRect(x: CGFloat(i % g.cols) * (g.size + g.gap), y: CGFloat(i / g.cols) * (g.size + g.gap),
                                       width: g.size, height: g.size)
                     var color = cellColor(f)
-                    if f.status != "matched", f.status != "asm", working[f.name] != nil {
+                    if f.status != "matched", f.status != "asm", f.status != "bios", working[f.name] != nil {
                         color = MapPalette.work(scheme).opacity(0.55 + 0.45 * sin(t / 260 + Double(i)))
                     }
                     ctx.fill(Path(roundedRect: rect, cornerRadius: r), with: .color(color))
@@ -153,6 +154,7 @@ struct FunctionMap: View {
     private func cellColor(_ f: MapCell) -> Color {
         if f.status == "matched" { return MapPalette.match(scheme) }
         if f.status == "asm" { return MapPalette.tried(scheme).opacity(0.35) }
+        if f.status == "bios" { return MapPalette.bios(scheme) }
         if let p = f.closeness { return MapPalette.mix(MapPalette.triedRGB(scheme), MapPalette.hiRGB(scheme), pow(p, 3)) }
         return MapPalette.open(scheme)
     }
@@ -161,6 +163,8 @@ struct FunctionMap: View {
         if let h = hover, h < cells.count {
             let f = cells[h]
             let status = f.status == "matched" ? "matched\(f.matchedBy.map { " by \($0)" } ?? "")"
+                : f.status == "bios" ? "BIOS code: agents leave it"
+                : f.status == "asm" ? "hand-written assembly: agents leave it"
                 : working[f.name].map { "\($0) is on it" }
                 ?? (f.closeness.map { "best \(Self.pctText($0))" } ?? "not started")
             let place = isFork ? (f.unit ?? "") : String(format: "%08X", f.vram ?? 0)
@@ -201,6 +205,7 @@ enum MapPalette {
     static func tried(_ s: ColorScheme) -> Color { color(triedRGB(s)) }
     static func work(_ s: ColorScheme) -> Color { color(pick(s, 0xa8670d, 0xe5b04b)) }
     static func match(_ s: ColorScheme) -> Color { color(pick(s, 0x157a49, 0x4fcf8c)) }
+    static func bios(_ s: ColorScheme) -> Color { color(pick(s, 0x9fb3cc, 0x34465e)) }
     static func panel(_ s: ColorScheme) -> Color { color(pick(s, 0xfbfaf6, 0x131310)) }
     static func line(_ s: ColorScheme) -> Color { color(pick(s, 0xd8d4c8, 0x2a2924)) }
 

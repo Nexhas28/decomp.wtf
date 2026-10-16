@@ -243,6 +243,7 @@ class RomNetwork(Network):
         self.twins = Twins(self)
         self.permuter = Permuter(self)
         self._rescanning: set[int] = set()
+        self._set_aside_checked: set[int] = set()  # projects whose BIOS calls and assembly were set aside on opening
         self._active_attempts: dict[int, int] = {}
         self._rescan_previews: dict[str, tuple[str, list, dict]] = {}
         self.rescan_busy = lambda slug: False  # server supplies its built-in agent/session guard
@@ -2056,6 +2057,7 @@ class RomNetwork(Network):
 
     def overview(self, slug: str) -> dict:
         proj = self._project(slug)
+        self._set_aside_once(proj)
         last = self.store.one("SELECT MAX(created_at) AS t FROM events WHERE project_id=?", proj["id"])["t"]
         cfg = self.cfg(proj)
         # matches by the helper agents the app runs (their spend is what `spend` counts)
@@ -2070,6 +2072,54 @@ class RomNetwork(Network):
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                                              "priority": self._open_priority(proj, cfg.get("priority", []))}
+
+    def _set_aside_once(self, proj) -> None:
+        """BIOS calls and hand-written assembly out of agents' way when a ROM project is first opened, not only when
+        agents start (projects imported before a detector existed get it too). Matched functions are never touched."""
+        if proj["id"] in self._set_aside_checked or self.fork_slug(proj["slug"]):
+            return
+        self._set_aside_checked.add(proj["id"])
+        try:
+            self.twins.set_aside_asm(proj)
+        except Exception as e:  # the overview must open regardless
+            logging.getLogger("decomp.wtf").info("set aside on %s: %s", proj["slug"], e)
+
+    @staticmethod
+    def set_aside_info(fn) -> dict:
+        """Why a function is out of agents' way (its page shows it), and whether a person gave it back to them."""
+        meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
+        return {"bios": meta.get("bios"), "asm_reason": meta.get("asm_code") or (
+                    f"the same code as {meta['asm_twin']}, which is assembly" if meta.get("asm_twin") else None),
+                "for_agents": bool(meta.get("for_agents"))}
+
+    def give_to_agents(self, slug: str, name: str, give: bool = True) -> dict:
+        """A person's say over a function set aside as a BIOS call or hand-written assembly. give: agents get it
+        anyway, and the detectors leave it alone from then on; not give: it's set aside again. Never touches a
+        matched function."""
+        if slug in self.links:
+            raise NetworkError("in a team room the host decides which functions agents get")
+        fn = self._function(name, slug)
+        meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
+        with self.store.tx() as db:
+            if give:
+                if fn["status"] != "asm":
+                    raise NetworkError(f"{fn['name']} isn't set aside")
+                meta["for_agents"] = True
+                db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
+                           (json.dumps(meta), fn["id"]))
+            else:
+                if fn["status"] != "open" or not meta.get("for_agents"):
+                    raise NetworkError("only a function given to agents by hand can be set aside again")
+                if db.execute("SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
+                    raise NetworkError(f"{fn['name']} is claimed right now: release it first")
+                meta.pop("for_agents", None)
+                db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'",
+                           (json.dumps(meta), fn["id"]))
+            self._event(db, fn["project_id"], None, "set_aside",
+                        f"{fn['name']} {'given to agents by hand' if give else 'set aside again by hand'}")
+        self.twins.forget(self._project(slug))
+        return {"name": fn["name"], "status": "open" if give else "asm"} | self.set_aside_info(
+            self.store.one("SELECT meta FROM functions WHERE id=?", fn["id"]))
 
     def _open_priority(self, proj, names: list[str]) -> list[str]:
         """The ★ Next in line functions still to do (a match takes one off the list; this hides any done another way)."""
@@ -2123,7 +2173,7 @@ class RomNetwork(Network):
     def function_map(self, slug: str) -> list[dict]:
         proj = self._project(slug)
         rows = self.store.all(
-            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, "
+            "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, f.meta, "
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
@@ -2132,7 +2182,8 @@ class RomNetwork(Network):
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
         remote = {key(c): "@" + c["agent"] for c in (link.claims if link is not None else [])}
         return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
-                 "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
+                 "status": ("bios" if r["status"] == "asm" and '"bios"' in (r["meta"] or "") else r["status"])
+                 if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"]} for r in rows]
 
@@ -2143,12 +2194,15 @@ class RomNetwork(Network):
         proj = self._project(slug)
         f = self.store.one("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS hi, COALESCE(SUM(attempts), 0) AS at, "
                            "COALESCE(SUM(status='matched'), 0) AS m, COALESCE(SUM(best_score), 0) AS bs, "
-                           "COALESCE(MAX(matched_at), 0) AS ma FROM functions WHERE project_id=?", proj["id"])
+                           "COALESCE(MAX(matched_at), 0) AS ma, COALESCE(SUM(status='asm'), 0) AS sa, "
+                           "COALESCE(SUM(status='asm' AND meta LIKE '%\"bios\"%'), 0) AS sb "
+                           "FROM functions WHERE project_id=?", proj["id"])
         c = self.store.one("SELECT COUNT(*) AS n, COALESCE(SUM(c.function_id * 31 + c.agent_id), 0) AS k FROM claims c "
                            "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
         link = self.links.get(slug)
         remote = sorted(str(x.get("vram") or x.get("name")) + x.get("agent", "") for x in (link.claims if link else []))
-        return f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+        return (f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+                f".{f['sa']}.{f['sb']}")
 
     # ------------------------------------------------------------------ what agents spend, and steering them
 
@@ -2560,7 +2614,7 @@ class RomNetwork(Network):
             "notes": [dict(n) for n in notes],
             "calls": [syms.label(a) for a in sorted(x["calls"].get(fn["vram"], ()))],
             "called_by": [syms.label(a) for a in sorted(x["called_by"].get(fn["vram"], ()))],
-        }
+        } | self.set_aside_info(fn)
 
     def stats(self, slug: str) -> dict:
         """Who did what and how fast: the overview's numbers (asked every few seconds, not every second)."""

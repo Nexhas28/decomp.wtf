@@ -697,6 +697,10 @@ class Network:
                 if fn["status"] == "matched":
                     raise NetworkError(f"{fn['name']} is already matched; use get_function to read its source")
                 if fn["status"] == "asm":
+                    bios = json.loads(fn["meta"] or "{}").get("bios")
+                    if bios:  # bios.py: say which call, so nobody goes looking for game code in it
+                        raise NetworkError(f"{fn['name']} is BIOS code, a {bios}, so it's left out "
+                                           "(a person can give it back to agents from its page)")
                     raise NetworkError(f"{fn['name']} is hand-written assembly: no C compiles to it, so it's left out")
                 other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
                 if other is not None:
