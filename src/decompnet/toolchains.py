@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import platform as _platform
+import re
 import shutil
 import subprocess
 import sys
@@ -773,3 +774,124 @@ def calibrate(candidates, sample, judge, *, max_profiles: int = 6, max_samples: 
     return CalibrationReport(status, recommendation,
                              recommendation.identity() if recommendation else None,
                              tuple(results), skipped, calls, max_profiles, max_samples, note)
+
+
+# ----------------------------------------------- opt-in post-assembler asm passes (plan C.2)
+
+# Nothing here is active by default: a project opts in by naming a pass in its compiler profile
+# ({"compiler": {..., "asm_pass": "maspsx-drop-delay-nops"}}); compiler.py consumes it in the
+# production wiring. The maspsx pass is the C.2 spike: drop load-delay nops before j/jr where
+# maspsx semantics allow it (see decompnet.rom.maspsx).
+_ASM_PASSES: dict[str, object] = {}
+
+
+def register_asm_pass(name: str, fn) -> None:
+    """Register a named post-assembler asm-text pass. Names are version-gated like the rest of the
+    registry: the baseline name cannot be redefined."""
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", name):
+        raise ValueError(f"asm pass name must match [a-z0-9][a-z0-9-]*: {name!r}")
+    if name in _ASM_PASSES:
+        raise ValueError(f"asm pass {name!r} is already registered")
+    _ASM_PASSES[name] = fn
+
+
+def asm_pass(name: str):
+    """The named post-assembler pass callable, or None when this process doesn't know the name."""
+    return _ASM_PASSES.get(name)
+
+
+def apply_asm_pass(name: str, asm_text: str) -> str:
+    """Apply a registered post-assembler pass to asm text and return the new text. Passes return
+    ``(text, report)``; the report is discarded here (search-record wiring consumes it separately).
+    Unknown names are rejected explicitly."""
+    fn = _ASM_PASSES.get(name)
+    if fn is None:
+        raise ValueError(f"unknown asm pass {name!r} (registered: {', '.join(sorted(_ASM_PASSES)) or 'none'})")
+    result = fn(asm_text)
+    return result[0] if isinstance(result, tuple) else result
+
+
+def _register_builtin_asm_passes() -> None:
+    from .rom.maspsx import drop_delay_nops
+    register_asm_pass("maspsx-drop-delay-nops", drop_delay_nops)
+
+
+_register_builtin_asm_passes()
+
+
+@dataclass(frozen=True)
+class CalibrationCommit:
+    """The outcome of a calibrate-and-commit run (plan P4.1.7). Never contains project
+    state: the commit itself is the caller's hook, invoked only after validation passed."""
+    committed: bool
+    reason: str
+    profile: Profile | None
+    identity: str | None
+    report: CalibrationReport
+    held_out: tuple[SampleResult, ...] = ()
+    held_out_cut: int = 0
+    regression: tuple[str, str] = ("not-run", "no regression hook supplied")
+
+
+def calibrate_and_commit(candidates, sample, judge, *, held_out=(), held_out_judge=None,
+                         regression=None, commit=None, max_profiles: int = 6, max_samples: int = 3,
+                         max_held_out: int = 4, note: str = "") -> CalibrationCommit:
+    """Bounded calibration that only commits a recommendation after held-out validation
+    (plan P4.1.4/P4.1.7), and never mutates anything itself: `commit` is the caller's hook
+    and is invoked exactly once, with the validated profile, only when every gate passed.
+
+    Gates, in order -- any refusal stops before the next gate and the record says why:
+      1. the calibration must recommend a single profile (inconclusive and ambiguous
+         results never commit);
+      2. a held-out set must be supplied (the default is empty = refuse: explicit opt-in),
+         and every held-out sample item must validate ("match") under `held_out_judge`
+         (defaults to `judge`; an independent validator is recommended);
+      3. the optional `regression` hook -- the caller's re-check of affected accepted
+         matches -- must answer (True, ...) when supplied; a False answer refuses.
+    The held-out set is bounded: at most `max_held_out` items are validated and the rest
+    reported as `held_out_cut`. The commit hook's exceptions propagate to the caller (a
+    half-applied commit must not be recorded as committed).
+    """
+    report = calibrate(candidates, sample, judge, max_profiles=max_profiles,
+                       max_samples=max_samples, note=note)
+    if report.status != "recommended":
+        return CalibrationCommit(False, f"calibration is {report.status}: no recommendation to commit",
+                                 None, None, report)
+    if not held_out:
+        return CalibrationCommit(False, "no held-out validation set supplied: refusing to commit "
+                                        "(an explicit held-out set is required)", None, None, report)
+    if commit is None:
+        return CalibrationCommit(False, "no commit hook supplied: refusing to commit", None, None, report)
+
+    profile = report.recommendation
+    validator = held_out_judge or judge
+    outcomes, cut = [], max(0, len(held_out) - max_held_out)
+    for index, item in enumerate(held_out[:max_held_out]):
+        asm, data, header = item
+        try:
+            verdict, score, evidence = _judge_outcome(validator(profile, asm, data, header))
+        except Exception as e:  # a failing validator is not a validation
+            outcomes.append(SampleResult(index, "inconclusive", None, f"judge error: {e}"))
+            continue
+        outcomes.append(SampleResult(index, verdict, score, evidence))
+    if any(o.verdict != "match" for o in outcomes):
+        bad = ", ".join(f"{o.index}: {o.verdict}" for o in outcomes if o.verdict != "match")
+        return CalibrationCommit(False, f"held-out validation disagreed ({bad}): refusing to commit",
+                                 None, None, report, tuple(outcomes), cut)
+
+    regression_outcome = ("not-run", "no regression hook supplied")
+    if regression is not None:
+        try:
+            ok, why = regression(profile)
+            regression_outcome = ("ok" if ok else "failed", str(why))
+        except Exception as e:  # the re-check itself failed: treat as failed, never commit
+            regression_outcome = ("failed", f"regression check raised: {e}")
+        if regression_outcome[0] != "ok":
+            return CalibrationCommit(False, f"accepted-match regression failed: {regression_outcome[1]}",
+                                     None, None, report, tuple(outcomes), cut, regression_outcome)
+
+    commit(profile)
+    return CalibrationCommit(True, "committed after held-out validation", profile, profile.identity(),
+                             report, tuple(outcomes), cut, regression_outcome)
+
+
