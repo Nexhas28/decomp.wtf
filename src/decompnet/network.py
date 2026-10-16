@@ -19,11 +19,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import linkblock, policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
-from .compiler import compile_source
+from . import directives, linkblock, policy, retrieval, scheduler, scoring, snapshots, telemetry, toolchains, validity
+from .compiler import CompileResult, compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .compiler_profiles import effective_compiler
-from .project import compiler_config, maspsx_variant_config, variant_compiler_config
+from .project import compiler_config, maspsx_config, maspsx_variant_config, variant_compiler_config
 from .store import Store
 
 CLAIM_TTL = 30 * 60
@@ -647,9 +647,58 @@ class Network:
         """Compile with the project's compiler for `fn` (the default, or the profile its function, segment or
         address selects, see compiler_profiles); without `fn`, the default compiler. Arch-specific lanes
         override this (Game Boy: see app.engine.RomNetwork._compile)."""
+        try:
+            cc = self._compiler_for(proj, source, fn)
+        except toolchains.ToolchainError as e:
+            return CompileResult(False, None, f"this source's decomp-* compiler comments need a tool this copy "
+                                              f"can't run: {e}")
+        return compile_source(cc, header, source)
+
+    @staticmethod
+    def _same_platform_compilers(toolchain: str | None) -> frozenset[str]:
+        """Registry compilers a `decomp-compiler` comment may switch to: the same platform and CPU as `toolchain`."""
+        try:
+            here = toolchains.get(toolchain) if toolchain else None
+        except toolchains.ToolchainError:
+            here = None
+        if here is None or not here.platform:
+            return frozenset()
+        return frozenset(t.id for t in toolchains.registry().values()
+                         if t.kind == "compiler" and t.platform == here.platform and t.arch == here.arch)
+
+    def _directives(self, proj, source: str, fn=None) -> directives.Directives:
+        cfg = json.loads(proj["config"])
+        toolchain = effective_compiler(cfg, fn).get("toolchain") if cfg.get("compiler") else None
+        return directives.parse(source, self._same_platform_compilers(toolchain))
+
+    def _compiler_for(self, proj, source: str, fn=None):
+        """The compile `source` asks for: the project's compiler for `fn` (see compiler_profiles), then the
+        source's own decomp-compiler / decomp-cflags / decomp-assembler comments (see directives)."""
         root = Path(proj["root"])
         cfg = json.loads(proj["config"])
-        return compile_source(compiler_config(root, {**cfg, "compiler": effective_compiler(cfg, fn)}), header, source)
+        compiler = effective_compiler(cfg, fn)
+        d = self._directives(proj, source, fn)
+        if d.compiler and d.compiler != compiler.get("toolchain"):
+            flags = compiler.get("flags")
+            compiler = {k: v for k, v in compiler.items() if k not in ("cmd", "profile", "flags")}
+            compiler["toolchain"] = d.compiler
+            if flags is not None:  # the project's flags (-O2 -G8) are the game's, whichever compiler builds it
+                compiler["flags"] = flags
+        if d.cflags:
+            compiler = {**compiler, "flags": [*compiler.get("flags", toolchains.get(compiler["toolchain"]).flags
+                                                               if "toolchain" in compiler else []), *d.cflags]}
+        full = {**cfg, "compiler": compiler}
+        if d.assembler == "gnu-modern":
+            cc = variant_compiler_config(root, full)
+            if cc is None:
+                raise toolchains.ToolchainError("the modern MIPS binutils aren't installed")
+            # unlike the fallback variant, with the project's own small-data setting ($gp-relative globals):
+            # measured on slus-01363, stored gnu-modern bests reproduce only this way
+            g_flag = [f for f in compiler.get("flags", []) if f.startswith("-G")][-1:]
+            return replace(cc, asm_cmd=tuple(x for a in cc.asm_cmd for x in (g_flag if a == "-G0" else [a])))
+        if d.assembler and directives.ASSEMBLERS[d.assembler] is not None:
+            return maspsx_config(root, full, directives.ASSEMBLERS[d.assembler])
+        return compiler_config(root, full)
 
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
@@ -727,7 +776,11 @@ class Network:
 
     def _variant_attempt(self, fn, proj, source: str, ctx, base_diff):
         """Compile `source` with each variant; return the best strictly-better (result, cand, verdict,
-        problems, diff), or None. `base_diff` None means the base compile itself failed."""
+        problems, diff), or None. `base_diff` None means the base compile itself failed. A source whose decomp-*
+        compiler comments this copy applies has chosen its build: it is judged as written, never through a variant
+        (with only comments this copy can't apply, it is built as if it had none, variants included)."""
+        if self._directives(proj, source, fn).applied:
+            return None
         best = None
         for vcfg in self._variant_configs(proj):
             vres = compile_source(vcfg, ctx["header"], source)
@@ -1150,6 +1203,13 @@ class Network:
             # A jump-table (or other assembly-level) rejection: the PSY-Q pipeline could assemble it, so
             # try the variants before reporting a compile error.
             alt = self._variant_attempt(fn, proj, source, ctx, None)
+            judged = None
+            if alt is None and not scratch and self._directives(proj, source, fn).applied:
+                # decomp-* comments this copy knows but couldn't build here (a tool missing or not runnable on this
+                # computer): the judge that counts may build them
+                judged = self._second_judge(agent, fn, source, False, failed_here=True)
+            if judged is not None:
+                return self._host_verdict(agent, fn, ctx, snap, source, judged, result.log.strip())
             if alt is None:
                 self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
                 return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}",
@@ -1158,10 +1218,26 @@ class Network:
 
         return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
 
-    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool, failed_here: bool = False) -> dict | None:
         """The judge whose say counts over this copy's, asked before a result is recorded (RomNetwork: a room's
-        host). None: there is none for this result. Otherwise {"matched", "score", "text"}; "text" explains a no."""
+        host). None: there is none for this result. Otherwise {"matched", "score", "text"}; "text" explains a no.
+        `failed_here`: this copy couldn't build the source at all."""
         return None
+
+    def _host_verdict(self, agent: Agent, fn, ctx, snap: dict, source: str, judged: dict, log: str) -> dict:
+        """Record a source this copy couldn't build, as the judge that counts scored it."""
+        if judged["matched"]:
+            refused = self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, snapshot=snap,
+                                   via="room")
+            if refused:
+                return {"text": _refused_text(fn, "matches on the room's host", refused), "score": 0, "matched": False}
+            return {"text": f"✅ MATCH! The room's host matched {fn['name']} (this copy can't build this source's "
+                            f"compiler comments). Credited to {agent.name}; your claim is released.",
+                    "score": 0, "matched": True}
+        self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False,
+                     compiled=judged["score"] is not None, snapshot=snap)
+        return {"text": f"{judged['text']}\n\nThis copy couldn't build it:\n{log}", "score": judged["score"],
+                "matched": False}
 
     def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool,
                variants: bool = True) -> dict:
@@ -1221,7 +1297,10 @@ class Network:
             # so the reply, the attempt and the best agree; the function stays open and the claim is kept
             self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False, compiled=True,
                          snapshot=snap)
-            return {"text": judged["text"], "score": judged["score"], "matched": False}
+            text = judged["text"]
+            if not self._hash_only(fn) and not d.bytes_match:  # the host sends a score only: show this copy's diff
+                text += f"\n\nThis copy's diff (score {d.score} here):\n{d.render()}"
+            return {"text": text, "score": judged["score"], "matched": False}
         if judged is not None and not matched_now:
             # ...or it matched a source this copy can't build the same way (decomp-* compiler comments)
             refused = self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, snapshot=snap,

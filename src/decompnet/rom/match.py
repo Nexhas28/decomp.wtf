@@ -198,6 +198,7 @@ class _Linker:
         self._data_relocs: dict[int, list] = {}
         self.words: list[int] = []
         self.fn_shndx = None
+        self.own_at: set[tuple[int, int]] = set()  # (offset, type) of every relocation in the candidate's code
 
     def problem(self, text: str) -> None:
         if text not in self.problems:
@@ -215,6 +216,17 @@ class _Linker:
             self.problem(f"`{name}` is not a known symbol. Use the name the assembly shows (like D_80012340 or "
                          f"func_80001234), or give that address this name first with rename_symbol.")
         return addr
+
+    #: How far (in bytes) a reference to the candidate's own data may sit from the ROM's to be placed by it
+    NEAR = 16
+
+    def nearby(self, off: int, rtype: int) -> int | None:
+        """The address of the ROM's closest reference of the same kind within NEAR bytes of `off` (the earlier one
+        on a tie), for a candidate whose code reaches its own data a few instructions earlier or later. A ROM
+        reference the candidate has its own reference for, at the same place, belongs to that one instead."""
+        hits = sorted((abs(o - off), o, addr) for o, (t, addr) in self.target_at.items()
+                      if t == rtype and abs(o - off) <= self.NEAR and (o, t) not in self.own_at)
+        return hits[0][2] if hits else None
 
     def address(self, raw: list[dict], k: int, fn_shndx: int, fn_start: int) -> int | None:
         r = raw[k]
@@ -249,11 +261,22 @@ class _Linker:
             addr = base + named[1]
         else:
             want = self.target_at.get(r["off"])
-            if want is None or want[0] != r["type"]:
+            placed = self.local_map.get((shndx, off))
+            near = None if placed is not None or (want and want[0] == r["type"]) else self.nearby(r["off"], r["type"])
+            if want is not None and want[0] == r["type"]:
+                addr = want[1]
+            elif placed is not None:
+                # the other half of a %hi/%lo pair whose first half is already placed (a jump table built as
+                # lui/addiu while the ROM folds the %lo into the load): the instructions differ and the diff shows
+                # it, but the table is the ROM's and its contents are still checked
+                addr = placed
+            elif near is not None:
+                # scheduled an instruction or two away from the ROM's: the same reference, placed the same way
+                addr = near
+            else:
                 label = f"{named[0]}+0x{named[1]:X}" if named else f"{self.elf.get_section(shndx).name}+0x{off:X}"
                 self.problem(f"your code refers to {label} where the ROM's code has no address")
                 return None
-            addr = want[1]
             prev = self.local_map.setdefault((shndx, off), addr)
             if prev != addr:
                 self.problem(f"{self.elf.get_section(shndx).name}+0x{off:X} is used for two different ROM addresses")
@@ -370,6 +393,7 @@ class _Linker:
         self.fn_shndx = shndx
         code = self.elf.get_section(shndx).data()[start:start + size]
         raw = _raw_relocs(self.elf, shndx, start, size, code)
+        self.own_at = {(r["off"], r["type"]) for r in raw}
         if self.elf.little_endian == self.target.big_endian:
             return LinkResult(None, False, ["the compiler produced code in the wrong byte order for this game"])
         fmt = (">" if self.target.big_endian else "<") + f"{len(code) // 4}I"

@@ -237,7 +237,7 @@ class Room:
         out: dict = {"e": max_e, "events": [dict(ev) for ev in events]}
         first = e == 0
         if first or names:
-            rows = net.store.all("SELECT f.name, f.vram, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
+            rows = net.store.all("SELECT f.name, f.vram, f.size, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
                                  "ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched'", pid)
             out["matched"] = [dict(r) for r in rows if first or r["name"] in names]
         best = net.store.all("SELECT f.name, f.vram, f.best_score, f.best_source, MAX(t.id) AS last FROM attempts t "
@@ -375,8 +375,10 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        res = net.attempt(agent, str(d.get("function", "")), str(d.get("source", "")), room.slug)
-        return {"score": res["score"], "matched": res["matched"]}
+        name = str(d.get("function", ""))
+        res = net.attempt(agent, name, str(d.get("source", "")), room.slug)
+        # the function's size here: a member whose copy cuts it differently must not take this match as its own
+        return {"score": res["score"], "matched": res["matched"], "size": net._function(name, room.slug)["size"]}
 
     def best(room, member, d):
         """A member's attempt got better: kept as the function's best so far, as reported (no compile here: the host
@@ -611,7 +613,8 @@ class Link:
             # never confirmed by the room's judge (an older copy accepted it locally)
             net.reopen_unconfirmed(slug, st["matched"])
         for m in st.get("matched") or []:
-            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"))
+            net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"),
+                                   size=m.get("size"))
         for b in st.get("best") or []:
             net.apply_remote_best(slug, b["vram"], b["score"], b["source"])
         for n in st.get("notes") or []:

@@ -320,6 +320,36 @@ def maspsx_variant_config(root: Path, cfg: dict):
                    cache=False, ro_paths=tuple({*base.ro_paths, str(maspsx_dir)}))
 
 
+def maspsx_config(root: Path, cfg: dict, args: tuple[str, ...]):
+    """A `decomp-assembler: maspsx-…` compile: gcc -S, maspsx with `args` (the ASPSX version to emulate and its
+    options), then the modern MIPS binutils. Raises ToolchainError when maspsx or binutils is missing."""
+    from dataclasses import replace
+
+    from . import toolchains
+
+    base = compiler_config(root, cfg)
+    if not base.cmd:
+        raise toolchains.ToolchainError("this project's compiler has no command to run")
+    maspsx_dir = Path(toolchains.require(MASPSX_TOOLCHAIN))
+    asm_dir = Path(toolchains.require(ASM_VARIANT_TOOLCHAIN))
+    asm = _binutils_as(asm_dir)
+    if asm is None:
+        raise toolchains.ToolchainError(f"no assembler in {asm_dir}")
+    flags = list(cfg.get("compiler", {}).get("flags", []))
+    g_flag = next((f for f in flags if f.startswith("-G")), None)
+    pp = (sys.executable or "python3", str(maspsx_dir / "maspsx.py"), *args, *([g_flag] if g_flag else []))
+    endian = "-EB" if cfg.get("big_endian") else "-EL"
+    return replace(base, asm_pp_cmd=pp, asm_cmd=(str(asm), endian, "-G0", "-o", "{obj}", "{src}"), cache=False,
+                   ro_paths=tuple({*base.ro_paths, str(maspsx_dir), str(asm_dir)}))
+
+
+def _binutils_as(asm_dir: Path) -> Path | None:
+    for candidate in ("as", "mips-ps2-decompals-as", "mipsel-linux-gnu-as"):
+        if (asm_dir / candidate).exists():
+            return asm_dir / candidate
+    return None
+
+
 def variant_compiler_config(root: Path, cfg: dict, *, asm_pass: str = ASM_VARIANT_PASS):
     """The same compile, assembled by the modern mips binutils with the PSY-Q passes applied.
 
