@@ -32,6 +32,17 @@ Report progress in terms of functions and % of code matched. The game's code is 
 """
 
 
+def agent_options(settings_data: dict, per_session: int = 0, task: str = "") -> dict:
+    """The options start_agents hands to Manager.start: per_session and, when given, a validated
+    task class for model routing (P11.5). An empty task keeps the Manager's default (easy-edit)."""
+    options = {"per_session": per_session or settings_data.get("per_session", agents.PER_SESSION)}
+    if task:
+        if task not in agents.TASK_CLASSES:
+            raise ValueError(f"unknown task class {task!r}: {', '.join(agents.TASK_CLASSES)}")
+        options["task_class"] = task
+    return options
+
+
 def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
     def chat_agent(ctx: Context):
         headers = ctx.headers or {}
@@ -172,16 +183,22 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         return f"Couldn't open a browser here; the user can run `decomp` to open the app ({where})."
 
     @mcp.tool(meta=tools.ALWAYS_LOAD)
-    async def start_agents(ctx: Context, count: int = 1, kind: str = "", per_session: int = 0) -> str:
+    async def start_agents(ctx: Context, count: int = 1, kind: str = "", per_session: int = 0,
+                           task: str = "") -> str:
         """Start helper agents that decompile the current project in parallel with you (headless, shown live in
-        the app). `kind`: claude, codex, antigravity or opencode (default: the first one installed)."""
+        the app). `kind`: claude, codex, antigravity or opencode (default: the first one installed). `task`: the
+        work class for model routing — "easy-edit" (small, well-supported edits) or "structural-investigation"
+        (larger reasoning/context work); default "easy-edit"."""
         agent = chat_agent(ctx)
         slug = current(agent)
         if not kind:
             kind = next((a["id"] for a in agents.detect() if a["installed"] and a["id"] != "api"), "")
             if not kind:
                 raise ToolError("no agent CLI is installed for helpers (Claude Code, Codex, Antigravity CLI or opencode)")
-        options = {"per_session": per_session or settings.data.get("per_session", agents.PER_SESSION)}
+        try:
+            options = agent_options(settings.data, per_session=per_session, task=task)
+        except ValueError as e:
+            raise ToolError(str(e)) from None
         try:
             ids = manager.start(kind, slug, max(1, min(int(count), 8)), options)
         except ValueError as e:
@@ -234,6 +251,44 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
         except NetworkError as e:
             raise ToolError(str(e)) from None
         return f"Autopilot is trying {st['total']} functions' machine drafts in the background; progress() shows it."
+
+    @mcp.tool(meta=tools.ALWAYS_LOAD)
+    async def analyze_target(ctx: Context, function: str) -> str:
+        """Decompile one ROM function with the pinned Ghidra and return the evidence: the decompiled C,
+        its calls and its data references. Read-only: it never mutates the project, so verify every idea
+        through compile_and_diff. Needs Ghidra + Java 21 (see the install notes)."""
+        from ..forks import ghidra
+
+        agent = chat_agent(ctx)
+        slug = current(agent)
+        if net.fork_slug(slug):
+            raise ToolError("analyze_target is for ROM projects; forks have read_file/search_code")
+        fn = net._function(function, slug)
+        proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if not fn["vram"] or not fn["size"]:
+            raise ToolError(f"{fn['name']} has no address/size recorded")
+        try:
+            res = await anyio.to_thread.run_sync(
+                lambda: ghidra.decompile_rom_function(
+                    proj, fn["vram"], fn["size"], Path(net.workspace) / "ghidra-evidence",
+                    rom_offset=fn["rom_offset"]))
+        except ghidra.GhidraUnavailable as e:
+            raise ToolError(str(e)) from None
+        if res["status"] == "timeout":
+            raise ToolError("Ghidra evidence timed out; retry or use a smaller function")
+        if res["status"] == "failed":
+            raise ToolError("Ghidra evidence failed:\n" + "\n".join(res["diagnostics"][:4]))
+        out = [f"### Ghidra evidence for {fn['name']} (read-only; ideas must still pass compile_and_diff)",
+               f"status: {res['status']}"]
+        if res.get("c"):
+            out += ["```c", res["c"], "```"]
+        if res.get("calls"):
+            out += ["", "### Calls", *res["calls"][:20]]
+        if res.get("data_refs"):
+            out += ["", "### Data references", *res["data_refs"][:30]]
+        if res["status"] == "partial":
+            out.append("(body contains undefined bytes — treat the listing as partial)")
+        return "\n".join(out)
 
     @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def export_project(ctx: Context) -> str:

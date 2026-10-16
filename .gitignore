@@ -26,3 +26,8 @@ projects/zlib-n64/original/
 # The retired hosted network's server scripts (kept locally only)
 deploy/
 scripts/
+
+# Dev environment (this fork)
+.pip-cache/
+benchmark-results/
+benchmarks/results/

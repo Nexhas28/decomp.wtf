@@ -29,15 +29,19 @@ from pathlib import Path
 from ..elfobj import _MASKS, Reloc, mask_relocs
 from ..handwritten import mips_reason, ppc_reason
 from ..network import NetworkError
+from .. import similarity, snapshots
 
 log = logging.getLogger("decomp.wtf")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
 _CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
-# A twin's code that didn't match isn't tried again for this long while neither function's code changes (the
-# same source gives the same result): every agent start's pass would otherwise redo hundreds of compiles (Mario
-# Party 6: about 900, 15 minutes beside the agents). After a while it's tried again: a header can have changed.
+# A twin's code that didn't match isn't tried again while none of its material dependencies (the adapted source,
+# the source function's identity and target, the destination target, both contexts, the compiler profile) changed.
+# When one does change it's tried again at once (plan P6.1). When nothing changed, a bounded cooldown applies: the
+# same source gives the same result, and every agent start's pass would otherwise redo hundreds of compiles (Mario
+# Party 6: about 900, 15 minutes beside the agents). After a while it's tried again as a backstop.
 MISS_TTL = 24 * 3600
+_MISS_KEPT = 8  # dependency states remembered per function (older failure states are pruned)
 _GENERATED = ("__dt__", "__ct__", "__sinit", "__vt__")  # C++ code the compiler writes: nothing to copy
 
 
@@ -511,12 +515,66 @@ class Twins:
     def _miss_key(source: str) -> str:
         return hashlib.sha1(source.encode("utf-8", "replace")).hexdigest()[:20]
 
-    def _missed(self, b_id: int, source: str) -> bool:
-        return self.net.store.one("SELECT 1 FROM twin_misses WHERE function_id=? AND source_hash=? AND at > ?",
-                                  b_id, self._miss_key(source), time.time() - MISS_TTL) is not None
+    @staticmethod
+    def _target_digest(fn) -> str:
+        try:
+            if fn["target"] is None:
+                return "none"
+            return snapshots.target_digest(fn)
+        except (KeyError, IndexError, TypeError):
+            return "none"
+
+    def _ctx_digest(self, proj, fn) -> str:
+        """The context a twin attempt compiles against: the header for ROM projects; for forks the unit's own
+        source file (its content is already in the source digest; its identity here catches edits)."""
+        unit = fn["unit"] if "unit" in fn.keys() else ""
+        try:
+            ctx = self.net._context(proj["id"], unit)
+        except Exception:
+            ctx = None
+        if ctx is not None:
+            return snapshots.context_digest(ctx)
+        if self.net.fork_slug(proj["slug"]):
+            return self._fork_unit_digest(proj, fn)
+        return "none"
+
+    @staticmethod
+    def _fork_unit_digest(proj, fn) -> str:
+        from ..forks.project import ForkError, ForkProject
+
+        unit_name = fn["unit"] if "unit" in fn.keys() else ""
+        try:
+            unit = ForkProject(Path(proj["root"])).unit(unit_name)
+        except (ForkError, ValueError, OSError):
+            return "none"
+        if unit is None or not unit.source:
+            return "none"
+        try:
+            st = (Path(proj["root"]) / unit.source).stat()
+            return f"{unit.source}:{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            return "none"
+
+    def _miss_state(self, proj, a, b, source: str) -> tuple[str, float | None]:
+        """(key, at) of a recorded failure of `source` on b under its current material dependencies: the adapted
+        source, the source function's identity, both targets, both contexts and the compiler profile (P6.1).
+        `at` is None when this exact dependency state has never failed: try it (again) now."""
+        parts = [f"src={a['id']}", f"st={self._target_digest(a)}", f"dt={self._target_digest(b)}",
+                 f"sc={self._ctx_digest(proj, a)}", f"dc={self._ctx_digest(proj, b)}",
+                 f"cc={snapshots.compiler_digest(proj)}"]
+        deps = hashlib.sha1("|".join(parts).encode()).hexdigest()[:24]
+        key = f"{self._miss_key(source)}-{deps}"
+        row = self.net.store.one("SELECT at FROM twin_misses WHERE function_id=? AND source_hash=?", b["id"], key)
+        return key, (row["at"] if row else None)
+
+    def _missed(self, proj, a, b, source: str) -> bool:
+        """Whether `source` failed on b under the exact same dependencies recently. A changed dependency
+        (source, targets, contexts, compiler) is a new state: retried immediately, not after a TTL (P6.1)."""
+        _, at = self._miss_state(proj, a, b, source)
+        return at is not None and at > time.time() - MISS_TTL
 
     def known_miss(self, proj, a_id: int, b_id: int) -> bool:
-        """Whether a's code was tried on b, as it is now, and didn't match (see MISS_TTL)."""
+        """Whether a's code was tried on b, as it is now, and didn't match (see _missed)."""
         a = self.net.store.one("SELECT * FROM functions WHERE id=?", a_id)
         b = self.net.store.one("SELECT * FROM functions WHERE id=?", b_id)
         if a is None or b is None:
@@ -525,7 +583,7 @@ class Twins:
             source = self.source_for(proj, a, b)
         except (NetworkError, OSError, ValueError):
             return False
-        return bool(source) and self._missed(b_id, source)
+        return bool(source) and self._missed(proj, a, b, source)
 
     def _try_pair(self, agent, proj, a, b) -> str:
         try:
@@ -538,13 +596,24 @@ class Twins:
                 self.net.forks.mark_asm(b, a["name"])
                 return "asm"
             return "skip"
-        if self._missed(b["id"], source):
+        if self._missed(proj, a, b, source):
             return "known"
         outcome, why = self._attempt_twin(agent, proj, a, b, source)
         if outcome == "miss":
+            key, _ = self._miss_state(proj, a, b, source)
             with self.net.store.tx() as db:
                 db.execute("INSERT OR REPLACE INTO twin_misses(function_id, source_hash, project_id, at, why) "
-                           "VALUES(?,?,?,?,?)", (b["id"], self._miss_key(source), proj["id"], time.time(), why))
+                           "VALUES(?,?,?,?,?)", (b["id"], key, proj["id"], time.time(), why))
+                keep = [r["source_hash"] for r in db.execute(
+                    "SELECT source_hash FROM twin_misses WHERE function_id=? ORDER BY at DESC LIMIT ?",
+                    (b["id"], _MISS_KEPT))]
+                if len(keep) == _MISS_KEPT:
+                    db.execute(f"DELETE FROM twin_misses WHERE function_id=? AND source_hash NOT IN "
+                               f"({','.join('?' * len(keep))})", (b["id"], *keep))
+        elif outcome == "match":
+            # P6.5 acceptance feedback: the exact-twin route produced verified reuse; b's source is now
+            # available as a matched example. (Match state itself was set by the judge inside _attempt_twin.)
+            similarity.note_reuse(proj["id"], b["id"], source_function_id=a["id"], route="exact-twin")
         return outcome
 
     def miss_why(self, b_id: int) -> str | None:

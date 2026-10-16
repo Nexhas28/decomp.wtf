@@ -47,6 +47,45 @@ CREATE INDEX IF NOT EXISTS idx_symbols_addr ON symbols(project_id, address);
 CREATE TABLE IF NOT EXISTS twin_misses(
   function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
   PRIMARY KEY(function_id, source_hash));
+CREATE TABLE IF NOT EXISTS search_budgets(
+  function_id INTEGER PRIMARY KEY, epoch TEXT NOT NULL DEFAULT '', policy_version INTEGER NOT NULL DEFAULT 1,
+  turns_used INTEGER NOT NULL DEFAULT 0, max_turns INTEGER NOT NULL DEFAULT 4,
+  improvements INTEGER NOT NULL DEFAULT 0, cooldown_until REAL NOT NULL DEFAULT 0,
+  reset_reason TEXT, last_at REAL);
+CREATE TABLE IF NOT EXISTS attempt_snapshots(
+  attempt_id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, function_id INTEGER NOT NULL,
+  function_revision INTEGER NOT NULL DEFAULT 1, context_version INTEGER NOT NULL,
+  context_digest TEXT NOT NULL, target_digest TEXT NOT NULL, compiler_digest TEXT NOT NULL,
+  scorer_version INTEGER NOT NULL DEFAULT 1, policy_version INTEGER NOT NULL DEFAULT 1,
+  stale_reason TEXT);
+CREATE TABLE IF NOT EXISTS verification_receipts(
+  function_id INTEGER PRIMARY KEY, attempt_id INTEGER, snapshot_id TEXT NOT NULL,
+  source_digest TEXT NOT NULL, candidate_object_digest TEXT, origin TEXT NOT NULL,
+  object_match TEXT, function_link_match TEXT NOT NULL,
+  unit_code_data_match TEXT NOT NULL DEFAULT 'unverified',
+  whole_image_checksum TEXT NOT NULL DEFAULT 'not_run',
+  acceptance_policy TEXT NOT NULL, verified_at_utc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS candidates(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, origin TEXT NOT NULL,
+  source TEXT NOT NULL, source_digest TEXT NOT NULL, parent_id INTEGER,
+  evidence TEXT, score_version INTEGER, created_at REAL);
+CREATE INDEX IF NOT EXISTS idx_candidates_fn ON candidates(function_id);
+CREATE TABLE IF NOT EXISTS function_walls(
+  function_id INTEGER NOT NULL, signature TEXT NOT NULL, reason TEXT, at REAL,
+  PRIMARY KEY(function_id, signature));
+CREATE TABLE IF NOT EXISTS merge_proposals(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, continues_id INTEGER NOT NULL,
+  at REAL, evidence TEXT);
+CREATE TABLE IF NOT EXISTS reference_sources(
+  entry_id TEXT NOT NULL, project_id INTEGER,
+  repository TEXT NOT NULL, revision TEXT NOT NULL, source_location TEXT NOT NULL,
+  toolchain TEXT NOT NULL, profile TEXT NOT NULL, target_digest TEXT NOT NULL,
+  processor TEXT NOT NULL DEFAULT 'mips', mode TEXT NOT NULL DEFAULT '',
+  provenance TEXT NOT NULL DEFAULT '', usage_restrictions TEXT NOT NULL DEFAULT '[]',
+  source_available INTEGER NOT NULL DEFAULT 1, source_digest TEXT NOT NULL DEFAULT '',
+  holdout INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+  PRIMARY KEY(project_id, entry_id));
+CREATE INDEX IF NOT EXISTS idx_reference_sources_project ON reference_sources(project_id);
 """
 
 # Columns added after the first release; applied in place to existing databases.
@@ -62,6 +101,10 @@ MIGRATIONS = [
     ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
     ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
+    ("functions", "revision", "INTEGER NOT NULL DEFAULT 1"),   # split/merge/target change = new revision (Section 18.2)
+    ("projects", "matched_epoch", "INTEGER NOT NULL DEFAULT 0"),  # incremented on every acceptance (P1.4 epochs)
+    ("functions", "best_verified", "INTEGER NOT NULL DEFAULT 1"),  # 0: legacy best scored before snapshots; revalidate before trusting
+    ("agents", "bridge", "TEXT"),  # the bridge daemon's stable client id (same id = same identity across restarts)
 ]
 
 

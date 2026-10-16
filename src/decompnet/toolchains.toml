@@ -521,3 +521,69 @@ description = "Game Boy Advance disassembler: finds the functions in a ROM and w
 git = "https://github.com/aarant/luvdis"
 commit = "ec3a4e3ee3afe3e9b4a9c7ae8fffc65e1ea2096c"
 pip_extra = ["setuptools<70"]
+
+["gbdk-2020"]
+name = "GBDK-2020 (SDCC for the Game Boy)"
+platform = "Game Boy / Game Boy Color"
+arch = "sm83"
+license = "MIT (GBDK-2020) + GPL-2.0 (SDCC)"
+source = "gbdk-2020/gbdk-2020 4.5.0 (SDCC 4.5.1 + sdasgb + sdldgb + makebin + libraries)"
+description = "The C toolchain for Game Boy and Game Boy Color: SDCC's Sharp SM83 back end with its assembler, linker and libraries. Candidates are compiled through decompnet.rom.gb_build (sdcc -S, sdasgb -l, then the listing's instruction bytes), because SM83 has no ELF object format in this pipeline and capstone has no SM83 decoder (rom/sm83.py provides one). Pass the project's symbol table to gb_build and external references resolve to the ROM's own addresses."
+# The release tarball nests everything under gbdk/, which the installer strips: the toolchain lands flat,
+# as <tc>/bin/sdcc -- the same convention as every other toolchain and what gb_build.toolchain_bin looks
+# for. (Before this was fixed the lane reported itself available and then failed every compile.)
+cc = ["{tc}/bin/sdcc", "-msm83", "-c", "-I{include}"]
+flags = ["--opt-code-speed"]
+[["gbdk-2020".parts]]
+url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-macos-arm64.tar.gz"
+sha256 = "289ee60e46c5a2785a21e35533f84a5131ed4a063b21b0dbdedc9a10af15bf78"
+platforms = ["macos-arm64"]
+[["gbdk-2020".parts]]
+url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-macos.tar.gz"
+sha256 = "1aa549d12032d8f6509d11923bb28b1a453098f42597feb378e9a42541f8fd89"
+platforms = ["macos-x86_64"]
+[["gbdk-2020".parts]]
+url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz"
+sha256 = "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c"
+platforms = ["linux-x86_64"]
+[["gbdk-2020".parts]]
+url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux-arm64.tar.gz"
+sha256 = "31eb2235f0fdb60163d0b1e9574a022098d6069cd56606a1daca4478a46e0439"
+platforms = ["linux-aarch64"]
+[["gbdk-2020".parts]]
+url = "https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-win64.zip"
+sha256 = "266854ce92e3064871c5b28cd3436cc2a6cb136af9e7cf617140108f8c1c5890"
+platforms = ["windows-x86_64"]
+
+[mgbdis]
+name = "mgbdis"
+kind = "tool"
+license = "MIT"
+source = "mattcurrie/mgbdis v3.0"
+description = "Game Boy ROM disassembler that writes RGBDS assembly with proper code/data separation and its own label generation. The Game Boy split uses it when it is installed (assembling its output with rgbds reproduces the ROM byte for byte, which is the check that the split is faithful); without it the built-in call-graph split is used."
+# A plain script directory, not a Python package: ship the released source archive (it bundles png.py).
+[["mgbdis".parts]]
+url = "https://github.com/mattcurrie/mgbdis/archive/refs/tags/v3.0.tar.gz"
+sha256 = "f0f3d3b276cbee792815bece448257d220e51ed9400a0a02e8a68ac2b33e6b2d"
+platforms = ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64", "windows-x86_64"]
+
+["rgbds"]
+name = "RGBDS (rgbasm, rgblink, rgbfix)"
+kind = "tool"
+platform = "Game Boy / Game Boy Color"
+arch = "sm83"
+license = "MIT"
+source = "gbdev/rgbds v1.0.4"
+description = "The Game Boy assembler/linker/fixer the mgbdis split assembles its output with, and the standard toolchain for matching-grade Game Boy assembly work."
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-macos.zip"
+sha256 = "62d1669bbe3b2bf2cfc2e72076d3c8c00fc023a9cc15d458f0c723bd9d0312c4"
+platforms = ["macos-arm64", "macos-x86_64"]
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-linux-x86_64.tar.xz"
+sha256 = "3e19e50ea602e316be709160acaf0a708b1fa6d32d219ec541f244442895dbb7"
+platforms = ["linux-x86_64"]
+[["rgbds".parts]]
+url = "https://github.com/gbdev/rgbds/releases/download/v1.0.4/rgbds-win64.zip"
+sha256 = "bd1d7e386f290afd57f4ea9a7353bfcd4ae10884a94c5c1f2fc42a75db7f97e6"
+platforms = ["windows-x86_64"]
