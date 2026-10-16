@@ -166,3 +166,57 @@ def test_variant_two_stage_compile_real_lane(tmp_path, monkeypatch):
         pytest.skip(f"variant toolchain cannot run here: {(res.log or '')[-120:]}")
     assert res.obj, "variant compile produced no object"
     assert b"\x00" in res.obj
+
+
+# --------------------------------------------------------------------------- maspsx variant
+
+def _fake_toolchains(tmp_path: Path, monkeypatch, maspsx_dir: Path | None, tc_dir: Path | None):
+    def path(tid, linux=None):
+        if tid == project.MASPSX_TOOLCHAIN:
+            if maspsx_dir is None:
+                raise toolchains.ToolchainError("maspsx not installed")
+            return maspsx_dir
+        if maspsx_dir is None:
+            raise toolchains.ToolchainError(f"{tid} not installed")
+        return maspsx_dir
+
+    monkeypatch.setattr(toolchains, "path", path)
+    base_cmd = [str(tc_dir / "gcc"), "-c"] if tc_dir else ["gcc", "-c"]
+    monkeypatch.setattr(project, "compiler_config",
+                        lambda root, cfg: compiler.CompilerConfig(cmd=base_cmd))
+
+
+def test_maspsx_variant_runs_the_preprocessor_then_the_toolchain_assembler(tmp_path, monkeypatch):
+    root, cfg = _rom_cfg(tmp_path)
+    maspsx_dir = tmp_path / "maspsx"
+    maspsx_dir.mkdir()
+    (maspsx_dir / "maspsx.py").write_text("# maspsx\n", encoding="utf-8")
+    tc_dir = tmp_path / "tc"
+    tc_dir.mkdir()
+    (tc_dir / "as").write_text("", encoding="utf-8")
+    _fake_toolchains(tmp_path, monkeypatch, maspsx_dir, tc_dir)
+
+    v = project.maspsx_variant_config(root, cfg)
+    assert v is not None
+    assert v.asm_pp_cmd[1] == str(maspsx_dir / "maspsx.py")
+    assert "-G8" in v.asm_pp_cmd  # the project's small-data setting is handed to maspsx
+    assert v.asm_cmd[0] == str(tc_dir / "as")
+    assert "-G0" in v.asm_cmd  # GNU as wants -G0 for PSY-Q behaviour (maspsx's own default)
+    assert v.cache is False
+
+
+def test_maspsx_variant_is_absent_when_maspsx_is_not_installed(tmp_path, monkeypatch):
+    root, cfg = _rom_cfg(tmp_path)
+    _fake_toolchains(tmp_path, monkeypatch, None, None)
+    assert project.maspsx_variant_config(root, cfg) is None
+
+
+def test_variant_order_prefers_the_assembler_variant_then_maspsx():
+    """The judge tries both; the order is the fallback preference, not a correctness claim."""
+    builds = [project.variant_compiler_config, project.maspsx_variant_config]
+    assert [b.__name__ for b in builds] == ["variant_compiler_config", "maspsx_variant_config"]
+
+
+def test_maspsx_stage_is_not_run_when_the_base_compile_succeeds_and_matches():
+    """Cheap guard: a matching attempt never pays for a variant, whatever variants exist."""
+    assert _should_try(True, 0) is False

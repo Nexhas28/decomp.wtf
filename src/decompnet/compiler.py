@@ -79,6 +79,7 @@ class CompilerConfig:
     # variant is tried per attempt and only kept when it scores better.
     asm_cmd: tuple[str, ...] | None = None  # assembler argv template: {src} {obj} {include}
     asm_pass: str | None = None  # registered asm pass applied to the generated .s before assembly
+    asm_pp_cmd: tuple[str, ...] | None = None  # assembly preprocessor: reads .s on stdin, writes .s on stdout
 
 
 @dataclass
@@ -380,11 +381,24 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
             return CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
 
         asm_text = asm_file.read_text(encoding="utf-8", errors="replace")
+        if cfg.asm_pp_cmd:
+            # the PSY-Q assembly preprocessing stage (maspsx): jump tables, %hi/%lo of local labels and
+            # other gcc output that the bare assembler cannot encode. stdin -> stdout, same text domain.
+            try:
+                pp = subprocess.run(list(cfg.asm_pp_cmd), input=asm_text, capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=cfg.timeout, cwd=work)
+            except subprocess.TimeoutExpired:
+                return CompileResult(False, None, f"assembler preprocessor timed out after {cfg.timeout}s")
+            log += (pp.stderr or "").replace(root + "/", "")
+            if pp.returncode != 0 or not pp.stdout.strip():
+                return CompileResult(False, None, (pp.stderr or "assembler preprocessor failed")[-4000:])
+            asm_text = pp.stdout
         if cfg.asm_pass:
             try:
                 asm_text = toolchains.apply_asm_pass(cfg.asm_pass, asm_text)
             except ValueError as e:
                 return CompileResult(False, None, f"asm pass failed: {e}")
+        if cfg.asm_pass or cfg.asm_pp_cmd:
             asm_file.write_text(asm_text, encoding="utf-8", newline="\n")
 
         asm_subst = {"{src}": f"{root}/func.s", "{asm}": f"{root}/func.s", "{obj}": f"{root}/func.o",
