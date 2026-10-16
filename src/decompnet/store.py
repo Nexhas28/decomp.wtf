@@ -47,7 +47,75 @@ CREATE INDEX IF NOT EXISTS idx_symbols_addr ON symbols(project_id, address);
 CREATE TABLE IF NOT EXISTS twin_misses(
   function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
   PRIMARY KEY(function_id, source_hash));
+CREATE TABLE IF NOT EXISTS search_budgets(
+  function_id INTEGER PRIMARY KEY, epoch TEXT NOT NULL DEFAULT '', policy_version INTEGER NOT NULL DEFAULT 1,
+  turns_used INTEGER NOT NULL DEFAULT 0, max_turns INTEGER NOT NULL DEFAULT 4,
+  improvements INTEGER NOT NULL DEFAULT 0, cooldown_until REAL NOT NULL DEFAULT 0,
+  reset_reason TEXT, last_at REAL);
+CREATE TABLE IF NOT EXISTS attempt_snapshots(
+  attempt_id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, function_id INTEGER NOT NULL,
+  function_revision INTEGER NOT NULL DEFAULT 1, context_version INTEGER NOT NULL,
+  context_digest TEXT NOT NULL, target_digest TEXT NOT NULL, compiler_digest TEXT NOT NULL,
+  scorer_version INTEGER NOT NULL DEFAULT 1, policy_version INTEGER NOT NULL DEFAULT 1,
+  stale_reason TEXT);
+CREATE TABLE IF NOT EXISTS verification_receipts(
+  function_id INTEGER PRIMARY KEY, attempt_id INTEGER, snapshot_id TEXT NOT NULL,
+  source_digest TEXT NOT NULL, candidate_object_digest TEXT, origin TEXT NOT NULL,
+  object_match TEXT, function_link_match TEXT NOT NULL,
+  unit_code_data_match TEXT NOT NULL DEFAULT 'unverified',
+  whole_image_checksum TEXT NOT NULL DEFAULT 'not_run',
+  acceptance_policy TEXT NOT NULL, verified_at_utc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS candidates(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, origin TEXT NOT NULL,
+  source TEXT NOT NULL, source_digest TEXT NOT NULL, parent_id INTEGER,
+  evidence TEXT, score_version INTEGER, created_at REAL);
+CREATE INDEX IF NOT EXISTS idx_candidates_fn ON candidates(function_id);
+CREATE TABLE IF NOT EXISTS function_walls(
+  function_id INTEGER NOT NULL, signature TEXT NOT NULL, reason TEXT, at REAL,
+  PRIMARY KEY(function_id, signature));
+CREATE TABLE IF NOT EXISTS merge_proposals(
+  id INTEGER PRIMARY KEY, function_id INTEGER NOT NULL, continues_id INTEGER NOT NULL,
+  at REAL, evidence TEXT);
+CREATE TABLE IF NOT EXISTS reference_sources(
+  entry_id TEXT NOT NULL, project_id INTEGER,
+  repository TEXT NOT NULL, revision TEXT NOT NULL, source_location TEXT NOT NULL,
+  toolchain TEXT NOT NULL, profile TEXT NOT NULL, target_digest TEXT NOT NULL,
+  processor TEXT NOT NULL DEFAULT 'mips', mode TEXT NOT NULL DEFAULT '',
+  provenance TEXT NOT NULL DEFAULT '', usage_restrictions TEXT NOT NULL DEFAULT '[]',
+  source_available INTEGER NOT NULL DEFAULT 1, source_digest TEXT NOT NULL DEFAULT '',
+  holdout INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+  PRIMARY KEY(project_id, entry_id));
+CREATE INDEX IF NOT EXISTS idx_reference_sources_project ON reference_sources(project_id);
+CREATE TABLE IF NOT EXISTS search_runs(
+  function_id INTEGER PRIMARY KEY, snapshot_key TEXT NOT NULL, policy_epoch TEXT NOT NULL,
+  checkpoint TEXT NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS function_identity(
+  function_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL DEFAULT 1,
+  artifact_sha256 TEXT, module_id TEXT NOT NULL DEFAULT '', unit_id TEXT NOT NULL DEFAULT '',
+  address_space TEXT NOT NULL DEFAULT '', entry_kind TEXT NOT NULL DEFAULT 'unknown', entry TEXT,
+  section TEXT, recorded_by TEXT NOT NULL DEFAULT 'backfill');
+CREATE TABLE IF NOT EXISTS evidence_records(
+  evidence_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL DEFAULT 1, function_key TEXT NOT NULL,
+  target_digest TEXT NOT NULL, provider_route TEXT NOT NULL, underlying_engine TEXT NOT NULL,
+  engine_version TEXT NOT NULL, analysis_profile_digest TEXT NOT NULL, correlation_group TEXT NOT NULL,
+  snapshot TEXT NOT NULL, status TEXT NOT NULL, facets TEXT NOT NULL DEFAULT '{}',
+  observations TEXT NOT NULL DEFAULT '[]', inferences TEXT NOT NULL DEFAULT '[]',
+  unknowns TEXT NOT NULL DEFAULT '[]', limitations TEXT NOT NULL DEFAULT '[]',
+  untrusted_target_content INTEGER NOT NULL DEFAULT 1, original_provider_evidence_ref TEXT,
+  classification TEXT, entry TEXT, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_evidence_fn ON evidence_records(function_key, snapshot);
+CREATE TABLE IF NOT EXISTS evidence_payloads(
+  payload_ref TEXT PRIMARY KEY, body TEXT NOT NULL, size INTEGER NOT NULL, created_at REAL NOT NULL);
 """
+
+#: Serialised form of the Section 18.2 function identity (bump when its JSON shape changes).
+IDENTITY_SCHEMA_VERSION = 1
+
+
+def hex_entry(value: int | None) -> str | None:
+    """Exact hexadecimal string for a cross-language address/offset (18.2): lower-case, 0x-prefixed,
+    at least 8 digits, so JSON consumers never lose precision and equal entries compare equal."""
+    return None if value is None else f"0x{int(value):08x}"
 
 # Columns added after the first release; applied in place to existing databases.
 MIGRATIONS = [
@@ -62,6 +130,14 @@ MIGRATIONS = [
     ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
     ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
+    ("functions", "revision", "INTEGER NOT NULL DEFAULT 1"),   # split/merge/target change = new revision (Section 18.2)
+    ("projects", "matched_epoch", "INTEGER NOT NULL DEFAULT 0"),  # incremented on every acceptance (P1.4 epochs)
+    ("functions", "best_verified", "INTEGER NOT NULL DEFAULT 1"),  # 0: legacy best scored before snapshots; revalidate before trusting
+    ("agents", "bridge", "TEXT"),  # the bridge daemon's stable client id (same id = same identity across restarts)
+    ("search_budgets", "lifetime_resets", "INTEGER NOT NULL DEFAULT 0"),  # better-source resets so far (capped, P1.2)
+    ("search_budgets", "compiled_turns", "INTEGER NOT NULL DEFAULT 0"),   # turns that produced a compiled candidate
+    ("search_budgets", "improved_turns", "INTEGER NOT NULL DEFAULT 0"),   # turns that improved the best score
+    ("search_budgets", "infra_failures", "INTEGER NOT NULL DEFAULT 0"),   # turns lost to infrastructure failures
 ]
 
 
@@ -103,7 +179,68 @@ class Store:
                 DROP TABLE gave_up;
                 INSERT INTO settings(key, value) VALUES('abandons_recounted', '1');
                 COMMIT;""")
+        self.backfill_identities(self.conn)
         self.lock = threading.RLock()
+
+    @staticmethod
+    def backfill_identities(db) -> None:
+        """Idempotent Section 18.2 migration: drop identity rows whose function is gone (ids can be reused),
+        then attach an identity to every function that has none: the paths that insert functions without
+        one (forks, rescans, Game Boy/GBA imports, an older version writing after a downgrade). Only what
+        the functions table already knows is used; the artifact digest stays NULL rather than invented."""
+        db.execute("DELETE FROM function_identity WHERE function_id NOT IN (SELECT id FROM functions)")
+        db.execute(
+            "INSERT INTO function_identity(function_id, schema_version, artifact_sha256, module_id, unit_id, "
+            "address_space, entry_kind, entry, section, recorded_by) "
+            "SELECT f.id, ?, NULL, COALESCE(f.unit, ''), COALESCE(f.unit, ''), "
+            "CASE WHEN f.vram IS NULL THEN '' ELSE 'vram:' || COALESCE(f.unit, '') END, "
+            "CASE WHEN f.vram IS NULL THEN 'unknown' ELSE 'virtual_address' END, "
+            "CASE WHEN f.vram IS NULL THEN NULL ELSE printf('0x%08x', f.vram) END, NULL, 'backfill' "
+            "FROM functions f WHERE NOT EXISTS (SELECT 1 FROM function_identity i WHERE i.function_id = f.id)",
+            (IDENTITY_SCHEMA_VERSION,))
+
+    @staticmethod
+    def record_identity(db, function_id: int, *, artifact_sha256: str | None, module_id: str, unit_id: str,
+                        address_space: str, entry_kind: str, entry: str | None, section: str | None,
+                        recorded_by: str = "import") -> None:
+        """Attach (or refresh) a function's identity inside the caller's transaction. Name and revision are
+        not copied here: they stay in `functions`, the one mutable truth for labels and revisions."""
+        db.execute(
+            "INSERT INTO function_identity(function_id, schema_version, artifact_sha256, module_id, unit_id, "
+            "address_space, entry_kind, entry, section, recorded_by) VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(function_id) DO UPDATE SET schema_version=excluded.schema_version, "
+            "artifact_sha256=excluded.artifact_sha256, module_id=excluded.module_id, unit_id=excluded.unit_id, "
+            "address_space=excluded.address_space, entry_kind=excluded.entry_kind, entry=excluded.entry, "
+            "section=excluded.section, recorded_by=excluded.recorded_by",
+            (function_id, IDENTITY_SCHEMA_VERSION, artifact_sha256, module_id, unit_id, address_space,
+             entry_kind, entry, section, recorded_by))
+
+    @staticmethod
+    def record_rom_identities(db, project_id: int, artifact_sha256: str) -> None:
+        """Identities for a freshly imported ROM project: entry is the load address, and the segment/bank
+        (the function's unit) names the address space, since overlays and banks reuse addresses."""
+        db.execute("DELETE FROM function_identity WHERE function_id IN (SELECT id FROM functions WHERE project_id=?)",
+                   (project_id,))
+        db.execute(
+            "INSERT INTO function_identity(function_id, schema_version, artifact_sha256, module_id, unit_id, "
+            "address_space, entry_kind, entry, section, recorded_by) "
+            "SELECT id, ?, ?, unit, unit, 'vram:' || unit, "
+            "CASE WHEN vram IS NULL THEN 'unknown' ELSE 'virtual_address' END, "
+            "CASE WHEN vram IS NULL THEN NULL ELSE printf('0x%08x', vram) END, NULL, 'import' "
+            "FROM functions WHERE project_id=?", (IDENTITY_SCHEMA_VERSION, artifact_sha256, project_id))
+
+    def identity(self, function_id: int) -> dict | None:
+        """The Section 18.2 function-identity record, as cross-language JSON-ready data."""
+        row = self.one(
+            "SELECT i.*, f.project_id, f.name, f.revision FROM function_identity i "
+            "JOIN functions f ON f.id = i.function_id WHERE i.function_id = ?", function_id)
+        if row is None:
+            return None
+        return {"schema_version": row["schema_version"], "project_id": row["project_id"],
+                "artifact_sha256": row["artifact_sha256"], "module_id": row["module_id"],
+                "unit_id": row["unit_id"], "address_space": row["address_space"],
+                "entry_kind": row["entry_kind"], "entry": row["entry"], "section": row["section"],
+                "function_revision": row["revision"], "display_name": row["name"]}
 
     @contextmanager
     def tx(self):

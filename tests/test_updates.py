@@ -1,11 +1,10 @@
 """Updates: decomp.wtf finds a newer version (a release, or new commits on the branch it was installed from), installs
-it with uv and restarts in place. Offline: GitHub's and decomp.wtf's answers are stand-ins."""
+it with uv and restarts in place. Offline: GitHub's answers are stand-ins."""
 
 import json
 import os
 import socket
 import stat
-import sys
 import urllib.error
 
 import pytest
@@ -30,26 +29,29 @@ def test_install_info_round_trip():
 
 
 def test_release_update(monkeypatch):
+    """The version in pyproject.toml on the main branch on GitHub, installed from GitHub's archive of that branch."""
     newer = ".".join(str(x + (1 if i == 2 else 0)) for i, x in enumerate(updates.version_key(__version__)))
-    monkeypatch.setattr(updates, "_get", lambda url, timeout=15: f'#!/bin/sh\nVERSION="{newer}"\n'.encode())
+    asked = []
+
+    def get(url, timeout=15):
+        asked.append(url)
+        return f'[project]\nname = "decompnet"\nversion = "{newer}"\n'.encode()
+    monkeypatch.setattr(updates, "_get", get)
     found = updates.check()
     assert found["available"] and found["latest"]["version"] == newer and found["error"] is None
-    assert found["spec"] == f"decompnet @ https://decomp.wtf/dl/decompnet-{newer}-py3-none-any.whl"
-    monkeypatch.setattr(updates, "_get", lambda url, timeout=15: f'VERSION="{__version__}"\n'.encode())
+    assert asked == ["https://raw.githubusercontent.com/Nexhas28/decomp.wtf/main/pyproject.toml"]
+    assert found["spec"] == "decompnet @ https://github.com/Nexhas28/decomp.wtf/archive/refs/heads/main.tar.gz"
+    monkeypatch.setattr(updates, "_get", lambda url, timeout=15: f'version = "{__version__}"\n'.encode())
     assert not updates.check()["available"]
 
 
-def test_release_update_from_github_when_decomp_wtf_is_unreachable(monkeypatch):
-    """Issue #15: decomp.wtf blocked or down: the release's version from GitHub, installed from its tag's archive."""
-    def get(url, timeout=15):
-        if url.startswith(updates.SITE):
-            raise urllib.error.URLError("blocked")
-        assert url == "https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh"
-        return b'VERSION="99.0.0"\n'
-    monkeypatch.setattr(updates, "_get", get)
+def test_release_update_follows_the_recorded_repo(monkeypatch):
+    updates.record("release", repo="someone/decomp.wtf")
+    monkeypatch.setattr(updates, "_get", lambda url, timeout=15: b'version = "99.0.0"\n'
+                        if url == "https://raw.githubusercontent.com/someone/decomp.wtf/main/pyproject.toml" else b"")
     found = updates.check()
     assert found["available"] and found["latest"]["version"] == "99.0.0" and found["error"] is None
-    assert found["spec"] == "decompnet @ https://github.com/i12bp8/decomp.wtf/archive/refs/tags/v99.0.0.tar.gz"
+    assert found["spec"] == "decompnet @ https://github.com/someone/decomp.wtf/archive/refs/heads/main.tar.gz"
 
 
 def test_branch_update(monkeypatch):
@@ -64,7 +66,7 @@ def test_branch_update(monkeypatch):
     monkeypatch.setattr(updates, "_branch_version", lambda repo, sha: "0.10.0")
     found = updates.check()
     assert found["available"] and found["latest"]["commit"] == head and found["notes"] == ["Newest", "Older one"]
-    assert found["spec"] == f"decompnet @ https://github.com/i12bp8/decomp.wtf/archive/{head}.tar.gz"
+    assert found["spec"] == f"decompnet @ https://github.com/Nexhas28/decomp.wtf/archive/{head}.tar.gz"
 
     # installed from a commit newer than the branch (pushed elsewhere): not an "update"
     answers[f"compare/{have}...{head}"] = {"status": "behind", "commits": []}
@@ -91,7 +93,6 @@ def test_offline_check_says_why(monkeypatch):
     assert not found["available"] and "couldn't check" in found["error"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a shell script stands in for uv")
 def test_install_runs_uv_then_the_new_setup(tmp_path, monkeypatch):
     calls = tmp_path / "calls"
     bindir = tmp_path / "bin"
@@ -105,7 +106,7 @@ def test_install_runs_uv_then_the_new_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(updates, "uv", lambda: str(uv))
     updates.record("branch", "cross-platform", "1" * 40)
     found = {"current": updates.installed(), "available": True, "latest": {"version": "0.10.0", "commit": "2" * 40},
-             "spec": "decompnet @ https://github.com/i12bp8/decomp.wtf/archive/" + "2" * 40 + ".tar.gz"}
+             "spec": "decompnet @ https://github.com/Nexhas28/decomp.wtf/archive/" + "2" * 40 + ".tar.gz"}
     said = []
     updates.install(found, log=said.append)
     ran = calls.read_text().splitlines()
@@ -159,7 +160,7 @@ def test_update_api(tmp_path, monkeypatch):
     client.cookies.set("decomp_live", "sec")
     monkeypatch.setenv("DECOMP_UPDATES", "on")
     st = client.get("/api/update").json()
-    assert st["available"] is False and st["job"]["state"] == "idle" and "runtime" in st
+    assert st["available"] is False and st["job"]["state"] == "idle"
     r = client.post("/api/update", json={"apply": True}, headers={"X-Decomp": "1"})
     assert r.status_code == 400 and "up to date" in r.json()["error"]
     assert client.post("/api/settings", json={"check_updates": False}, headers={"X-Decomp": "1"}).json()["check_updates"] is False

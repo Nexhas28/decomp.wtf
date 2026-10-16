@@ -1,0 +1,13 @@
+{
+  "name": "armips",
+  "repo": "https://github.com/Kingcom/armips",
+  "version": "62adab4ef30da765f5cf22a451eb08a59c54dc8b",
+  "sha256": null,
+  "category": "assembler",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/armips",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from git clone (commit 62adab4, plus ext/filesystem submodule 3f1c185) with CMake Release in scratchpad; only the armips binary copied to bin/ (sha256 cc2af5ae8dc4562550839af22d51dc78cb0b692f3352276d9d2200f943fb4c4e). Binary reports v0.11.0. test.sh assembles a tiny MIPS routine for N64 (.n64, big-endian) and PSX (.psx, little-endian) and compares exact bytes. MIT licence."
+}

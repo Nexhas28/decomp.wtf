@@ -1,0 +1,13 @@
+{
+  "name": "gba-ghidra-loader",
+  "repo": "https://github.com/pudii/gba-ghidra-loader",
+  "version": "1.1.0 (commit 9bfb2d1fe891aa78bab7093a328feb3a52318ab7, patched for Ghidra 12.1.4)",
+  "sha256": "cb20b0c08f736b67fde98d0d2e42b606e573da3649fa5fc8bab8a4ff3acb7c18",
+  "category": "ghidra-extension",
+  "platforms": ["gba"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261016_gba-ghidra-loader.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "sha256 is of the locally built extension zip (built from the repo with ghidra-12.1-build-fix.patch). Needs Java 21 and Ghidra 12.1.4; test.sh uses a throwaway user.home so the real Ghidra install is untouched."
+}

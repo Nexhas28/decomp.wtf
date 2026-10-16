@@ -122,6 +122,54 @@ def test_settings_never_echo_the_api_key(app):
     assert "sk-abcdef" not in json.dumps(client.get("/api/state").json())
 
 
+def test_bad_settings_are_refused_and_change_nothing(app):
+    client, _, _ = app
+    h = {"X-Decomp": "1"}
+    before = client.get("/api/state").json()
+    for bad in ({"budget_usd": "lots"}, {"per_session": "many"}, {"budget_usd": 5, "endpoint": {"context_tokens": "big"}}):
+        r = client.post("/api/settings", json=bad, headers=h)
+        assert r.status_code == 400 and r.json()["error"]
+    assert client.get("/api/state").json() == before
+    r = client.post("/api/agents/start", json={"kind": "api", "count": "two"}, headers=h)
+    assert r.status_code == 400 and r.json()["error"]
+    assert client.post("/api/agents/start", json={"kind": "api", "options": [1]}, headers=h).status_code == 400
+
+
+def test_settings_save_is_private_and_whole(tmp_path):
+    from decompnet.app.server import Settings
+    s = Settings(tmp_path / "settings.json")
+    s.data["endpoints"] = [{"id": "e1", "api_key": "sk-x"}]
+    s.save()
+    assert (tmp_path / "settings.json").stat().st_mode & 0o777 == 0o600
+    assert json.loads((tmp_path / "settings.json").read_text())["endpoints"][0]["api_key"] == "sk-x"
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+
+
+def test_collab_refuses_an_oversized_chunked_body():
+    from decompnet.app import collab
+    client = TestClient(collab.host_app(None, {"r": object()}), base_url="http://192.168.1.20:6481")
+
+    def chunks():
+        for _ in range(collab.MAX_BODY // 1024 + 2):
+            yield b"x" * 1024
+    r = client.post("/collab/join?room=r", content=chunks())
+    assert r.status_code == 400 and r.json()["error"] == "request too large"
+    # a length that isn't a number (sent raw: a client library would fix it)
+    import anyio
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(msg):
+        sent.append(msg)
+    scope = {"type": "http", "method": "POST", "path": "/collab/join", "query_string": b"room=r", "root_path": "",
+             "headers": [(b"host", b"192.168.1.20:6481"), (b"content-length", b"lots")], "scheme": "http",
+             "server": ("192.168.1.20", 6481), "http_version": "1.1"}
+    anyio.run(client.app, scope, receive, send)
+    assert sent[0]["status"] == 400 and json.loads(sent[1]["body"])["error"] == "invalid request"
+
+
 def test_parse_agent_output():
     claude = json.dumps({"type": "assistant", "message": {"content": [
         {"type": "text", "text": "Matched it."},
@@ -298,7 +346,7 @@ def test_a_job_always_ends_and_says_why(tmp_path):
         return {}["missing"]
 
     def slow(log):
-        raise subprocess.TimeoutExpired(["/usr/bin/systemd-run", "--user", "--", "/x/luvdis", "disasm"], 1800)
+        raise subprocess.TimeoutExpired(["/x/luvdis", "disasm"], 1800)
 
     def failed(log):
         raise subprocess.CalledProcessError(2, ["ninja"], stderr=b"ld: undefined symbol foo")

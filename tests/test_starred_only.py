@@ -85,9 +85,14 @@ def test_a_star_the_helper_gave_back_is_not_handed_to_it_again(net, tmp_path):
 
 
 def test_a_match_takes_the_function_off_next_in_line(net):
+    from decompnet import snapshots
+
     agent, _ = net.local_agent("helper")
     fn = net.claim_row(agent, "game", "star_a")
-    net._record(fn, agent, 0, "int star_a(void) { return 0; }", 1, matched=True)
+    proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+    ctx = net._context(fn["project_id"], fn["unit"])
+    net._record(fn, agent, 0, "int star_a(void) { return 0; }", ctx["version"] if ctx else 1, matched=True,
+                snapshot=snapshots.capture(fn, proj, ctx))
     assert net.cfg(net._project("game"))["priority"] == ["star_b"]
 
 

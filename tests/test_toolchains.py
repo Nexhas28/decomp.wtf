@@ -186,3 +186,14 @@ def test_playstation_2_is_switched_off_for_now():
     with pytest.raises(RomError, match="PlayStation 2 games aren't supported yet"):
         detect.identify(elf, "game.elf")
     assert "ps2" not in engine.PLATFORM_STATUS and "ee-gcc-2.96" not in engine.COMPILERS
+
+
+def test_debian_packages_unpack_without_tar(tmp_path):
+    """The compiler container's 32-bit runtime comes from a Debian package (an `ar` archive), unpacked here."""
+    deb = toolchains.root() / ".downloads" / "libc6-i386_2.41-12_amd64.deb"
+    if not deb.exists():
+        pytest.skip("needs the Debian runtime package in the local download cache")
+    out = tmp_path / "rt"
+    out.mkdir()
+    toolchains._extract(deb, out, "usr/lib32")
+    assert (out / "ld-linux.so.2").stat().st_size > 100_000 and (out / "libc.so.6").exists()

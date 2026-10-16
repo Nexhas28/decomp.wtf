@@ -28,8 +28,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import scheduler
 from ..network import NetworkError
-from ..limits import capped, killed_for_memory
+from ..limits import killed_for_memory
 from . import objdiff
 
 STATE = ".decomp-wtf"
@@ -92,7 +93,7 @@ def _tool(name: str) -> str | None:
     found = shutil.which(name)
     if found:
         return found
-    local = Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
+    local = Path(sys.executable).parent / name
     return str(local) if local.exists() else None
 
 
@@ -272,7 +273,8 @@ class ForkProject:
         if kind == "splat":
             make = (self.root / "Makefile").read_text(errors="replace", encoding="utf-8")
             steps = [["make", t] for t in ("setup", "extract") if re.search(rf"^{t}\s*:", make, re.M)][:1]
-            return steps + [["make", f"-j{os.cpu_count() or 4}"]]
+            jobs = max(1, (os.cpu_count() or 4) // max(1, scheduler.BUDGET.limits.get("fork_build", 1)))
+            return steps + [["make", f"-j{jobs}"]]
         if kind == "objdiff":
             cfg = self.objdiff_config()
             return [[cfg.get("custom_make") or "make", *cfg.get("custom_args", [])]]
@@ -288,7 +290,7 @@ class ForkProject:
         cmd = [shutil.which(cmd[0], path=env["PATH"]) or cmd[0], *cmd[1:]]
         log("$ " + " ".join(Path(c).name if i == 0 else c for i, c in enumerate(cmd)))
         try:
-            proc = subprocess.Popen(capped(cmd), cwd=self.root, env=env, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(cmd, cwd=self.root, env=env, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, errors="replace", encoding="utf-8")
         except FileNotFoundError:
             return False, f"{cmd[0]} isn't installed"
@@ -349,7 +351,8 @@ class ForkProject:
     def setup(self, version: str | None = None, log=print) -> None:
         self.unpack_disc(version, log=log)
         for cmd in self.setup_commands(version):
-            ok, tail = self.run(cmd, log=log)
+            with scheduler.BUDGET.slot("fork_build"):
+                ok, tail = self.run(cmd, log=log)
             if not ok and cmd[0] != "make":  # a Makefile build often fails on purpose until things match
                 raise ForkError(f"setup step failed: {' '.join(cmd)}\n{tail}")
         if (self.root / "objdiff.json").exists() and self._all_source():

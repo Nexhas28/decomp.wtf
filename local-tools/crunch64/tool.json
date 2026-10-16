@@ -1,0 +1,13 @@
+{
+  "name": "crunch64",
+  "repo": "https://github.com/decompals/crunch64",
+  "version": "0.6.2",
+  "sha256": null,
+  "category": "compression",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/crunch64",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built from git tag 0.6.2 (commit 35bb166ae26ee5143af7a62844aa084d4ecf33ce) with cargo install --locked into local-tools/crunch64 (rustc 1.98.1, aarch64-apple-darwin). No archive download, so sha256 is null. test.sh round-trips a generated file through yay0, yaz0 and mio0, checks gzip (raw deflate) with python zlib, checks format magic bytes and that yaz0 compresses. Passed on 2026-10-16."
+}

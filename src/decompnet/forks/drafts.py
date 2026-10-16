@@ -54,12 +54,25 @@ def _block(text: str, symbol: str) -> str:
 
 
 def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: str | None,
-          compiler_hint: str = "", timeout: float = 30, valid: bool = False) -> str | None:
+          compiler_hint: str = "", timeout: float = 30, valid: bool = False,
+          context_header: str = "") -> str | None:
     """m2c's draft of one function; `valid`: in a form that compiles (m2c's macros for what it couldn't tell, which
-    from-scratch projects define in common.h)."""
+    from-scratch projects define in common.h). `context_header`: the unit's header, preprocessed properly and fed to
+    m2c (plan P4.2); without it m2c reads only the assembly."""
+    result = draft_result(root, platform, unit_name, symbol, source_path, compiler_hint=compiler_hint,
+                          timeout=timeout, valid=valid, context_header=context_header)
+    return result.text if result is not None else None
+
+
+def draft_result(root: Path, platform: str, unit_name: str, symbol: str, source_path: str | None,
+                 compiler_hint: str = "", timeout: float = 30, valid: bool = False,
+                 context_header: str = "") -> seeds.DraftResult | None:
+    """Like draft(), but returns the full DraftResult (plan P4.4): context status
+    (complete/degraded/omitted), unresolved placeholder constructs, warnings and exact dependency
+    identities. None when the platform is unsupported or no assembly could be found."""
     target = M2C.get(platform)
     if not target or toolchains.installed("m2c") is None:
-        return None
+        return seeds.DraftResult(text=None, outcome="unavailable", target=f"{target}-c" if target else None)
     src = root / source_path if source_path else None
     source_text = src.read_text(errors="replace", encoding="utf-8") if src and src.exists() else None
     asm = find_asm(root, unit_name, symbol, source_text)
@@ -69,7 +82,12 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
         if block is None:
             return None
         text, thumb = block
-        return seeds.run_m2c(text, symbol, f"{'gba' if thumb else 'arm'}-mwcc-{lang}", timeout=timeout, valid=valid)
+        triple = f"{'gba' if thumb else 'arm'}-mwcc-{lang}"
+        if context_header.strip():
+            return seeds.draft(text, symbol, target=triple, context_header=context_header,
+                               timeout=timeout, valid=valid)
+        out = seeds.run_m2c(text, symbol, triple, timeout=timeout, valid=valid)
+        return seeds.DraftResult(text=out, outcome="ok" if out else "error", target=triple)
     if asm is None:
         return None
     text = asm.read_text(errors="replace", encoding="utf-8")
@@ -77,7 +95,12 @@ def draft(root: Path, platform: str, unit_name: str, symbol: str, source_path: s
         text = _block(text, symbol)
     if platform == "n64":
         target += "-ido" if "ido" in compiler_hint.lower() else "-gcc"
-    return seeds.run_m2c(text, symbol, f"{target}-{lang}", timeout=timeout, valid=valid)
+    triple = f"{target}-{lang}"
+    if context_header.strip():
+        return seeds.draft(text, symbol, target=triple, context_header=context_header,
+                           timeout=timeout, valid=valid)
+    out = seeds.run_m2c(text, symbol, triple, timeout=timeout, valid=valid)
+    return seeds.DraftResult(text=out, outcome="ok" if out else "error", target=triple)
 
 
 _DSD_LOCK = threading.Lock()

@@ -83,6 +83,7 @@ class FunctionDiff:
     # them, but the game's link resolves names, so they're worth fixing before the code goes upstream
     renamed: list[tuple[str, str]] = field(default_factory=list)
     literals: list = field(default_factory=list)  # literals.Mismatch: constants that differ although the code matches
+    summary: dict = field(default_factory=dict)  # summarise(): the shared P3.4 mismatch summary, objdiff's kinds only
 
     @property
     def matched(self) -> bool:
@@ -103,6 +104,42 @@ class FunctionDiff:
 
         return render_rows(self.rows, context, max_rows, legend="markers: |=different instruction i=operand differs "
                            "<=missing (target only) >=extra (yours only)")
+
+
+# The row markers (KIND_MARK) whose objdiff diff kind clearly names a summary count. DIFF_REPLACE and
+# DIFF_OP_MISMATCH ("|": the opcode differs) and any kind objdiff adds later are not mapped: whether they are a
+# register, stack or operand difference is not in the data, so they stay "unclassified" instead of being guessed.
+_SUMMARY_COUNT = {"i": "operand", ">": "insertion", "<": "deletion"}
+
+
+def summarise(rows: list[tuple[str, str, str]], match_percent: float | None, literals: list | None = None) -> dict:
+    """objdiff's result in the shared P3.4 mismatch summary shape (scoring.mismatch_summary): the same counts,
+    observations, hypotheses, coverage and verification fields. Only what objdiff's diff kinds state is counted;
+    register, stack_offset and reorder stay 0 (not derived from the text), and any other kind is counted as
+    "unclassified" with coverage "unknown"."""
+    from ..scoring import COUNT_PENALTIES, SUMMARY_SCHEMA_VERSION
+
+    counts = {k: 0 for k in COUNT_PENALTIES}
+    counts["unclassified"] = 0
+    for marker, _, _ in rows:
+        if marker != " ":
+            counts[_SUMMARY_COUNT.get(marker, "unclassified")] += 1
+    matched = match_percent is not None and match_percent >= 100.0 and not literals
+    observations = []
+    if match_percent is not None and match_percent >= 100.0 and literals:
+        observations.append(f"every instruction matches, but {len(literals)} constant(s) the code loads differ")
+    if counts["unclassified"]:
+        observations.append(f"{counts['unclassified']} instruction(s) differ in a way objdiff's diff kind does not "
+                            "classify (different instruction, not attributed to register, stack or operand)")
+    return {
+        "schema_version": SUMMARY_SCHEMA_VERSION,
+        "counts": counts,
+        "observations": observations,
+        "hypotheses": [],
+        "coverage": {"status": "unknown" if counts["unclassified"] else "complete"},
+        "verification": {"function_link_match": "unverified",
+                         "object_match": "unverified" if match_percent is None else "exact" if matched else "mismatch"},
+    }
 
 
 def _sym(obj: dict | None, name: str) -> dict | None:
@@ -194,5 +231,6 @@ def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, 
                 insns.append((at, ins["formatted"].split(None, 1)[0]))
             at += int(ins.get("size") or 4)
         wrong = literals.mismatches(target, base, symbol, insns)
-    return FunctionDiff(symbol, float(pct) if pct is not None else None, rows, int(left.get("size", 0)), scores, order, ops,
-                        renamed, wrong)
+    pct = float(pct) if pct is not None else None
+    return FunctionDiff(symbol, pct, rows, int(left.get("size", 0)), scores, order, ops, renamed, wrong,
+                        summarise(rows, pct, wrong))

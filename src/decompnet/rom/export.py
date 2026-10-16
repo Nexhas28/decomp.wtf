@@ -24,7 +24,6 @@ import yaml
 
 from .. import toolchains
 from ..compiler_profiles import effective_compiler
-from ..limits import capped
 from . import match
 from .symbols import AUTO_NAME
 
@@ -290,7 +289,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
 
     # 6. prove it
     log("building the exported project to check it rebuilds the game byte for byte")
-    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
+    proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True, timeout=3600,
                           encoding="utf-8", errors="replace")
     identical = proc.returncode == 0 and "identical" in proc.stdout
     if not identical:

@@ -6,8 +6,8 @@ and exits; the runner starts a fresh one until the user stops it or nothing is l
 an API key (DeepSeek, OpenRouter, a local Ollama, any OpenAI-compatible endpoint) run in a small built-in
 tool loop instead. Everything the agents print is parsed into a readable live feed.
 
-The prompt goes in on stdin, never on the command line: no length limit (Windows caps a command line at 32,767
-characters, and the prompt with its guides and the user's instructions can be long) and nothing in it is parsed.
+The prompt goes in on stdin, never on the command line: no length limit (the prompt with its guides and the user's
+instructions can be long) and nothing in it is parsed.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -26,11 +25,9 @@ from pathlib import Path
 
 import httpx
 
+from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
-
-WIN = sys.platform == "win32"
-
 
 class Fatal(RuntimeError):
     """A helper can't work until the user changes something (shown as the helper's error, not retried)."""
@@ -42,27 +39,25 @@ class Kind:
     name: str
     command: str  # executable, "" for the built-in agent
     vendor: str
-    install: dict[str, str]  # os -> command
+    install: str  # shell command that installs it
     signin: str
     docs: str
 
 
 KINDS = {
     "claude": Kind("claude", "Claude Code", "claude", "Anthropic",
-                   {"unix": "curl -fsSL https://claude.ai/install.sh | bash",
-                    "windows": "irm https://claude.ai/install.ps1 | iex"},
+                   "curl -fsSL https://claude.ai/install.sh | bash",
                    "Open a terminal, run `claude` and sign in with /login.", "https://docs.claude.com/en/docs/claude-code"),
     "codex": Kind("codex", "Codex CLI", "codex", "OpenAI",
-                  {"unix": "npm install -g @openai/codex", "windows": "npm install -g @openai/codex"},
+                  "npm install -g @openai/codex",
                   "Run `codex login` once in a terminal.", "https://github.com/openai/codex"),
     "antigravity": Kind("antigravity", "Antigravity CLI", "agy", "Google",
-                        {"unix": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-                         "windows": "irm https://antigravity.google/cli/install.ps1 | iex"},
+                        "curl -fsSL https://antigravity.google/cli/install.sh | bash",
                         "Open a terminal and run `agy` once to sign in.", "https://antigravity.google/docs/cli"),
     "opencode": Kind("opencode", "opencode", "opencode", "any provider (DeepSeek, Qwen, Kimi, ...)",
-                     {"unix": "curl -fsSL https://opencode.ai/install | bash", "windows": "npm install -g opencode-ai"},
+                     "curl -fsSL https://opencode.ai/install | bash",
                      "Run `opencode auth login` once to add a provider (DeepSeek, OpenRouter, ...).", "https://opencode.ai"),
-    "api": Kind("api", "API key", "", "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API", {}, "",
+    "api": Kind("api", "API key", "", "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API", "", "",
                 "https://api-docs.deepseek.com"),
 }
 
@@ -87,6 +82,14 @@ AGY_ALLOW = "mcp(decomp/*)"
 # Functions per helper session: a fresh session starts with a small, clean context (each function's assembly,
 # drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
 PER_SESSION = 2
+
+# ------------------------------------------------------------------- model routing (plan P11.5)
+# Configurable model identities per task class. No model id is hardcoded here: every id comes from the
+# operator's routing config, and a configured `candidate` only replaces a class's `model` after it measured
+# more verified matches under the current prompt policy (escalation on measured benefit, never on preference).
+PROMPT_POLICY_VERSION = 1  # bump when the prompts change materially: old measurements stop counting
+DEFAULT_TASK_CLASS = "easy-edit"  # small, well-supported edits
+TASK_CLASSES = (DEFAULT_TASK_CLASS, "structural-investigation")  # larger reasoning/context work
 
 
 def kind_id(kind: str) -> str:
@@ -152,8 +155,8 @@ def is_local(base: str, resolve: bool = True) -> bool:
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
                          r"auth(?:entication)? method", re.I)
 # what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
-# "insufficient_quota", Anthropic: "credit balance is too low"), or a subscription's quota is used up until it resets
-# (Claude Code: "You've hit your session limit · resets 6pm"): trying again can't help until then
+# "insufficient_quota", Anthropic: "credit balance is too low"), or a subscription's quota is used up until it
+# resets (Claude Code: "You've hit your session limit · resets 6pm"): trying again can't help until then
 _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
                         r"credit balance is too low|payment required|out of credits?|"
                         r"hit your (?:session|usage|weekly|daily) limit[^\n]*", re.I)
@@ -220,7 +223,7 @@ def models(kind: str, path: str | None) -> list[dict]:
     if cached and time.time() - cached[0] < 600:
         return cached[1]
     try:
-        res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        res = subprocess.run([path, "models"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                              stdin=subprocess.DEVNULL, timeout=30)
         lines = [line.strip() for line in res.stdout.splitlines()]
     except (OSError, subprocess.TimeoutExpired):
@@ -235,83 +238,23 @@ def models(kind: str, path: str | None) -> list[dict]:
     return out
 
 
-def search_path() -> str | None:
-    """Where to look for agents and npm (None: this process's PATH). On Windows also the PATH set for the user right
-    now, read from the registry: an agent or Node.js installed while the app runs is found without restarting it."""
-    if not WIN:
-        return None
-    import winreg
-
-    dirs = os.environ.get("PATH", "").split(os.pathsep)
-    for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
-                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
-        try:
-            with winreg.OpenKey(root, key) as k:
-                dirs += [os.path.expandvars(d) for d in str(winreg.QueryValueEx(k, "Path")[0]).split(";")]
-        except OSError:
-            pass
-    return os.pathsep.join(dict.fromkeys(d for d in dirs if d))
-
-
 def _which(cmd: str) -> str | None:
-    found = shutil.which(cmd, path=search_path())
+    found = shutil.which(cmd)
     if found:
         return found
     home = Path.home()
     dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
-    if WIN and os.environ.get("APPDATA"):
-        dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
-    if WIN and os.environ.get("LOCALAPPDATA"):
-        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "agy" / "bin")  # where Antigravity's installer puts agy
-    # on Windows the file without an extension next to npm's foo.cmd is a shell script Windows can't run
-    names = (f"{cmd}.exe", f"{cmd}.cmd") if WIN else (cmd, f"{cmd}.cmd", f"{cmd}.exe")
     for d in dirs:
-        for name in names:
-            if (d / name).exists():
-                return str(d / name)
+        if (d / cmd).exists():
+            return str(d / cmd)
     return None
-
-
-# npm's Windows launcher (cmd-shim) ends with: "%_prog%" [node options] "%dp0%\node_modules\...\cli.js" %*
-_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.I)
-
-
-def argv(cmd: list[str]) -> list[str]:
-    """The command to start, as Windows needs it. npm installs agents there as .cmd scripts, which run through cmd.exe:
-    it cuts an argument at its first line break (a prompt loses everything after its first line, and the flags after
-    it with it) and treats & | < > in it as commands. Start node with the agent's script instead, as the .cmd would."""
-    if not WIN or Path(cmd[0]).suffix.lower() not in (".cmd", ".bat"):
-        return cmd
-    shim = Path(cmd[0])
-    try:
-        m = _NPM_SHIM.search(shim.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        m = None
-    if not m:
-        return cmd
-    script = shim.parent / m["script"]
-    node = shim.parent / "node.exe"
-    node = str(node) if node.exists() else shutil.which("node", path=search_path())
-    if not node or not script.exists():
-        return cmd
-    return [node, *m["opts"].split(), str(script), *cmd[1:]]
-
-
-def signin(k: Kind) -> str:
-    """How to sign in to an agent, said for where decomp.wtf runs (WSL/Docker: in decomp.wtf's own terminal)."""
-    from .. import hostenv
-
-    if not k.signin or hostenv.runtime() == "native":
-        return k.signin
-    text = k.signin.removeprefix("Open a terminal, ").removeprefix("Open a terminal and ")
-    return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
 
 
 def detect() -> list[dict]:
     out = []
     for k in KINDS.values():
-        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
-               "install": k.install.get("windows" if WIN else "unix", "")}
+        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": k.signin, "docs": k.docs,
+               "install": k.install}
         if not k.command:
             row.update(installed=True, version=None, path=None)
         else:
@@ -319,7 +262,7 @@ def detect() -> list[dict]:
             cached = _versions.get(k.id)
             if path and (cached is None or time.time() - cached[0] > 300):
                 try:
-                    res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
+                    res = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8",
                                          errors="replace", timeout=15)
                     version = (res.stdout or res.stderr).strip().splitlines()[0][:60] if (res.stdout or res.stderr).strip() else None
                 except (OSError, subprocess.TimeoutExpired):
@@ -328,10 +271,8 @@ def detect() -> list[dict]:
             row.update(installed=path is not None, path=path, version=_versions.get(k.id, (0, None))[1] if path else None)
             if path:
                 row.update(models=models(k.id, path), default_model=_config_model(k.id))
-        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
+        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm"):
             row["needs"] = "Node.js (https://nodejs.org) for npm"
-        elif k.id == "claude" and WIN and not shutil.which("git", path=search_path()):
-            row["needs"] = "Git for Windows (https://git-scm.com/downloads/win): Claude Code needs its Git Bash"
         out.append(row)
     return out
 
@@ -522,6 +463,8 @@ class Session:
     tokens: int = 0
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
     throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
+    task_class: str = DEFAULT_TASK_CLASS  # routing task class this session works on (P11.5)
+    routed_model: str = ""  # the model chosen for the current run (logged, and measured)
 
     def push(self, kind: str, text: str) -> None:
         self.seq += 1
@@ -530,9 +473,110 @@ class Session:
     def snapshot(self, since: int = 0) -> dict:
         return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
-                "model": self.options.get("model") or "", "usd": round(self.usd, 4), "tokens": self.tokens,
-                "only_starred": bool(self.options.get("only_starred")),
+                "model": self.options.get("model") or "", "task_class": self.task_class,
+                "prompt_policy": PROMPT_POLICY_VERSION, "usd": round(self.usd, 4), "tokens": self.tokens,
                 "feed": [f for f in self.feed if f["seq"] > since]}
+
+
+# The compiler guide a ROM project's agents read first, by platform (on N64, by its compiler).
+ROM_COMPILER_GUIDES = {"psx": "psx", "ps2": "ps2", "gba": "agbcc", "gb": "gb", "gbc": "gb"}
+
+
+def compiler_guide(ov: dict) -> str:
+    """The guide() topic for a ROM project's compiler (`ov` is its overview)."""
+    return ROM_COMPILER_GUIDES.get(ov.get("platform")) or (
+        "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
+
+
+def run_log(task_class: str, model: str) -> str:
+    """The per-run routing log line: what task class ran with what model, under which prompt
+    policy (P11.5: log model/version and prompt-policy version per run)."""
+    return f"task {task_class}; model {model or 'default'}; prompt-policy-v{PROMPT_POLICY_VERSION}"
+
+
+def should_escalate(class_cfg: dict, measurements: dict) -> bool:
+    """Whether a task class's configured `candidate` model has measured enough benefit to replace
+    its `model` (P11.5: escalation only on measured benefit, never on a hardcoded preference).
+
+    Requires, from `measurements` (per-model {"runs", "matches", "policy"}):
+      - both models measured under the CURRENT prompt policy, at least `min_runs` runs each
+        (defaults 3, configurable), and
+      - the candidate has at least `min_improvement` more verified matches (default 2).
+    Without data -- or with a candidate that measured worse -- the answer is always False.
+    """
+    candidate = str(class_cfg.get("candidate") or "")
+    model = str(class_cfg.get("model") or "")
+    if not candidate or candidate == model:
+        return False
+    m, c = measurements.get(model), measurements.get(candidate)
+    if not isinstance(m, dict) or not isinstance(c, dict):
+        return False
+    try:
+        min_runs = max(1, int(class_cfg.get("min_runs") or 3))
+        min_improvement = max(1, int(class_cfg.get("min_improvement") or 2))
+    except (TypeError, ValueError):
+        return False
+    if m.get("policy") != PROMPT_POLICY_VERSION or c.get("policy") != PROMPT_POLICY_VERSION:
+        return False
+    if int(m.get("runs") or 0) < min_runs or int(c.get("runs") or 0) < min_runs:
+        return False
+    return int(c.get("matches") or 0) - int(m.get("matches") or 0) >= min_improvement
+
+
+class Routing:
+    """Model routing per task class with measurement-gated escalation (plan P11.5).
+
+    The measurement hooks: `record` persists one run's outcome (its verified matches) per
+    (task_class, model); `model_for` applies the operator's config with `should_escalate`.
+    Measurements recorded under an older prompt-policy version restart at zero: comparisons
+    across prompt policies are not meaningful. The candidate is measured when the operator
+    runs it (explicit model option or a config flip); promotion is its measured reward."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def load(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def record(self, task_class: str, model: str, matches: int, runs: int = 1,
+               policy: int | None = None) -> None:
+        """Add one measurement: `matches` verified matches produced in `runs` session runs."""
+        policy = PROMPT_POLICY_VERSION if policy is None else policy
+        with self._lock:
+            data = self.load()
+            entry = data.setdefault(task_class, {}).setdefault(model, {})
+            if entry.get("policy") != policy:  # a new prompt policy: old counts aren't comparable
+                entry.update({"runs": 0, "matches": 0, "policy": policy})
+            entry["runs"] += int(runs)
+            entry["matches"] += int(matches)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def stats(self, task_class: str | None = None) -> dict:
+        data = self.load()
+        return data.get(task_class, {}) if task_class else data
+
+    def model_for(self, config: dict, task_class: str, explicit: str = "") -> str:
+        """The model to run for (task_class, explicit user choice). The explicit choice always
+        wins; otherwise the class's configured model; its configured candidate replaces it only
+        when it measured better (should_escalate). No config: the CLI's own default ("")."""
+        if explicit:
+            return explicit
+        class_cfg = config.get(task_class) or {}
+        if not isinstance(class_cfg, dict):
+            return ""
+        model = str(class_cfg.get("model") or "")
+        if not model:
+            return ""
+        if should_escalate(class_cfg, self.stats(task_class)):
+            return str(class_cfg.get("candidate") or model)
+        return model
 
 
 class Manager:
@@ -544,6 +588,10 @@ class Manager:
         self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
+        # Model routing (P11.5): the server sets routing_config from settings ("model_routing");
+        # without a config the default behaviour is unchanged. Measurements persist here.
+        self.routing_config = lambda: {}
+        self.routing = Routing(home / "agents" / "model-routing.json")
 
     # -- control
 
@@ -688,14 +736,29 @@ class Manager:
     def budget(self) -> float:
         return 0.0  # set by the server from the settings
 
+    def _routed_model(self, s: Session) -> str:
+        """The model this run actually uses (P11.5). The user's explicit choice wins; otherwise the
+        routing config for the session's task class, where a configured candidate only replaces the
+        class model after it measured more verified matches. No config: the CLI's own default --
+        exactly the behaviour before routing existed."""
+        explicit = s.options.get("model") or ""
+        config = getattr(self, "routing_config", None)
+        config = config() if callable(config) else {}
+        routing = getattr(self, "routing", None)
+        if routing is None or not config:
+            return explicit
+        return routing.model_for(config, s.task_class or DEFAULT_TASK_CLASS, explicit)
+
     def _run(self, s: Session) -> None:
-        agent, token = self.net.local_agent(s.agent_name)
+        try:
+            agent, token = self.net.local_agent(s.agent_name)
+        except NetworkError as e:  # the fleet lockdown refuses a new identity: say so, don't sit at "starting"
+            s.state, s.error = "error", str(e)
+            s.push("error", f"stopping: {e}")
+            s.stop.set()  # not resumed after a restart: it would be refused again
+            self.persist(self.running())
+            return
         self.assignments[agent.id] = s.slug
-        only_starred = bool(s.options.get("only_starred"))
-        if only_starred:
-            self.net.starred_only[agent.id] = s.started_at
-        else:
-            self.net.starred_only.pop(agent.id, None)
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
         failures = throttles = 0
@@ -709,18 +772,7 @@ class Manager:
                            "(seconds; a minute the first time)")
             twins.ordered.wait(120)
         while not s.stop.is_set():
-            if only_starred:
-                total, free = self._starred_left(s.slug, agent.id, s.started_at)
-                if total == 0:
-                    s.push("info", "no ★ Next in line function left to try: they're done, or you gave the rest back 🎉")
-                    break
-                if free == 0:
-                    if s.state != "waiting":
-                        s.push("info", "the ★ functions left are being worked on by others: waiting for them")
-                    s.state = "waiting"
-                    s.stop.wait(30)
-                    continue
-            elif self._left(s.slug) == 0:
+            if self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
                 break
             if (cap := self.over_budget(s.slug)) is not None:
@@ -742,6 +794,12 @@ class Manager:
             s.runs += 1
             t0 = time.time()
             before = self._progress(agent.id)
+            task = s.options.get("task_class") or DEFAULT_TASK_CLASS
+            if task not in TASK_CLASSES:
+                task = DEFAULT_TASK_CLASS
+            s.task_class = task
+            s.routed_model = self._routed_model(s)
+            s.push("info", f"session {s.runs}: " + run_log(task, s.routed_model))
             try:
                 ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
             except Fatal as e:  # needs the user first: retrying can't help
@@ -750,6 +808,15 @@ class Manager:
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
+            # measurement hook (P11.5): one verified-outcome sample per (task class, model) run
+            if s.routed_model and (routing := getattr(self, "routing", None)) is not None:
+                try:
+                    matched = self.net.store.one(
+                        "SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='match' AND created_at>=?",
+                        agent.id, t0)
+                    routing.record(task, s.routed_model, int(matched["n"] or 0))
+                except Exception:
+                    pass  # measurement is best-effort: never fail the loop for it
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = "the session ended without compiling anything (check the agent's output)"
                 s.push("error", s.error)
@@ -771,7 +838,7 @@ class Manager:
             if failures >= 3:
                 s.state = "error"
                 s.error = s.error or "the agent failed three times in a row"
-                s.push("error", f"stopping: {s.error}. {signin(KINDS[s.kind])}".strip())
+                s.push("error", f"stopping: {s.error}. {KINDS[s.kind].signin}".strip())
                 break
             s.state = "waiting"
             s.stop.wait(3 if ok else min(60, 5 * failures + max(0, 10 - (time.time() - t0))))
@@ -789,22 +856,16 @@ class Manager:
                 pass
         with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
-        self.net.starred_only.pop(agent.id, None)
 
     def prompt(self, s: Session) -> str:
         text = self._prompt(s)
-        if s.options.get("only_starred"):
-            text += ("\nThis session is for the functions the user marked ★ Next in line, and only those: "
-                     "claim_function gives you the next one, and refuses anything else. When it says none is left, "
-                     "stop: the session ends by itself.\n")
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)
         if ov.get("kind") == "fork":
             # CodeWarrior's register and stack rules decide most of what's left on GameCube, Wii and DS
             topics = ["fork", "objdiff", *(["mwcc"] if ov.get("platform") in ("gc", "wii", "nds") else [])]
         else:
-            topics = ["workflow", {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
-                "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")]
+            topics = ["workflow", compiler_guide(ov)]
         text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
             tools._guide(t) for t in topics)
         if (learned := self.net.learnings(s.slug)):
@@ -821,9 +882,8 @@ class Manager:
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
                                             count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
-        guide = {"psx": "psx", "ps2": "ps2", "gba": "agbcc"}.get(ov.get("platform")) or (
-            "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
-        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION), compiler_guide=guide)
+        return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
+                                        compiler_guide=compiler_guide(ov))
 
     def _command(self, s: Session, token: str, workdir: Path) -> tuple[list[str], dict, str]:
         """The agent's command line, environment and what goes in on stdin (the prompt)."""
@@ -832,14 +892,12 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
-        if WIN:
-            env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
         # workspace's .agents/mcp_config.json) reaches decomp.wtf through the `decomp mcp` the user connected it
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
         env["DECOMP_SESSION_TOKEN"] = token
         prompt = self.prompt(s)
-        model = s.options.get("model") or ""
+        model = s.routed_model or self._routed_model(s)
         if s.kind == "claude":
             cfg = workdir / "mcp.json"
             cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,
@@ -894,7 +952,7 @@ class Manager:
                 cmd += ["-m", model]
         else:
             raise RuntimeError(s.kind)
-        return argv(cmd), env, prompt
+        return cmd, env, prompt
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
         if s.kind == "antigravity" and s.runs == 1:
@@ -905,10 +963,9 @@ class Manager:
                             "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
         proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                creationflags=flags, start_new_session=not WIN)
+                                start_new_session=True)
         s.proc = proc
         errors: collections.deque = collections.deque(maxlen=20)
 
@@ -953,7 +1010,7 @@ class Manager:
             s.throttled = True
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
             s.signed_out = True
-            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {signin(KINDS[s.kind])}"
+            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {KINDS[s.kind].signin}"
             s.push("error", s.error)
             return False
         if code != 0 and not s.stop.is_set():
@@ -1104,6 +1161,10 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
         "release_function": ("Give up a function with notes for the next agent.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True))),
+        "escalate_function": ("Ask for a focused, budget-capped investigation of a function you are stalled on.",
+                              s(function=st("function", True), question=st("what you want to know"))),
+        "calibrate_profile": ("Bounded check that the project's compiler settings fit; changes nothing.",
+                              s(function=st("optional function to calibrate on"))),
         "get_context": ("The shared header included in every compile.", s()),
         "edit_context": ("Replace `old` (exactly once) with `new` in the shared header, or append when old is empty.",
                          s(old=st("text to replace, or empty", True), new=st("replacement", True),
@@ -1133,6 +1194,17 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                        "offsets) go to a new file. Kept only if the game still builds identically.",
                        s(path=st("file", True), at=st("function name or .text offset", True),
                          new_name=st("new file path (optional)"), data=st("e.g. .rodata:0x88 .data:0x28 (optional)"))),
+        "local_tools": ("Reverse-engineering tools on this computer (disassemblers, decompilers, decompressors, symbol "
+                        "finders, extractors) and what run_tool can do with each; name one for its parameters.",
+                        s(tool=st("a tool name (optional)"))),
+        "run_tool": ("Run one operation of a local tool on the project's files (file: a project path, 'game', or a "
+                     "tool-output/... result). Only the parameters local_tools lists for it are used.",
+                     s(tool=st("tool", True), operation=st("operation", True), file=st("file"), file2=st("second file"),
+                       arch=st("architecture"), address=st("address (0x...)"), base=st("load address of a raw file"),
+                       count=it("instructions"), offset=st("byte offset into the file"), length=st("bytes"),
+                       hex=st("bytes in hex"), text=st("text, e.g. instructions or a symbol"), format=st("format"),
+                       microcode=st("N64 microcode"), what=st("what to list"), mode=st("thumb | arm"),
+                       width=it("pixels"), height=it("pixels"))),
     }
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
@@ -1144,14 +1216,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    try:
-        if WIN:
-            # the agent with everything it started (node starts opencode.exe, ...): terminate() would only end the
-            # first process and leave the rest working, and spending, in the background
-            res = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
-            if res.returncode != 0 and proc.poll() is None:
-                proc.terminate()
-        else:
-            os.killpg(proc.pid, 15)
-    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+    try:  # the agent with everything it started: terminate() would leave the rest working, and spending
+        os.killpg(proc.pid, 15)
+    except (OSError, ProcessLookupError):
         pass

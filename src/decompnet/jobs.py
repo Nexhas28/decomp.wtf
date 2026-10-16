@@ -13,9 +13,10 @@ from __future__ import annotations
 import base64
 import json
 import random
+import time
 from pathlib import Path
 
-from . import scoring
+from . import scoring, snapshots
 from .elfobj import extract_function
 from .network import Agent, Network, NetworkError
 
@@ -43,10 +44,19 @@ def next_job(net: Network, agent: Agent) -> dict | None:
                 if total > MAX_INCLUDE_BYTES:
                     break
                 includes[str(f.relative_to(base))] = f.read_text(errors="replace", encoding="utf-8")
+    from .search.policy import active_policy  # imported here: search.policy pulls in permuter
+
+    proj_row = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+    ctx = net._context(fn["project_id"], fn["unit"])
     return {
         "project": fn["slug"], "function": fn["name"], "unit": fn["unit"] or None,
         "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"),
-        "context": net._context(fn["project_id"], fn["unit"])["header"],
+        "context": ctx["header"],
+        # the exact dependency identities the job was issued against (P5.8): submit() rejects a result
+        # whose snapshot no longer matches, and the worker runs the policy and seed it was given
+        "snapshot": snapshots.snapshot_id(snapshots.capture(fn, proj_row, ctx)),
+        "policy": active_policy().to_dict(),
+        "seed": f"{fn['id']}-{int(time.time())}",
         "include_files": includes,
         "source": fn["best_source"], "best_score": fn["best_score"], "max_score": fn["n_insns"] * 100,
         "target": {"arch": fn["arch"], "big_endian": bool(fn["big_endian"]),
@@ -54,7 +64,8 @@ def next_job(net: Network, agent: Agent) -> dict | None:
     }
 
 
-def submit(net: Network, agent: Agent, project: str, function: str, source: str) -> dict:
+def submit(net: Network, agent: Agent, project: str, function: str, source: str,
+           snapshot: str | None = None) -> dict:
     net._require_budget(agent)
     fn = net._function(function, project)
     if fn["status"] == "matched":
@@ -64,17 +75,25 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     claim = net.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
     if claim and claim["agent_id"] != agent.id:
         return {"accepted": False, "reason": "an agent is working on it right now"}
+    if snapshot is None:
+        return {"accepted": False, "reason": "job snapshot missing: update the worker and fetch a new job"}
     proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
     ctx = net._context(proj["id"], fn["unit"])
-    res = net._compile(proj, ctx["header"], source)
+    snap = snapshots.capture(fn, proj, ctx)  # before compiling: the result is judged against this
+    if snapshot != snapshots.snapshot_id(snap):
+        return {"accepted": False,
+                "reason": "stale job: the function, context or compiler changed since the job was issued"}
+    res = net._compile(proj, ctx["header"], source, fn)
     cand = extract_function(res.obj, fn["name"]) if res.ok else None
     if cand is None:
-        net._record(fn, agent, None, source, ctx["version"], via="permuter")
+        net._record(fn, agent, None, source, ctx["version"], via="permuter", snapshot=snap)
         return {"accepted": False, "reason": "did not compile on the coordinator"}
     d = scoring.diff(net._target_obj(fn, proj), cand)
     before = fn["best_score"]
-    net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter")
-    if d.bytes_match:
+    refused = net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter",
+                          snapshot=snap)
+    matched = d.bytes_match and not refused
+    if matched:
         net.add_note(agent, proj["slug"], "matched by donated compute (permuter)", fn["name"])
     return {"accepted": True, "score": d.score, "improved": before is None or d.score < before,
-            "matched": d.bytes_match}
+            "matched": matched} | ({"refused": refused} if d.bytes_match and refused else {})

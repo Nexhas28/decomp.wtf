@@ -1,0 +1,13 @@
+{
+  "name": "rz-ghidra",
+  "repo": "https://github.com/rizinorg/rz-ghidra",
+  "version": "unrecorded build (plugins built against rizin 0.9.1); upstream latest release v0.9.0, default branch dev head 0f4e062 (2026-10-12)",
+  "sha256": null,
+  "category": "ghidra-decompiler-plugin",
+  "platforms": ["n64", "psx", "ps2", "gamecube", "nds", "gba", "arm", "mips", "ppc"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Built plugins are present in plugins/ but the exact source commit used was not recorded, so version is unverified. The run wrapper depends on the sibling folder ../rizin (rizin 0.9.1) and the dylibs have absolute paths to it. test.sh needs clang/lld (/opt/homebrew/opt/llvm) and arm-none-eabi-gcc; passes on this machine. lib/pkgconfig/rz_ghidra.pc has a malformed Libs path (double slash) and is not used by the test."
+}

@@ -13,7 +13,10 @@ import re
 from dataclasses import dataclass
 
 # Automatic names spell their address: splat/spimdisasm (func_, D_...), luvdis and pret (sub_, gUnknown_), IDA style.
-AUTO_NAME = re.compile(r"^(?:func|D|B|jtbl|L|RO|STR|FLT|DBL|bss|data|sub|gUnknown|unk|off|dword|word|byte|loc)_([0-9A-Fa-f]{8})$")
+AUTO_NAME = re.compile(
+    # splat/spimdisasm (func_, D_), luvdis/pret (sub_, gUnknown_), IDA style, or Game Boy bank_cpu
+    r"^(?:(?:func|D|B|jtbl|L|RO|STR|FLT|DBL|bss|data|sub|gUnknown|unk|off|dword|word|byte|loc)_([0-9A-Fa-f]{8})"
+    r"|(?:func|sub)_(\d{3})_([0-9A-Fa-f]{4}))$")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 
 
@@ -58,7 +61,9 @@ class SymbolTable:
         if sym is not None:
             return sym.address
         m = AUTO_NAME.match(name)
-        return int(m.group(1), 16) if m else None
+        if not m:
+            return None
+        return int(m.group(1) or m.group(3), 16)  # (Game Boy bank_cpu names: the CPU address)
 
     def name_at(self, address: int) -> tuple[str, int]:
         """(name, offset) for an address: an exact symbol, the symbol that contains it, or an automatic name."""

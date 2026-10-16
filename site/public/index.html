@@ -43,6 +43,20 @@
     </div>
   </div>
 </section>
+<section class="band" id="mac">
+  <div class="wrap">
+    <div class="head">
+      <p class="kicker">For Mac</p>
+      <h2>decomp.wtf for Mac</h2>
+      <p>A fork carries decomp.wtf on as a native Mac app (macOS 14 or newer). It runs decomp.wtf in its own window and updates itself. It needs <a href="https://docs.astral.sh/uv/">uv</a> and a copy of the source, and <a href="https://docs.docker.com/desktop/setup/install/mac-install/">Docker Desktop</a> for the compilers that only exist for Linux.</p>
+      <p><a href="https://github.com/Nexhas28/decomp.wtf/releases/latest">Download the latest Mac release</a> from GitHub, or build it from source with Xcode and XcodeGen:</p>
+    </div>
+    <div class="install">
+      <div class="cmd"><span>$</span><code>git clone https://github.com/Nexhas28/decomp.wtf &amp;&amp; cd decomp.wtf/macos &amp;&amp; xcodegen generate &amp;&amp; xcodebuild -project DecompWTF.xcodeproj -scheme DecompWTF -configuration Release -derivedDataPath build/DerivedData SYMROOT=&quot;$PWD/build&quot; build</code><button class="copy" type="button" data-copy="git clone https://github.com/Nexhas28/decomp.wtf &amp;&amp; cd decomp.wtf/macos &amp;&amp; xcodegen generate &amp;&amp; xcodebuild -project DecompWTF.xcodeproj -scheme DecompWTF -configuration Release -derivedDataPath build/DerivedData SYMROOT=&quot;$PWD/build&quot; build">Copy</button></div>
+      <small>Setup, first launch and updates: <a href="https://github.com/Nexhas28/decomp.wtf#install">the README</a>.</small>
+    </div>
+  </div>
+</section>
 </main>
 
 <footer class="foot">
@@ -55,5 +69,6 @@
     <p>Free and open source (MIT). Not affiliated with Nintendo, Sony, Microsoft or any game publisher; platform names are their owners' trademarks.</p>
   </div>
 </footer>
+<script src="/home.js" defer></script>
 </body>
 </html>

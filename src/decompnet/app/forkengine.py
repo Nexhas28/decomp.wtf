@@ -28,7 +28,7 @@ from .. import similarity, toolchains
 from ..forks import catalog, csource, datadiff, drafts, dtksplits, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
-from ..network import Agent, Network, NetworkError
+from ..network import Agent, Network, NetworkError, _refused_text
 from ..scoring import percent_text
 from ..textedit import replace_once
 
@@ -1916,7 +1916,11 @@ class ForkEngine:
                                                     f"Edited by {agent.name} with decomp.wtf.")
                 return {"text": f"✅ {fn['name']} still matches; your tidier version is committed.{_renamed_note(d)}",
                         "score": 0, "matched": True}
-            self.net._record(fn, agent, score, code, 0, matched=matched)
+            refused = self.net._record(fn, agent, score, code, 0, matched=matched)
+            if matched and refused:  # not accepted: nothing committed, and the file must not keep a match git lacks
+                undo()
+                return {"text": _refused_text(fn, "is 100% identical to the original (your change was undone)",
+                                              refused), "score": 0, "matched": False}
             self._apply_scores(proj, fn["unit"], d.unit_scores, skip=fn["id"], agent=agent, text=after)
             self._remember(proj, fp, unit, d)
             if matched:

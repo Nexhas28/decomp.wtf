@@ -1,0 +1,13 @@
+{
+  "name": "asm-processor",
+  "repo": "https://github.com/simonlindholm/asm-processor",
+  "version": "1.0.1",
+  "sha256": null,
+  "category": "compiler-wrapper",
+  "platforms": ["n64", "psx", "ps2"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/asm-processor",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Rust binary built natively from the 1.0.1 tag (commit 52d6454e9d2ac8ed30fe523c0b58647d65d6199a) with cargo install --locked; binary sha256 a7915b88a4abbe9279a6a3b5af4b743698509d8e4e5a4f4fb64bb56b1d10d9fe. Source was git-cloned, so sha256 of an archive is null. test.sh needs an IDO cc (under ~/Decomp/tools/vendor/compilers) and a MIPS assembler (decompnet binutils-mips cache or mips-linux-gnu-as), both outside this folder. Passed 2026-10-16."
+}

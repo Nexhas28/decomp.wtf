@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entry point: runs asm-differ (diff.py) from the bundled venv. Run it from a directory
+# that contains a diff_settings.py (see test.sh for a minimal one).
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/.venv/bin/asm-differ" "$@"

@@ -13,6 +13,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import __version__
+from . import localtools
 from ..network import Agent, NetworkError
 from .engine import RomNetwork
 
@@ -35,6 +36,7 @@ GUIDES = {
     "ps2": "matching PlayStation 2 (EE-GCC, MWCC PS2) code",
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
+    "gb": "Game Boy and Game Boy Color: SM83, banked cartridges, GBDK-2020/SDCC matching",
     "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
     "aarch64": "AArch64 and Clang (Switch): registers, matching Clang output",
     "similarity": "finding similar functions and reusing matched code",
@@ -44,7 +46,8 @@ GUIDES = {
 PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
-    "gba": ["arm", "agbcc"], "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
+    "gba": ["arm", "agbcc"], "gb": ["gb"], "gbc": ["gb"],
+    "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
     "xbox360": ["ppc", "cpp"],
 }
 
@@ -53,6 +56,7 @@ decomp.wtf: you are decompiling a game ROM that the user owns into C that compil
 machine code. Your C is compiled with the game's original compiler, linked at the function's real address
 and compared with the ROM: score 0 means byte-identical, and the function is saved as matched.
 Start with project_info, then claim_function -> compile_and_diff (repeat). guide(topic) has know-how.
+local_tools() lists reverse-engineering tools on this computer that run_tool runs on the game's files.
 Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
 """
 
@@ -79,6 +83,8 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
    then release_function with precise notes (what you tried, what is left) and claim the next one.
 
 Write plausible original code, pure C (no inline asm). Be brief in your messages: work, don't narrate.
+Stuck on what a function does or what some data is? local_tools() lists the disassemblers, decompilers,
+decompressors and symbol finders on this computer; run_tool runs one on the game's files.
 """
 
 FORK_PROMPT = """\
@@ -180,6 +186,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
+    "escalate_function": lambda net, agent, slug, function, question=None:
+        net.escalate(function, question=question or None, project=slug),
+    "calibrate_profile": lambda net, agent, slug, function=None:
+        net.calibrate_profile(slug, functions=[function] if function else None),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
@@ -203,6 +213,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "file_status": lambda net, agent, slug, path: net.forks.file_status(_fork(net, slug, "file_status"), path),
     "split_file": lambda net, agent, slug, path, at, new_name="", data="":
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
+    "local_tools": lambda net, agent, slug, tool="": localtools.describe(tool.strip()),
+    "run_tool": lambda net, agent, slug, tool, operation, **args:
+        localtools.run(net, slug, tool.strip(), operation, agent=getattr(agent, "name", "") or "you", **args),
 }
 
 ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "rescan_gba"}
@@ -300,6 +313,22 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "release_function", function=function, notes=notes)
 
     @mcp.tool(meta=ALWAYS_LOAD)
+    async def escalate_function(ctx: Context, function: str, question: str | None = None) -> str:
+        """When you're stalled on a function: ask for a focused, budget-capped investigation (decompiler evidence
+        and ranked hypotheses) of it. Optional; says so plainly when no analysis provider is available.
+
+        Args:
+            question: what you want to know about the function (optional)
+        """
+        return await run(ctx, "escalate_function", function=function, question=question)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def calibrate_profile(ctx: Context, function: str | None = None) -> str:
+        """Check whether the project's compiler settings fit: a bounded calibration over a few open functions
+        that have a draft (or just `function`), reported as text. Nothing is changed."""
+        return await run(ctx, "calibrate_profile", function=function)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:
         """The shared header (types, structs, prototypes) included before every compile."""
         return await run(ctx, "get_context", function=function)
@@ -361,10 +390,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         template instances), matched ones first, with the matching source of the best one. Start there."""
         return await run(ctx, "find_similar", function=function, limit=limit)
 
-    @mcp.tool(meta=ALWAYS_LOAD)
+    # (the topic list comes from GUIDES, so it never falls behind the guides that exist)
+    @mcp.tool(meta=ALWAYS_LOAD, description=f"Decompilation know-how. Call without a topic for the list "
+                                            f"({', '.join(GUIDES)}).")
     async def guide(ctx: Context, topic: str = "") -> str:
-        """Decompilation know-how. Call without a topic for the list (workflow, mips, gcc-kmc, ido, m2c,
-        data, structs, n64, naming)."""
         return await run(ctx, "guide", topic=topic)
 
     @mcp.tool(meta=ALWAYS_LOAD)
@@ -401,6 +430,27 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         the game still builds byte for byte and every match still matches. A file links only when its code and
         data are exactly one original file's."""
         return await run(ctx, "split_file", path=path, at=at, new_name=new_name, data=data)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def local_tools(ctx: Context, tool: str = "") -> str:
+        """Reverse-engineering tools on this computer (disassemblers, Ghidra's and RetDec's decompilers, N64/GBA/DS
+        decompressors, texture and display-list viewers, symbol finders, ROM/disc extractors) and what run_tool can
+        do with each. Name a tool for its parameters and README."""
+        return await run(ctx, "local_tools", tool=tool)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def run_tool(ctx: Context, tool: str, operation: str, file: str = "", file2: str = "", arch: str = "",
+                       address: str = "", base: str = "", count: int = 0, offset: str = "", length: str = "",
+                       hex: str = "", text: str = "", format: str = "", microcode: str = "", what: str = "",
+                       mode: str = "", width: int = 0, height: int = 0) -> str:
+        """Run one operation of a local tool (see local_tools) on the project's files. `file` is a path in the
+        project folder, "game" for the game file, or a tool-output/... file one of your earlier runs wrote. Only the
+        parameters the operation lists are used. Examples: run_tool(tool="rz-ghidra", operation="decompile",
+        file="game", arch="mips-be", address="0x80000400", base="0x7FFFF400"); run_tool(tool="crunch64",
+        operation="decompress", format="yay0", file="game", offset="0x123450")."""
+        return await run(ctx, "run_tool", tool=tool, operation=operation, file=file, file2=file2, arch=arch,
+                         address=address, base=base, count=count, offset=offset, length=length, hex=hex, text=text,
+                         format=format, microcode=microcode, what=what, mode=mode, width=width, height=height)
 
     @mcp.prompt(title="Decompile", description="Work loop: claim functions and match them byte for byte.")
     def work(count: str = "5") -> str:

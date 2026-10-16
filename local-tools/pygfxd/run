@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entry point for pygfxd: disassemble a raw N64 display list file.
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/.venv/bin/python" "$DIR/bin/pygfxd-disasm.py" "$@"

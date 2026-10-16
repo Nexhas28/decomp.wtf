@@ -1,14 +1,13 @@
-## This project is discontinued
+## decomp.wtf for Mac
 
-I've decided to stop working on decomp.wtf and archive it.
+This is a continuation of [decomp.wtf](https://github.com/i12bp8/decomp.wtf) by Sam Wolfs, who archived the original,
+as a native **macOS app**. The Mac app is where development happens from here on: the Linux and
+Windows versions, their installers and the run-it-all-in-Docker setup are gone, and everything below is about
+running decomp.wtf on a Mac.
 
-Over the last few days I noticed that a lot of the decompilation community, the people who made the tools and projects all of this is built on, is against AI decompiling like this. I didn't make decomp.wtf to do any harm, but I respect their opinion, and that's why I'm stopping it here.
-
-The code stays up as it is, under the MIT license. If you want to fork it and keep going with it, you can. I won't fix issues, review pull requests or make new releases anymore. If you already have it installed it keeps working, it just won't get any updates. You can still install the last version (0.10.6) with the commands under [Install](#install).
-
-If you do use it or build on it, please only use it on games you own, don't share the game code it produces, and respect the rules of the projects you work with, because many of them don't want AI-made contributions.
-
-Thanks to everyone who tried it, reported bugs and sent fixes.
+The original author's request still stands, and this project shares it: only use it on games you own, don't share
+the game code it produces, and respect the rules of the projects you work with, because many of them don't want
+AI-made contributions.
 
 ---
 
@@ -26,6 +25,8 @@ Thanks to everyone who tried it, reported bugs and sent fixes.
   &nbsp;·&nbsp;
   <a href="#install"><b>Install</b></a>
   &nbsp;·&nbsp;
+  <a href="#the-mac-app"><b>The Mac app</b></a>
+  &nbsp;·&nbsp;
   <a href="#how-it-works"><b>How it works</b></a>
   &nbsp;·&nbsp;
   <a href="#continue-a-public-decomp"><b>Public decomps</b></a>
@@ -37,7 +38,7 @@ Thanks to everyone who tried it, reported bugs and sent fixes.
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-157a49?style=flat-square"></a>
-  <img alt="Linux and Windows" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20(unstable)-15140f?style=flat-square">
+  <img alt="macOS 14 or newer" src="https://img.shields.io/badge/platform-macOS%2014%2B-15140f?style=flat-square">
   <img alt="Python 3.12 or newer" src="https://img.shields.io/badge/python-3.12%2B-15140f?style=flat-square">
   <img alt="Works with any MCP agent" src="https://img.shields.io/badge/agents-any%20MCP%20client-157a49?style=flat-square">
 </p>
@@ -56,8 +57,8 @@ Point the AI agent you already use at a game you own. **decomp.wtf** hands it th
 compiles every attempt with the game's **original compiler**, and checks the result **byte for byte**. Score 0, or
 it doesn't count. There are two ways in:
 
-- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy Advance or DS: a
-  ROM, a disc image or the program file. decomp.wtf finds every function and your agents take it from there. The
+- **Start from scratch.** Drop in a game for N64, PlayStation 1 or 2, GameCube, Wii, Game Boy, Game Boy Color,
+  Game Boy Advance or DS: a ROM, a disc image or the program file. decomp.wtf finds every function and your agents take it from there. The
   result is a project that rebuilds your game byte for byte: the base for ports and mods. GameCube, Wii and N64
   are the [recommended](#platforms) platforms; the rest are in beta.
 - **Continue a public decomp.** Pick one of the [245 projects on decomp.dev](https://decomp.dev) for GameCube, Wii,
@@ -67,70 +68,98 @@ it doesn't count. There are two ways in:
 On GameCube and Wii the goal is what real decomps aim for: every file **linked**, so the game is built from its C and
 still comes out byte for byte. That's the starting point for a native PC port.
 
-Everything runs on your computer. No account, no telemetry, nothing uploaded.
+decomp.wtf is a Mac app. Everything runs on your Mac. No account, no telemetry, nothing uploaded.
 
 ## Install
 
-decomp.wtf runs on **Linux**, on **Windows** (supported, still unstable) and on **macOS** (experimental). The
-compilers it runs are mostly Linux programs, so each system gives them a Linux to run in: on Windows decomp.wtf runs
-in its own small Linux (a WSL 2 distribution called `decomp-wtf`), set up by the same script as on Linux; on macOS
-the app runs natively and the compilers run in a small Docker container ([macOS](#macos-experimental) below). The
-whole app can also run in Docker ([Docker](#docker-the-whole-app-in-a-container)), which suits servers.
+decomp.wtf is a native Mac app: it opens in its own window, with your projects in a sidebar. Behind the window runs
+decomp.wtf's engine, a Python program the app starts and stops for you.
 
-**Linux**
+**What you need**
 
-```
-curl -fsSL https://decomp.wtf/install.sh | bash
-```
+- **macOS 14** (Sonoma) or newer. On Apple Silicon also [Rosetta 2](https://support.apple.com/en-us/102527), for
+  the compilers that are Intel programs (`softwareupdate --install-rosetta` installs it).
+- **[uv](https://docs.astral.sh/uv/)**, which runs decomp.wtf's Python side.
+- **[Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/)**, running, for the compilers that
+  only exist as Linux programs (KMC GCC, EE-GCC, the PlayStation GCCs, agbcc). They run in a small container. The
+  other compilers run on your Mac itself, so you can start without Docker and add it when a game needs one of those.
+- **A copy of this repository**, which the app runs:
 
-Can't reach decomp.wtf from your network? The same installer from GitHub (it then installs the release from GitHub
-too):
+  ```
+  git clone https://github.com/Nexhas28/decomp.wtf
+  ```
 
-```
-curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh | bash
-```
+- To build the app yourself: **Xcode** and **[XcodeGen](https://github.com/yonaskolb/XcodeGen)**
+  (`brew install xcodegen`).
 
-**Windows** (PowerShell; new and still unstable: problems are worth an [issue](https://github.com/i12bp8/decomp.wtf/issues))
+**Get the app**
 
-```
-irm https://decomp.wtf/install.ps1 | iex
-```
+- **Download it** from [GitHub Releases](https://github.com/Nexhas28/decomp.wtf/releases/latest) once a release is
+  out: `decomp.wtf-mac-<version>.zip`. Unzip it and move `decomp.wtf.app` to Applications.
+- **Or build it** from your copy of the repository:
 
-It turns on WSL 2 if it isn't yet (Windows asks for permission once, and may want a restart), makes decomp.wtf's
-Linux from Debian's official WSL image and installs everything in it. You get a `decomp` command, a Start menu entry
-and a desktop shortcut. Your projects are at `\\wsl.localhost\decomp-wtf\home\decomp\Decomp`.
+  ```
+  cd decomp.wtf/macos
+  xcodegen generate
+  xcodebuild -project DecompWTF.xcodeproj -scheme DecompWTF -configuration Release \
+    -derivedDataPath build/DerivedData SYMROOT="$PWD/build" build
+  open build/Release/decomp.wtf.app
+  ```
 
-One line sets up everything: [uv](https://docs.astral.sh/uv/), the app, the period compilers (pinned and
-checksum-verified) and the m2c draft decompiler. It then opens decomp.wtf in your browser. After that, start it any
-time from your apps menu (the Start menu on Windows) or by typing `decomp` in a terminal.
+  More on building, and on making a release, in [macos/README.md](macos/README.md).
 
-**macOS** (experimental; the one-line installer doesn't support it yet, so you run from a checkout). You need
-[uv](https://docs.astral.sh/uv/) and [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/),
-running:
+**First launch.** The app isn't notarized by Apple, so the first time you open a downloaded copy macOS blocks it.
+Open **System Settings ▸ Privacy & Security**, scroll down and click **Open Anyway** next to decomp.wtf. You only do
+this once. Then the app looks for decomp.wtf:
 
-```
-git clone https://github.com/i12bp8/decomp.wtf && cd decomp.wtf
-uv run decomp
-```
+1. A built app finds the repository it was built from by itself.
+2. A downloaded app asks for it: click **Choose the decomp.wtf Folder…** and pick the folder you cloned. It
+   remembers it.
+3. If you have a `decomp` command installed, it uses that.
 
-The app runs on your Mac (projects in `~/Decomp`, or the folder in `DECOMP_HOME`) and opens in your browser. The first
-time you install a compiler that only exists for Linux (EE-GCC, KMC GCC, the PlayStation GCCs, agbcc), decomp.wtf
-builds the small compiler image and starts its container by itself: see [macOS (experimental)](#macos-experimental).
+If uv is missing, the app says so and links to its install page. If Docker Desktop isn't installed or isn't
+running, a bar says so; you only need it for the compilers above. The first time you install one of those, decomp.wtf
+builds the small compiler image and starts its container by itself (see [The Linux-only
+compilers](#the-linux-only-compilers) below).
 
-**Updates** come by themselves: when there's a new version, decomp.wtf asks once, and one click installs it and
-restarts the app in the same tab (helper agents carry on). Settings has "check now", "install updates by itself" and
-"don't look for updates".
+Your projects live in `~/Decomp` (or the folder in `DECOMP_HOME`). When you quit the app, decomp.wtf stops too.
+
+**Updates.** The app updates itself from GitHub Releases: when it starts (at most every 6 hours) and from
+**decomp.wtf ▸ Check for Updates…**, it looks for a newer version. If there is one, it asks; one click downloads it,
+swaps the app and opens it again. The decomp.wtf folder the app runs is a git copy: `git pull` in it brings that
+part up to date.
 
 > [!TIP]
 > No ROM at hand? The app ships with **Demo Quest 64**, a real N64 ROM built from public-domain code and zlib.
-> Open it from the home screen and watch your agent go.
+> Open it from the home screen (or **File ▸ Open the Demo Game**) and watch your agent go.
+
+## The Mac app
+
+Everything decomp.wtf does is in one window:
+
+- **A sidebar** with your projects and how far each one is, plus public decomps, joining a team, agents, compilers
+  and settings.
+- **Each project's overview** shows matched functions, code and compiles, the autopilot, and the ROM map (every
+  function as a square, live as agents work). The bar with Functions, Agents, Activity, Team, Source and Settings
+  stays pinned at the top while you scroll.
+- **Mac menus and shortcuts.** **File ▸ Open Game…** (⌘O) picks a game with the Mac's own file window and reads it
+  where it is, so big disc images aren't copied; **New Project** (⌘N), **Open the Demo Game**, **Continue a Public
+  Decomp…** and **Join a Team…** are there too. **Tools** has Agents & Models, Compilers & Tools, Settings (⌘,), the
+  projects folder in Finder, the log and **Restart decomp.wtf**. **View** has Back, Forward, Reload and the
+  appearance (System, Light or Dark).
+- **Local tools.** **Compilers & Tools** also lists the reverse-engineering tools in `local-tools/` (disassemblers,
+  decompilers, decompressors, symbol finders, extractors) with a **Check** button for each, and agents can run them
+  on the project's files through `local_tools` and `run_tool`.
+- **It looks after itself.** It starts decomp.wtf when it opens and stops it when you quit, says plainly when uv or
+  Docker Desktop is missing, and updates itself from GitHub Releases.
 
 ## Or just ask your agent
 
-Already living in Claude Code, Codex, Antigravity CLI or opencode? Give it decomp.wtf's tools once:
+Already living in Claude Code, Codex, Antigravity CLI or opencode? Give it decomp.wtf's tools once, from your copy
+of the repository:
 
 ```
-decomp connect
+uv run decomp connect
 ```
 
 Then ask it, in your own terminal:
@@ -139,12 +168,13 @@ Then ask it, in your own terminal:
 
 It confirms the game is your own copy, imports it, opens the live view so you can watch, and gets to work with every
 tool decomp.wtf has: the original compiler, the byte-for-byte judge, the autopilot, helper agents running in
-parallel (`start_agents`) and the rebuildable export. Behind it is `decomp mcp`, an MCP server that starts the app
-when needed; you can also add it yourself (`claude mcp add decomp -- decomp mcp`).
+parallel (`start_agents`) and the rebuildable export. Behind it is `decomp mcp`, an MCP server that starts decomp.wtf
+when needed; you can also add it yourself (`claude mcp add decomp -- decomp mcp`, which needs the `decomp` command
+installed).
 
 | Agent | Install it as a package instead |
 | :-- | :-- |
-| **Claude Code** | `/plugin marketplace add i12bp8/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (adds a "decompile" skill) |
+| **Claude Code** | `/plugin marketplace add Nexhas28/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (adds a "decompile" skill; needs the `decomp` command installed) |
 | **Codex, Antigravity CLI, opencode** | `decomp connect codex`, `decomp connect antigravity`, `decomp connect opencode` |
 
 ## How it works
@@ -246,7 +276,7 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **Permuter** | Near misses agents leave (95% and up) get rewritten in the background, the way decomp-permuter does it: statement and declaration order, casts, temporaries. Improvements become the function's best attempt; a match is a match. |
 | **Fast agents** | Small functions come in batches (one turn writes several, one call judges them all), identical code is shown in the brief, agents are told to move on after four tries without progress, and functions whose code repeats are handed out first (one match, many free). |
 | **Your agent, your terminal** | `decomp connect`, then ask Claude Code, Codex or Antigravity CLI to decompile your game: it imports, opens the live view and works. |
-| **Edit it yourself** | Every function has an editor: write C, press Ctrl+Enter, see the judge's diff. You count as an agent. |
+| **Edit it yourself** | Every function has an editor: write C, press ⌘+Enter, see the judge's diff. You count as an agent. |
 | **Byte-for-byte check** | Candidates are linked at the real address, so calls, globals, strings and jump tables are verified too. |
 | **Any agent** | Claude Code, Codex, Antigravity CLI, opencode, or any model with an API key, several at once: save one endpoint per machine or provider (llama.cpp, Ollama, LM Studio, DeepSeek...) and spread sessions across them. |
 | **Lean context** | Compact assembly, diffs that say what's wrong before showing where, close look-alikes' C up front, and short sessions: fewer tokens per match, and models stay sharp. |
@@ -257,8 +287,9 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **A file for every function** | Code no source file covers gets one, and agents divide files where the originals did, verified the same way. |
 | **Look-alikes** | `find_similar` spots copy-pasted and inlined code across the whole game and starts agents from what already matches. |
 | **Drafts** | m2c for MIPS, PowerPC and ARM; optional Ghidra for x86, AArch64 and everything else. |
+| **Local tools** | Disassemblers, decompilers (rz-ghidra, RetDec), decompressors, symbol finders and extractors from `local-tools/`, listed and checked in the app and available to agents through `run_tool`. |
 | **Agent toolkit** | A data inspector, a call graph, splitting merged functions, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
-| **Decompile together** | A team of any size, each with their own copy and agents: one host, public or private rooms, hosted by you (home PC or server, `decomp host`). Only the work is shared, never the game. |
+| **Decompile together** | A team of any size, each with their own copy and agents: one host, public or private rooms, hosted by you (your Mac or an always-on Mac, `decomp host`). Only the work is shared, never the game. |
 | **Rebuildable export** | A decomp project that rebuilds your game byte for byte, ready for ports and mods and for any other tool or agent. |
 | **Every major disc format** | ROMs, PlayStation discs, GameCube and Wii discs (ISO, GCM, RVZ, WIA, WBFS, CISO, GCZ) and program files, streamed from disk. |
 
@@ -292,16 +323,15 @@ one game. One computer is the room's **host**: it hands out functions so nobody 
 match against its own copy, and shares names, structs and notes with everyone. Nothing goes through decomp.wtf's
 website: the people who decompile together host their room and decide who's in.
 
-**On a home PC:** open the project, click **Decompile together**, **Open the room**. Send the link.
+**From the app:** open the project, click **Decompile together**, **Open the room**. Send the link.
 
-**On a server** (or any always-on machine):
+**On an always-on Mac** (a Mac mini in a cupboard works fine), from your copy of the repository:
 
 ```
-curl -fsSL https://decomp.wtf/install.sh | bash
-decomp host mygame.z64 --own-copy --address http://my-server:6481 --service
+uv run decomp host mygame.z64 --own-copy --address http://my-mac:6481 --service
 ```
 
-That runs decomp.wtf in the background (starting with the computer), imports your copy, opens the room and prints the
+That runs decomp.wtf in the background (starting when you log in), imports your copy, opens the room and prints the
 link. **Joining:** paste the link into **Join a team's room** in the app, or `decomp join <link> <your copy> --name you`.
 
 | | |
@@ -325,6 +355,7 @@ the game.
 | **Nintendo 64** | ★ **Recommended** | ✓ ROM | KMC GCC 2.7.2 · IDO 5.3 / 7.1 | ✓ export | ✓ |
 | **PlayStation** | Beta | ✓ disc (.bin, .iso, .chd) or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
 | **PlayStation 2** | Beta | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
+| **Game Boy · Game Boy Color** | Beta | ✓ ROM (.gb, .gbc) | GBDK-2020 (SDCC) | – | – |
 | **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
 | **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
@@ -341,15 +372,16 @@ full decomp you can port and mod:
   its original address: right for matching and for a port, while a mod that makes code bigger needs a shiftable
   build, which is coming.
 
-**Beta: PlayStation, PlayStation 2, Game Boy Advance and DS.** They work end to end and are tested on homemade
-games, much less on real ones so far. Expect rough edges, and please
-[report](https://github.com/i12bp8/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
-needs. Public decomps of any platform run in their own project's build, so their status is the project's.
+**Beta: PlayStation, PlayStation 2, Game Boy, Game Boy Color, Game Boy Advance and DS.** They work end to end and
+are tested on homemade games, much less on real ones so far. Expect rough edges: when something fails, the app's
+error panel copies everything a bug report needs. Public decomps of any platform run in their own project's build, so
+their status is the project's.
 
 **From scratch.** splat and spimdisasm split MIPS games, decomp-toolkit analyses GameCube and Wii programs inside a
 generated [dtk-template](https://github.com/encounter/dtk-template) project, [ds-decomp](https://github.com/AetiasHax/ds-decomp)
-analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the same kind, and Game Boy Advance
-ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls.
+analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the same kind, Game Boy Advance
+ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls, and
+Game Boy and Game Boy Color ROMs by decomp.wtf's own SM83 decoder (or mgbdis and rgbds when they're installed).
 Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
 calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
 2 overlays in a disc's other files. Every attempt is
@@ -390,93 +422,57 @@ and continued with any tool or agent.
 
 **C and C++.** GameCube, Wii and DS games are often C++, and decomp.wtf handles it there: code with C++ symbol
 names goes into `.cpp` files, drafts come out as C++, and agents get a guide to classes, vtables, constructors,
-inlines and name mangling. On N64, PlayStation, PS2 and GBA, functions started from scratch are written in C for
+inlines and name mangling. On N64, PlayStation, PS2, Game Boy and GBA, functions started from scratch are written in C for
 now; C++ there (mostly PS2 games) is coming. Public decomps use whatever language the project does.
 
 **Proprietary compilers** (IDO, CodeWarrior, CodeWarrior for DS) are only installed after you accept that. Heavy
 tools run with a memory cap, so a runaway analysis can't take your computer down.
 
-**Windows.** Several of the compilers (KMC GCC, the PlayStation GCCs, EE-GCC, agbcc) only exist as Linux programs,
-so on Windows decomp.wtf runs in its own WSL 2 distribution. The installer sets that up; you use the app in your
-browser as usual, and the results are byte-identical to Linux.
-
-<a id="macos-experimental"></a>**macOS (experimental).** Upstream doesn't officially support it. What works is the split
-this section describes: the app runs **natively** on your Mac and only the compilers that can't run there run in
-Docker.
+<a id="the-linux-only-compilers"></a>**The Linux-only compilers.** decomp.wtf runs natively on your Mac. Only the
+compilers that can't run on a Mac run in Docker:
 
 | What | Where it runs |
 |---|---|
-| The app (browser UI, database, agents, MCP) | Natively on the Mac (`uv run decomp`) |
+| The app (window, engine, database, agents, MCP) | Natively on the Mac |
 | Compilers with a macOS build, and the Windows ones (Metrowerks CodeWarrior, through `wibo`) | Natively. On Apple Silicon they need Rosetta 2 |
-| Linux-only compilers (EE-GCC, KMC GCC, the PlayStation GCCs, agbcc, ...) | In one small, long-lived container |
+| Linux-only compilers (EE-GCC, KMC GCC, the PlayStation GCCs, agbcc) | In one small, long-lived container |
 
 The container is `decomp-wtf-compiler`: bare Debian (`linux/amd64`, emulated on Apple Silicon) with the 32-bit C
 library and nothing of decomp.wtf in it, built once from `src/decompnet/linuxbox.Dockerfile` the first time you
-install a Linux-only compiler (Tools in the app, or `uv run decompnet toolchain install ee-gcc-2.96`). decomp.wtf starts
-it by itself and keeps it running (`--restart unless-stopped`); a compile through it takes about half a second.
+install a Linux-only compiler (**Compilers & Tools** in the app, or `uv run decompnet toolchain install ee-gcc-2.96`).
+decomp.wtf starts it by itself and keeps it running (`--restart unless-stopped`); a compile through it takes about
+half a second.
 
 - **Same paths on both sides.** The Linux builds of the toolchains (`~/Library/Application Support/decompnet/toolchains/linux/`)
   are mounted read-only and the compile folders (`.../decompnet/box-work`) read-write, at the same absolute paths as on
   the Mac, so a compiler command means the same thing in the app and in the container.
 - **Sandboxed.** No network, 2 GiB of memory, a process limit. An exported project built with `build.py` gets its
   own throwaway container with just its folder mounted.
-- **You don't use Docker yourself.** Agents, the MCP tools and the UI get the same compiler either way; whether one
+- **You don't use Docker yourself.** Agents, the MCP tools and the app get the same compiler either way; whether one
   runs natively or in the container isn't visible to them (the Tools page shows a "Docker" chip on the ones that go
   through it).
-- **Needs Docker Desktop running.** If it isn't, installing or compiling with a Linux-only compiler says so and what
-  to start. To reset the container: `docker rm -f decomp-wtf-compiler` (it's made again on the next compile).
-  `DECOMP_LINUXBOX` points the tests at a stand-in for the `docker` command.
-- **Not supported yet:** the one-line installer (`install.sh` stops on macOS); run from a checkout as above.
+- **Needs Docker Desktop running.** If it isn't, the app shows a bar, and installing or compiling with a Linux-only
+  compiler says what to start. To reset the container: `docker rm -f decomp-wtf-compiler` (it's made again on the
+  next compile). `DECOMP_LINUXBOX` points the tests at a stand-in for the `docker` command.
 
 Metrowerks compilers (`mwcc`, `mwccarm`, `mwcc-ps2`) are Windows programs run by `wibo`, whose macOS build runs them
-natively. The Linux `wibo` can't run under Docker Desktop on Apple Silicon (Rosetta stops with "invalid gdt
-selector"): that is the main reason the app runs natively on a Mac and not in the container below.
-
-<a id="docker-the-whole-app-in-a-container"></a>**Docker: the whole app in a container.** The repository also ships a
-Compose file that runs decomp.wtf itself, with its own Linux, inside Docker. It uses the same Linux as the Windows WSL
-distribution (`site/public/linux-base.sh`), so what runs there is what runs on any Linux:
-
-```
-docker compose up -d                      # builds site/public/Dockerfile, starts container decomp-wtf
-docker compose exec decomp decomp url     # the address that opens it, already signed in
-```
-
-The app listens on `127.0.0.1:6464`. Everything it installs (the app, the compilers, your projects and the
-database) lives in the volume `decomp-wtf-home`, mounted at `/home/decomp`, so it survives rebuilds; updates it
-installs by itself stay too. To work on projects from your own folders, bind-mount them (for example
-`./decomp-project:/home/decomp/Decomp` in a `docker-compose.override.yml`; keep game data out of the repository). Point
-an agent on your computer at the app with `docker exec -i decomp-wtf decomp mcp` (stdio, no TTY).
-
-When it helps:
-
-- **A server or an always-on machine** hosting a team room or running agents unattended: see
-  [Decompile together](#decompile-together). Publish the room port next to `6464` and keep the volume on a disk you back up.
-- **A reproducible Linux**, whatever the host: the same compilers and tools as the installer, in one image. Good for
-  reproducing a bug, for CI, or for trying a branch without touching your own system.
-- **Keeping the compilers and the agents' file access away from your computer**: they only see the mounted folders.
-- **Intel Macs and Linux PCs** run it at native speed, without installing anything but Docker.
-
-What to know on a Mac with Apple Silicon: the image is `linux/amd64`, so everything in it is emulated and slower, the
-Metrowerks compilers don't run in it (see above), and the emulated 32-bit compilers need a bigger address-space cap
-than the default 2 GiB: set `DECOMP_COMPILER_AS_LIMIT` (bytes, `0` = none) to at least `8589934592` in the container's
-environment, or they fail with "Unable to find a guest_base". Prefer the native app there.
-
-The Mac app and the container can share one projects folder, but only one of them at a time (they use the same
-`.decomp` database). Each project's folder is stored with the path of the place that made it; when the other one opens
-the workspace, decomp.wtf points every project at its own folder there by itself.
+natively. That's also why the app itself runs on the Mac and not in a container: the Linux `wibo` can't run under
+Docker Desktop on Apple Silicon.
 
 **When something goes wrong.** A failed import stays on screen with the reason and what happened, and **Copy for a
-bug report** puts the version, the error and the log on your clipboard for an
-[issue](https://github.com/i12bp8/decomp.wtf/issues). The full log is `.decomp/logs/decomp.log` in your projects folder
-(`~/Decomp`), also at **The full log** in that panel.
+bug report** puts the version, the error and the log on your clipboard. The full log is `.decomp/logs/decomp.log` in
+your projects folder (`~/Decomp`), also at **The full log** in that panel and at **Tools ▸ Show Log** in the
+app.
 
 ## Development
 
 ```bash
 uv sync
-uv run decomp              # opens the app; projects live in ~/Decomp (or $DECOMP_HOME)
+uv run decomp              # runs decomp.wtf on its own, in your browser; projects live in ~/Decomp (or $DECOMP_HOME)
 uv run pytest
 ```
+
+The Mac app is in `macos/`: how to build it, run it and make a release is in [macos/README.md](macos/README.md).
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -489,30 +485,15 @@ uv run pytest
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |
 | `src/decompnet/toolchains.py` | The pinned compilers: verified downloads and installs. |
-| `src/decompnet/hostenv.py`, `app/updates.py` | Where decomp.wtf runs (Linux itself, its WSL 2 distribution on Windows, Docker on a server) and what crosses to the computer around it; updates. |
-| `src/decompnet/wsl.py`, `linuxbox.py` | Where Linux-only compilers run when the app isn't on Linux: WSL 2 on Windows, the compiler-only container on a Mac. |
+| `src/decompnet/linuxbox.py` | The compiler-only container the Linux-only compilers run in on a Mac. |
 | `src/decompnet/app/twins.py`, `app/permute.py` | Free matches: identical code from its matched twin, and the background permuter for near misses. |
-| `site/public/install.sh`, `install.ps1`, `linux-base.sh`, `Dockerfile` | The installers: decomp.wtf's own Linux (WSL on Windows, Docker on a server) is made by `linux-base.sh` on Debian. |
+| `macos/` | The Mac app (Swift, SwiftUI): it runs decomp.wtf in its own window and updates itself from GitHub Releases. `release.sh` makes a release. |
 | `projects/demo-rom/` | Builds Demo Quest 64. `tests/test_rom.py` proves the matcher on it: every function of the original source matches. |
 | `projects/demo-psx/` | The same game as a PlayStation executable, for `tests/test_psx.py`. |
 | `projects/demo-fork/` | A small decomp project in the community's shape (objdiff.json, ninja), for `tests/test_forks.py`. |
 | `site/` | The website (Cloudflare Workers static assets), its simulation data (`site/tools/build_sim.py`) and legal pages. |
 
 Rebuild the demo ROM with `uv run python projects/demo-rom/build.py` (needs `gcc-2.7.2-kmc` and `ld.lld`).
-
-**Testing a branch.** Run the installer from a checkout of the branch: it installs that checkout,
-and the installed app then follows the branch on GitHub (every new commit pushed there shows up as an update in the
-app: one click installs it).
-
-```
-git clone -b <branch> https://github.com/i12bp8/decomp.wtf && cd decomp.wtf
-powershell -ExecutionPolicy Bypass -File site\public\install.ps1      # Windows
-bash site/public/install.sh                                           # Linux
-```
-
-Without a checkout: `$env:DECOMP_BRANCH = "<branch>"; irm https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.ps1 | iex`
-on Windows, `curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.sh | DECOMP_BRANCH=<branch> bash`
-on Linux. `decomp update` (or the app's Settings) installs the newest commit by hand.
 
 </details>
 

@@ -1,0 +1,13 @@
+{
+  "name": "pygfxd",
+  "repo": "https://github.com/ethteck/pygfxd",
+  "version": "fd11c99",
+  "sha256": null,
+  "category": "disassembler",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python ctypes bindings for libgfxd (N64 F3D/F3DEX2 display-list disassembler). Built from the git clone at commit fd11c99 (no release tags; last upstream push 2024-01-13). Upstream Makefile fails to link on macOS (GNU -Wl,--whole-archive flags); libgfxd.so was linked manually with -Wl,-all_load. Smoke test passes on a hand-made two-command display list."
+}
