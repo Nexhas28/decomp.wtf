@@ -2286,6 +2286,7 @@ class RomNetwork(Network):
                            (pid, f["name"], f["vram"], tail.size, "func"))
             local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         self._xrefs.pop(pid, None)
+        self._mirror_merges(proj, functions)  # a cut the host moved earlier: the piece cut out takes in what follows
         syms = self.symbols(pid)
         for sym in symbols:
             current, off = syms.name_at(sym["address"])

@@ -693,3 +693,15 @@ def test_a_cut_the_host_moved_is_moved_for_members(pair):
     assert _fn(guest, "func_80053660")["size"] == 12
     assert _fn(guest, "func_8005366C")["size"] == 12
     assert guest.store.one("SELECT 1 FROM functions WHERE name='func_80053664'") is None
+
+
+def test_a_cut_the_host_moved_earlier_is_moved_for_members(pair):
+    host, guest, link, client, code = pair
+    _asm_fn(guest, "func_80053660", 0x80053660, 3)
+    _asm_fn(guest, "func_8005366C", 0x8005366C, 3, first=3)
+    _host_fn(host, "func_80053660", 0x80053660, 4)  # the cut is two instructions earlier on the host
+    _host_fn(host, "func_80053664", 0x80053664, 20)
+    link.sync()
+    assert _fn(guest, "func_80053660")["size"] == 4
+    assert _fn(guest, "func_80053664")["size"] == 20 and _fn(guest, "func_80053664")["n_insns"] == 5
+    assert guest.store.one("SELECT 1 FROM functions WHERE name='func_8005366C'") is None
