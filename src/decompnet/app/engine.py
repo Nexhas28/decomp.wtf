@@ -2093,7 +2093,9 @@ class RomNetwork(Network):
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
             "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
-            "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
+            "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")}
+            | {"path": str(Path(proj["root"]) / name)
+               if proj["root"] and (name := cfg["rom"].get("program") or cfg["rom"].get("file")) else None},
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "linux": tc.via_linux,

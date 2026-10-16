@@ -2507,9 +2507,14 @@ async function connectRows(box) {
     return r;
   } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; }
 }
+/* The example prompt: from a project, its own game file, so it can be copied and run as it is. */
+function askExample() {
+  const path = !$("project").hidden && S.ov && S.ov.rom && S.ov.rom.path;
+  return `decompile my game at ${path ? (/\s/.test(path) ? `"${path}"` : path) : "~/roms/game.z64"}`;
+}
 async function openConnect() {
   const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
-    ${cmdBox("decompile my game at ~/roms/game.z64")}
+    ${cmdBox(askExample())}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
     <div class="setup-group" id="connectRows"><p class="muted small">Looking for your agents…</p></div>
     <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre>
