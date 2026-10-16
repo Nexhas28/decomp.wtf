@@ -55,6 +55,8 @@ M2C_TARGETS = {
     "ido-5.3": "mips-ido-c",
     "gcc-2.7.2-psx": "mipsel-gcc-c",
     "gcc-2.8.1-psx": "mipsel-gcc-c",
+    **{tc: "mipsel-gcc-c" for tc in ("gcc-2.5.7-psx", "gcc-2.6.0-psx", "gcc-2.6.3-psx", "gcc-2.7.2-cdk",
+                                     "gcc-2.8.0-psx", "gcc-2.91.66-psx", "gcc-2.95.2-psx")},
     "agbcc": "gba-gcc-c",
 }
 # What m2c's --valid-syntax output needs to compile: its unknown types and macros, defined the simplest way

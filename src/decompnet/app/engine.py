@@ -45,13 +45,23 @@ COMPILERS = {
     "ido-5.3": "early N64 games (1996-97)",
     "gcc-2.7.2-psx": "PlayStation games (PSY-Q era GCC)",
     "gcc-2.8.1-psx": "later PlayStation games",
+    "gcc-2.5.7-psx": "the earliest PlayStation games",
+    "gcc-2.6.0-psx": "early PlayStation games",
+    "gcc-2.6.3-psx": "early PlayStation games",
+    "gcc-2.7.2-cdk": "PlayStation games built with the CDK GCC 2.7.2",
+    "gcc-2.8.0-psx": "later PlayStation games",
+    "gcc-2.91.66-psx": "late PlayStation games (egcs)",
+    "gcc-2.95.2-psx": "the last PlayStation games",
     "ee-gcc-2.96": "PlayStation 2 games (Sony's EE GCC)",
     "mwcc-ps2": "PlayStation 2 games built with CodeWarrior (proprietary)",
     "agbcc": "Game Boy Advance games (pret's agbcc, GCC 2.95)",
     "gbdk-2020": "Game Boy and Game Boy Color games (GBDK-2020 / SDCC)",
 }
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
-               "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
+               "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)",
+               "gcc-2.5.7-psx": "GCC 2.5.7 (PS1)", "gcc-2.6.0-psx": "GCC 2.6.0 (PS1)", "gcc-2.6.3-psx": "GCC 2.6.3 (PS1)",
+               "gcc-2.7.2-cdk": "GCC 2.7.2 CDK (PS1)", "gcc-2.8.0-psx": "GCC 2.8.0 (PS1)",
+               "gcc-2.91.66-psx": "GCC 2.91.66 (PS1)", "gcc-2.95.2-psx": "GCC 2.95.2 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
                "agbcc": "agbcc", "gbdk-2020": "GBDK-2020 (SDCC)", "mwcc-ps2": "MWCC PS2 3.0.1 b198"}
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
@@ -76,7 +86,9 @@ TOOLS = {
 }
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
-PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
+PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx",
+                      "gcc-2.5.7-psx", "gcc-2.6.0-psx", "gcc-2.6.3-psx", "gcc-2.7.2-cdk", "gcc-2.8.0-psx",
+                      "gcc-2.91.66-psx", "gcc-2.95.2-psx"],
                       "ps2": ["ee-gcc-2.96", "mwcc-ps2"], "gba": ["agbcc"],
                       "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"]}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")

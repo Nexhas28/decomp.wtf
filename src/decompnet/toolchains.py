@@ -243,9 +243,10 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     tc = get(tid)
     linux = tc.via_linux if linux is None else linux
     if linux:
-        ok, why = linuxbox.status()
+        # the first Linux-only install builds the compiler image
+        ok, why = side_status(prepare=True, log=log)
         if not ok:
-            raise ToolchainError(f"{tc.name} is a Linux program: on a Mac it runs in a Docker container. {why}")
+            raise ToolchainError(f"{tc.name} is a Linux program: {why}")
     for dep in tc.requires:
         if installed(dep, linux) is None or force:
             install(dep, accept_license=accept_license, force=force, log=log, linux=linux)
