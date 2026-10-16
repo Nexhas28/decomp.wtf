@@ -1756,7 +1756,7 @@ function renderSessions(sessions) {
   }).join("");
   const own = new Set(sessions.map((s) => s.agent));
   const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
-  const ext = outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span></div>
+  const ext = outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span>${a.startsWith("@") ? "" : `<button class="ghost" data-kick="${esc(a)}" type="button" title="Cut this agent off: what it claimed goes back to the others">Disconnect</button>`}</div>
       <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join("");
   $("noSessions").hidden = sessions.length + outside.length > 0;
   // Same content as last time: leave the DOM alone. The poll runs every second or two, and replacing a button
@@ -1765,6 +1765,15 @@ function renderSessions(sessions) {
   box.dataset.sig = mine + ext;
   box.innerHTML = mine + ext;
   box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+  box.querySelectorAll("[data-kick]").forEach((b) => {
+    b.onclick = async () => {
+      const who = b.dataset.kick;
+      if (!confirm(`Disconnect ${who}? The functions it's working on go back to the others, and anything else it tries here is refused.`)) return;
+      const r = await api("/api/agents/disconnect", { method: "POST", body: { name: who } }).catch((e) => { toast(esc(e.message), "err"); });
+      if (r) toast(`Disconnected ${esc(who)}.`);
+      poll(false);
+    };
+  });
   box.querySelectorAll("[data-stop]").forEach((b) => {
     b.onclick = async () => {
       await api("/api/agents/stop", { method: "POST", body: { id: b.dataset.stop, remove: !!b.dataset.remove } }).catch((e) => toast(esc(e.message), "err"));

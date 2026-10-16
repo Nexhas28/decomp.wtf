@@ -1135,6 +1135,23 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             manager.stop(data.get("id") or None)
         return JSONResponse({"ok": True})
 
+    @mcp.custom_route("/api/agents/disconnect", methods=["POST"])
+    async def api_agents_disconnect(request: Request) -> Response:
+        """Cut off an outside agent ({name}): its claims go back to the others and its tool calls are refused."""
+        if (bad := guard(request, write=True)):
+            return bad
+        name = str((await body(request)).get("name") or "")
+        if any(s.agent_name == name and s.state in ("starting", "working", "waiting") for s in list(manager.sessions.values())):
+            return fail(ValueError(f"{name} is one of your helpers: stop it with its Stop button"))
+        try:
+            freed = await call(net.disconnect_agent, name)
+        except NetworkError as e:
+            return fail(e)
+        row = net.store.one("SELECT id FROM agents WHERE name=?", name)
+        if row is not None:
+            manager.assignments.pop(row["id"], None)
+        return JSONResponse({"ok": True, "released": freed})
+
     @mcp.custom_route("/api/team", methods=["GET", "POST"])
     async def api_team(request: Request) -> Response:
         """Team Call or Function Nuke on one function: GET its state; POST {slug, function, on: true|false, kind:

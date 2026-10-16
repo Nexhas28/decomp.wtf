@@ -492,6 +492,10 @@ class Agent:
     trusted: bool = False
 
 
+# A token the user disconnected keeps its hash behind this prefix: it can't sign in, and its agent is told why.
+DISCONNECTED = "disconnected:"
+
+
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -543,6 +547,9 @@ class Network:
             raise NetworkError("missing API token: add `--header \"Authorization: Bearer dn_...\"` to your MCP config")
         row = self.store.one("SELECT id,name,owner,trusted FROM agents WHERE token_hash=?", _hash_token(token))
         if row is None:
+            if self.store.one("SELECT 1 FROM agents WHERE token_hash=?", DISCONNECTED + _hash_token(token)):
+                # not "invalid API token": `decomp mcp` answers that one by getting itself a new identity
+                raise NetworkError("you were disconnected by the user in decomp.wtf: stop working on this project now")
             raise NetworkError("invalid API token")
         with self.store.tx() as db:
             db.execute("UPDATE agents SET last_seen=? WHERE id=?", (time.time(), row["id"]))
