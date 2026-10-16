@@ -306,9 +306,10 @@ def admit_retrieval(config: RetrievalConfig, registry: Registry, *, bsim=None) -
     """The corpus admission gate (B-06).
 
     A route that is requested but has no usable, permitted reference corpus is refused — the feature
-    stays disabled rather than becoming a mandatory dependency. ``bsim`` (a :class:`~decompnet.retrieval
-    .bsim.BsimIndex`) adds its own checks: usable signatures and the cold-build cost cap. When neither
-    route is enabled the gate is trivially satisfied: the feature is off by default, not an error.
+    stays disabled rather than becoming a mandatory dependency. ``bsim`` (a BSim index, see
+    :mod:`decompnet.retrieval.bsim`) adds its own checks: usable signatures and the cold-build cost
+    cap. When neither route is enabled the gate is trivially satisfied: the feature is off by default,
+    not an error.
     """
     reasons: list = []
     if config.function_id_retrieval and not registry.usable_entries():
