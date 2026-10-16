@@ -204,6 +204,16 @@ final class Projects: ObservableObject {
         }
     }
 
+    /// Delete a project from decomp.wtf: its matched work, notes and history. Its folder, and the game, stay on disk.
+    func delete(_ slug: String) async throws {
+        guard let api else { return }
+        struct Done: Decodable { let ok: Bool? }
+        let _: Done = try await api.post("/api/delete", ["slug": slug])
+        list.removeAll { $0.slug == slug }
+        if route.slug == slug { route = .home }
+        await loadList(api)
+    }
+
     func openFolder() {
         guard let api, let slug = route.slug else { return }
         Task {
