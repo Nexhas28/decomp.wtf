@@ -32,10 +32,10 @@ committed; ⏳ = in flight.
 | PR-22 rich Ghidra exporter | e33ca7e | ✅ | tests/test_ghidra.py (G-01..G-10 mocked) |
 | PR-23 Ghidra lifecycle | e33ca7e | ✅ | tests/test_ghidra.py |
 | PR-24 analysis broker | db822f7 | ✅ | tests/test_analysis.py (A-01..A-07) |
-| PR-25 REA adapter | ⏳ | ⏳ | tests/test_rea.py (E-01..E-09) |
-| PR-26 REA persistence/recovery | ⏳ | ⏳ | tests/test_rea.py |
-| PR-27 reference registry + FID | ⏳ | ⏳ | tests/test_retrieval.py (B-01..B-06) |
-| PR-28 local BSim pilot | ⏳ | ⏳ | tests/test_retrieval.py |
+| PR-25 REA adapter | 329b7ad | ✅ | tests/test_rea.py (E-01..E-09) |
+| PR-26 REA persistence/recovery | 329b7ad | ✅ | tests/test_rea.py (E-06..E-08) |
+| PR-27 reference registry + FID | 237d2a8+ba682f6 | ✅ | tests/test_retrieval.py (B-01..B-06) |
+| PR-28 local BSim pilot | 237d2a8 | ✅ | tests/test_retrieval.py |
 | PR-29 scheduler + budget + UI | 4eef5cd | ✅ | tests/test_scheduler.py (W-01, W-04, W-05) |
 | PR-30 validation + rollout | 804b983 + 70d3a2d + this report | ✅ (core) | tests/test_operations.py (O-01, O-03) |
 
@@ -43,7 +43,7 @@ committed; ⏳ = in flight.
 
 Implemented-and-executed: Q-01..Q-06, V-01..V-08, X-01, C-01..C-12, S-01..S-07, D-01..D-05,
 D-06, D-08, P-01..P-08, R-01..R-06, G-01..G-10 (mocked; real lane skips on this host), A-01..A-07,
-E-01..E-09 (in flight), B-01..B-06 (in flight), W-01, W-04, W-05, O-01, O-03.
+E-01..E-09, B-01..B-06, W-01, W-04, W-05, O-01, O-03.
 Not implemented as standalone tests: D-07 full held-out lane (P4.1 held-out validation is engine-side
 follow-up), W-02/W-03/W-06 (covered by Q-06, existing brief bounds and the benchmark manifest),
 O-02, O-04..O-08 (partially covered by existing test_network/policy fixtures; documented in
@@ -66,9 +66,10 @@ benchmarks/ABLATIONS.md as untested lanes).
 - [x] Twin reuse and fork build semantics intact (R-04/R-05; fork tests byte-identical to baseline)
 - [x] Rich Ghidra records have correct identity, coverage, provenance (G-01..G-10)
 - [x] Analysis admitted per host/format/mode, budgeted, provider-failure-safe (A-01..A-07)
-- [ ] REA pinned, schema-tested, read-only, optional — in flight (real schema discovery succeeded:
-      rea v6.4.0 tools/list captured)
-- [ ] FunctionID/BSim provenance + judge path — in flight
+- [x] REA pinned (rea-agents 6.4.0), schema-tested against the live tools/list, read-only, optional,
+      off by default (E-01..E-09 + real-lane discovery test)
+- [x] FunctionID/BSim provenance + judge path: corpus-gated, default disabled, candidates go through
+      the coordinator judge only (B-01..B-06)
 - [x] Migrations/backups/cancellation/cleanup verified (O-01 WAL-safe backup regression)
 - [x] Feature disablement exercised (FEATURE-FLAGS.md; every flag mapped to its control point)
 - [x] Integrated suite evidence retained (benchmarks/integrated-suite.txt)
@@ -77,6 +78,9 @@ benchmarks/ABLATIONS.md as untested lanes).
 
 Core correctness/efficiency work is implemented, tested and committed; optional analysis
 integrations are capability-gated adapters that default off and keep the ordinary matching path
-independent of them (the plan's own completion definition). Remaining: the two in-flight adapters
-(PR-25/26, PR-27/28) review+commit and the final integrated run — this file is updated at that
-point.
+independent of them (the plan's own completion definition).
+
+FINAL INTEGRATED RUN (16 Oct 2026, this host): 388 passed / 19 failed / 117 skipped / 30 errors.
+The 19 failures = 17 baseline environment lanes (Linux gcc/objdiff/ninja fixtures, network-dependent
+update tests) + 2 GitHub-reachability update tests; the 30 errors are byte-identical to the baseline
+environment set. Every plan PR-01..PR-30 is committed above the reviewed base 575b4a30.
