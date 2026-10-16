@@ -2363,10 +2363,11 @@ $("investigateCall").onclick = () => toggleCall("investigate");
 /* Research and Auto-fix: a researcher writes this function a note; the auto-fixer repairs its cut, sets it aside
    or hands it to the permuter. Each is one session; the buttons say while it works. */
 const RESEARCH_TIP = "A researcher looks this function up and leaves a note on how to match it (on your Claude plan; one session; its model is set under Agents > Researchers)";
+const PERMUTE_TIP = "The permuter tries thousands of small rewrites of this function's best attempt, on this computer's spare CPU (free)";
 const FIX_TIP = "The auto-fixer checks this function's cut, whether it is hand-written, and whether only the permuter can finish it, then repairs it (on your Claude plan)";
 let helpTimer = null;
 async function refreshHelp() {
-  const fn = S.fn, rb = $("researchCall"), fb = $("fixCall");
+  const fn = S.fn, rb = $("researchCall"), fb = $("fixCall"), pb = $("permuteCall");
   if (!fn || $("drawer").hidden) { clearInterval(helpTimer); helpTimer = null; return; }
   let h;
   try { h = await api(`/api/function-help?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
@@ -2374,6 +2375,10 @@ async function refreshHelp() {
   const matched = S.fnDetail && S.fnDetail.status === "matched";
   const inv = $("investigateCall");
   rb.hidden = fb.hidden = inv.hidden = !!matched;
+  pb.hidden = !!matched || S.ov.kind === "fork";
+  callButton(pb, !!h.permuter, h.permuter === "permuting" ? "Permuting…" : h.permuter === "queued" ? "Permuter: next" : "Permuter",
+    h.permuter === "permuting" ? "The permuter is on this function" : h.permuter === "queued" ? "The permuter takes it after the functions ahead of it (or once the agent holding it lets go)" : PERMUTE_TIP);
+  pb.disabled = !!h.permuter;
   if (!S.investigating && !inv.classList.contains("on")) {
     callButton(inv, false, "Investigate", h.has_research ? INVESTIGATE_TIP : "Run Research on this function first: the investigator starts from the researchers' notes");
     inv.disabled = !h.has_research;
@@ -2382,20 +2387,23 @@ async function refreshHelp() {
   callButton(fb, !!h.fix, h.fix === "fixing" ? "Auto-fixing…" : h.fix === "waiting" ? "Auto-fix: next" : "Auto-fix",
     h.fix_unavailable || (h.fix === "fixing" ? "The auto-fixer is on this function" : h.fix === "waiting" ? "The auto-fixer takes it after its current list" : FIX_TIP));
   rb.disabled = h.research; fb.disabled = !!h.fix || !!h.fix_unavailable;
-  if (h.research || h.fix) { if (!helpTimer) helpTimer = setInterval(refreshHelp, 4000); }
+  if (h.research || h.fix || h.permuter) { if (!helpTimer) helpTimer = setInterval(refreshHelp, 4000); }
   else if (helpTimer) { clearInterval(helpTimer); helpTimer = null; refreshFn(); }
 }
 async function askHelp(job) {
-  const b = $(job === "research" ? "researchCall" : "fixCall");
+  const b = $({ research: "researchCall", fix: "fixCall", permute: "permuteCall" }[job]);
   b.disabled = true;
   try {
-    await api("/api/function-help", { method: "POST", body: { slug: S.slug, function: S.fn, job } });
-    toast(job === "research" ? "A researcher is on it: its note shows up below when it's done." : "The auto-fixer is on it: it leaves a note saying what it did.", "match");
+    const r = await api("/api/function-help", { method: "POST", body: { slug: S.slug, function: S.fn, job } });
+    toast(job === "research" ? "A researcher is on it: its note shows up below when it's done."
+      : job === "permute" ? esc((r.message || "").replace(/^✅ /, ""))
+      : "The auto-fixer is on it: it leaves a note saying what it did.", "match");
   } catch (e) { toast(esc(e.message), "err"); b.disabled = false; }
   refreshHelp();
 }
 $("researchCall").onclick = () => askHelp("research");
 $("fixCall").onclick = () => askHelp("fix");
+$("permuteCall").onclick = () => askHelp("permute");
 
 async function refreshFn(first) {
   if (!S.fn) return;

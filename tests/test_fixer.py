@@ -177,6 +177,26 @@ def test_the_permuter_gets_a_wall_released_function(net, fixer_agent):
     assert net.store.one("SELECT 1 FROM search_budgets WHERE function_id=?", fn["id"]) is None
 
 
+def test_the_permuter_button_sends_a_function_for_you_even_in_a_room(net):
+    from decompnet.app import boundary
+
+    fn = net._function("func_80001038", "game")
+    started = []
+    net.permuter.start = lambda slug: started.append(slug)
+    net.links["game"] = object()  # a room member's copy: its permuter runs what it is handed
+    you, _ = net.local_agent("you")
+    assert boundary.permute_now(net, you, "game", "func_80001038").startswith("✅") and started == ["game"]
+    assert net.permuter.holds(fn["id"]) == "queued"
+    assert "already queued" in boundary.permute_now(net, you, "game", "func_80001038")
+    ev = net.store.one("SELECT detail FROM events WHERE kind='permuter' ORDER BY id DESC LIMIT 1")
+    assert ev["detail"] == "func_80001038 sent to the permuter by you"
+    net.permuter.dequeue(fn["id"])
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched' WHERE id=?", (fn["id"],))
+    with pytest.raises(NetworkError, match="only open functions"):
+        boundary.permute_now(net, you, "game", "func_80001038")
+
+
 def test_a_member_follows_the_hosts_layout(net, tmp_path):
     """The host joined D+E and moved A|B's cut: the member's copy joins, then the split pass cuts where the host's
     are."""
