@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -28,6 +29,7 @@ from .store import Store
 CLAIM_TTL = 30 * 60
 # A function an agent just released goes to the back of the queue for this long, for every agent: the next one
 # starts on something fresh instead of passing the same function back and forth. Asked for by name, it comes at once.
+log = logging.getLogger("decomp.wtf")
 RELEASE_COOLDOWN = 15 * 60
 MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their claims never mean "given up on"
 # A better source resets a function's permuter budget only when it is a material improvement (new score at most
@@ -304,6 +306,36 @@ def _action_advice(action, name: str, since: int, stale: str = "") -> str:
     }
     text = lines.get(action.kind, "")
     return (text + stale) if text else ""
+
+
+PERMUTER_HANDOFF = 0.05  # an attempt under 5% of the function's max score (same insn count, r/o/s diffs only)
+PERMUTER_MAX_INSNS = 400  # the permuter's own cap (app/permute.py MAX_INSNS)
+
+
+def near_miss(d, n_insns: int) -> bool:
+    """Whether a scored diff is the permuter's kind of near miss: under PERMUTER_HANDOFF of the function's
+    max score, the same number of instructions on both sides, and every difference a register ('r'),
+    stack-offset ('s') or reorder ('o') one. Those are the differences that come from how the C is written,
+    not what it does: the permuter's search, not an agent's. An insertion, deletion, a changed operand or a
+    different instruction means the code's shape is still wrong, which the permuter cannot fix."""
+    if d is None or d.bytes_match or not d.rows or not n_insns or n_insns > PERMUTER_MAX_INSNS:
+        return False
+    if d.score >= n_insns * 100 * PERMUTER_HANDOFF:
+        return False
+    target = sum(1 for _, t, _ in d.rows if t)
+    ours = sum(1 for _, _, c in d.rows if c)
+    if target != ours:
+        return False
+    return all(m in " ros" for m, _, _ in d.rows) and any(m != " " for m, _, _ in d.rows)
+
+
+def _handoff_text(name: str, percent: str) -> str:
+    return (f"\n\n🔁 HANDED TO THE PERMUTER: {name} is a near miss ({percent} match, same instruction count, only "
+            f"register/stack/order differences). The built-in permuter now has it, seeded with this attempt, and "
+            f"searches those rewrites on its own; whatever it finds becomes the function's best attempt (or a match)."
+            f"\n🧭 Next action: RELEASE {name} (release_function, one line on what you tried) and claim the next "
+            f"function. Don't hand-shuffle registers, temporaries or statement order on this one: that is the "
+            f"permuter's job now, and it only starts once you let go.")
 
 
 def _profile_for(proj, fn) -> dict | None:
@@ -767,6 +799,10 @@ class Network:
         cap = STRATEGY_INSNS_CAP.get(strategy, -1)
         now = time.time()
         ranked: list = []
+        # The permuter's functions (queued hand-offs, or being permuted now) are not handed to agents by strategy
+        # while a permuter is running: finishing them is its job. By name they can still be taken.
+        permuted = sorted(self._permuter_held(proj)) if proj is not None and function is None else []
+        skip_sql = f"AND f.id NOT IN ({','.join('?' * len(permuted))}) " if permuted else ""
         if strategy == "priority" and proj is not None and function is None:
             # The bounded window is admitted by a cheap proxy of the policy (twins, closeness, little effort
             # spent), never by id, and scored outside the transaction: scheduler.choose reads the store per
@@ -776,17 +812,17 @@ class Network:
             query = """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                     AND f.id NOT IN (SELECT function_id FROM claims)
                     AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
-                    AND (? = -1 OR f.n_insns <= ?)
+                    AND (? = -1 OR f.n_insns <= ?) {skip_sql}
                     AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                     {unblocked}
                     ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                         AND created_at > ?), %s f.best_score IS NULL,
                              CAST(f.best_score AS REAL) / (MAX(f.n_insns, 1) * 100) ASC, f.attempts ASC, f.id
                     LIMIT 200""" % _TWINS
-            args = (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN)
-            window = self.store.all(query.format(unblocked=_UNBLOCKED), *args)
+            args = (proj["id"], now, cap, cap, *permuted, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN)
+            window = self.store.all(query.format(unblocked=_UNBLOCKED, skip_sql=skip_sql), *args)
             if not window:
-                window = self.store.all(query.format(unblocked=""), *args)
+                window = self.store.all(query.format(unblocked="", skip_sql=skip_sql), *args)
             ranked = scheduler.choose(self, proj, list(window), len(window))
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -809,7 +845,12 @@ class Network:
                     raise NetworkError(f"{fn['name']} is hand-written assembly: no C compiles to it, so it's left out")
                 other = db.execute("SELECT agent_id, expires_at FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
                 if other is not None:
-                    raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])} "
+                    who = self._agent_name(other["agent_id"])
+                    if who == "permuter":
+                        raise NetworkError(f"{fn['name']} is being permuted right now (the permuter holds it for "
+                                           f"another {int(other['expires_at'] - now) // 60 + 1} min): it searches "
+                                           f"register/stack/order rewrites itself; claim another function")
+                    raise NetworkError(f"{fn['name']} is claimed by {who} "
                                        f"for another {int(other['expires_at'] - now) // 60} min")
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
@@ -824,17 +865,64 @@ class Network:
                         f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                             AND f.id NOT IN (SELECT function_id FROM claims)
                             AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
-                            AND (? = -1 OR f.n_insns <= ?)
+                            AND (? = -1 OR f.n_insns <= ?) {skip_sql}
                             AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                             ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                                 AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                        (proj["id"], now, cap, cap, *permuted, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                     ).fetchone()
                     if fn is None:
                         return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
         return fn
+
+    def _permuter_held(self, proj) -> set[int]:
+        """The project's functions the built-in permuter has (queued or being permuted), when one is running
+        for the project. With no permuter running nothing is held back: agents get them as before."""
+        permuter = getattr(self, "permuter", None)
+        if permuter is None or not permuter.running(proj["slug"]):
+            return set()
+        try:
+            return set(permuter.held(proj["id"]))
+        except Exception:
+            return set()
+
+    def _permuter_note(self, fn, proj) -> str:
+        """The brief's line when the permuter has the function: what it is doing and what the agent should."""
+        permuter = getattr(self, "permuter", None)
+        if permuter is None:
+            return ""
+        state = permuter.holds(fn["id"])
+        if not state:
+            return ""
+        running = permuter.running(proj["slug"])
+        if state == "permuting":
+            return (f"🔁 PERMUTER: the built-in permuter is permuting {fn['name']} right now (best score "
+                    f"{fn['best_score']}): it searches register/stack/order rewrites on its own and records what it "
+                    f"finds as the best attempt. Leave the hand-shuffling to it; only a structural change is worth "
+                    f"your compile here.")
+        hand = permuter.queue.get(fn["id"])
+        seed = f", seeded with {hand.agent}'s attempt at score {hand.score}" if hand is not None and hand.agent else ""
+        return (f"🔁 PERMUTER: {fn['name']} is queued for the built-in permuter{seed}"
+                + (": it starts as soon as nobody holds a claim on it" if running
+                   else " (no permuter is running for this project right now: start helper agents and it runs)")
+                + ". Don't hand-shuffle registers, temporaries or statement order: release it and claim the next "
+                  "function, unless you have a structural fix.")
+
+    def _permuter_handoff(self, agent: Agent, fn, proj, d, source: str) -> str:
+        """P-finisher: an agent's near miss goes to the built-in permuter with this attempt as the seed, and the
+        agent is told to release and move on. Only ROM networks have a permuter; a diff that is not the permuter's
+        kind of near miss (see near_miss) hands nothing over and returns no text."""
+        permuter = getattr(self, "permuter", None)
+        if permuter is None or agent.name == "permuter" or not near_miss(d, fn["n_insns"] or 0):
+            return ""  # (the permuter's own results never hand a function to itself)
+        permuter.enqueue(fn, source, d.score, agent.name)
+        try:
+            permuter.start(proj["slug"])  # idle or never started: the hand-off wakes it (a room member defers to its host)
+        except Exception as e:  # the agent's result stands either way
+            log.info("permuter start on hand-off of %s: %s", fn["name"], e)
+        return _handoff_text(fn["name"], scoring.percent_text(d.percent))
 
     def start_team(self, function: str, project: str, agent_ids: list[int]) -> None:
         """A Team Call: these agents share one function. The first takes the claim (yours from the GUI is let go);
@@ -923,6 +1011,8 @@ class Network:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
                          f"(each compile_and_diff renews it)")
+        if fn["status"] != "matched" and (note := self._permuter_note(fn, proj)):
+            lines.append(note)
         if fn["status"] == "matched":
             lines += [f"MATCHED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
                       "```c", fn["matched_source"].strip(), "```"]
@@ -1129,12 +1219,16 @@ class Network:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
         with telemetry.span("attempt.render"):
             rendered = d.render()
-        evidence = ""
+        evidence, tail = "", ""
         if not scratch:
             with telemetry.span("attempt.evidence"):
                 evidence = self._evidence(fn, proj, agent, d.rows, source)
-        return {"text": f"{head}\n{rendered}{mismatch}{warn}{evidence}{self.stall_note(fn['id'], agent.id)}",
-                "score": d.score, "matched": False}
+            # A near miss is the permuter's from here: it gets the attempt as its seed and the agent is told to let go
+            # (the hand-off is the next action, so the stall nudge is not added on top of it).
+            tail = self._permuter_handoff(agent, fn, proj, d, source)
+        if not tail:
+            tail = self.stall_note(fn["id"], agent.id)
+        return {"text": f"{head}\n{rendered}{mismatch}{warn}{evidence}{tail}", "score": d.score, "matched": False}
 
     # --------------------------------------------------------------- evidence
 

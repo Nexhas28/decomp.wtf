@@ -53,8 +53,8 @@ def net(tmp_path):
 
 @pytest.fixture(autouse=True)
 def guided_search(monkeypatch):
-    """The guided beam search is opt-in (plan P5 exit gate); the budget rows these tests build carry the
-    guided policy's version, so they run with it switched on. Tests of the default unset the variable."""
+    """The guided beam search is the default (DECOMPNET_GUIDED_SEARCH=0 opts out); the budget rows these tests
+    build carry the guided policy's version, so they pin it on. Tests of the default unset the variable."""
     monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
 
 
@@ -223,19 +223,22 @@ def test_q06b_context_change_resets_budgets_for_the_unit(net):
     assert row["turns_used"] == MAX_TURNS
 
 
-def test_default_policy_is_single_trajectory_unless_guided_search_is_enabled(net, monkeypatch):
-    """The guided beam search is opt-in: without DECOMPNET_GUIDED_SEARCH=1 the permuter charges and
-    stamps budgets under the single-trajectory policy (plan P5 exit gate)."""
+def test_default_policy_is_guided_and_the_env_var_opts_out(net, monkeypatch):
+    """The guided beam search is the default: with DECOMPNET_GUIDED_SEARCH unset the permuter charges and
+    stamps budgets under the guided policy; DECOMPNET_GUIDED_SEARCH=0 goes back to the single trajectory."""
     make_project(net, 3)
     fn = net.store.one("SELECT * FROM functions WHERE id=1")
     monkeypatch.delenv("DECOMPNET_GUIDED_SEARCH", raising=False)
+    assert active_policy() is SEARCH_POLICY
+    Permuter(net)._charge_turn(fn)
+    row = net.store.one("SELECT epoch, policy_version FROM search_budgets WHERE function_id=1")
+    assert row["epoch"] == SEARCH_POLICY.epoch
+    assert row["policy_version"] == SEARCH_POLICY.version
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "0")
     assert active_policy() is SINGLE_TRAJECTORY_POLICY
     Permuter(net)._charge_turn(fn)
     row = net.store.one("SELECT epoch, policy_version FROM search_budgets WHERE function_id=1")
     assert row["epoch"] == SINGLE_TRAJECTORY_POLICY.epoch
-    assert row["policy_version"] == SINGLE_TRAJECTORY_POLICY.version
-    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
-    assert active_policy() is SEARCH_POLICY
 
 
 def _reopen(net) -> Permuter:

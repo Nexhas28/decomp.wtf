@@ -394,14 +394,14 @@ def test_policy_spec_carries_seed_identity_requirements():
     assert r.seed == "job-seed-42" and r.slot_seeds and all(s.startswith("job-seed-42:slot") for s in r.slot_seeds)
 
 
-def test_single_trajectory_policy_is_default_and_guided_is_opt_in(monkeypatch):
+def test_guided_policy_is_default_and_the_env_var_opts_out(monkeypatch):
     from decompnet.search.policy import SINGLE_TRAJECTORY_POLICY, active_policy, guided_enabled
     assert SINGLE_TRAJECTORY_POLICY.beam == 1 and SINGLE_TRAJECTORY_POLICY.routing == "uniform"
     assert SINGLE_TRAJECTORY_POLICY.epoch == "single-v1"
     monkeypatch.delenv("DECOMPNET_GUIDED_SEARCH", raising=False)
-    assert not guided_enabled() and active_policy() is SINGLE_TRAJECTORY_POLICY
+    assert guided_enabled() and active_policy() is SEARCH_POLICY  # the default finisher searches guided
     monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "0")
-    assert active_policy() is SINGLE_TRAJECTORY_POLICY
+    assert not guided_enabled() and active_policy() is SINGLE_TRAJECTORY_POLICY  # the opt-out
     monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
     assert guided_enabled() and active_policy() is SEARCH_POLICY
     assert parse_policy(SINGLE_TRAJECTORY_POLICY.to_dict()) is SINGLE_TRAJECTORY_POLICY

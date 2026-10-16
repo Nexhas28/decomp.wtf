@@ -97,7 +97,7 @@ class SearchPolicy:
 SEARCH_POLICY = SearchPolicy(id="guided", version=1)
 
 # The legacy single trajectory: one candidate, downhill acceptance, no mismatch routing (base weights
-# are used unchanged). This is what runs unless guided search is switched on.
+# are used unchanged). This is what runs when guided search is switched off (DECOMPNET_GUIDED_SEARCH=0).
 SINGLE_TRAJECTORY_POLICY = SearchPolicy(id="single", version=1, beam=1, routing="uniform")
 
 _REGISTRY: dict[str, dict[int, SearchPolicy]] = {
@@ -107,12 +107,13 @@ _REGISTRY: dict[str, dict[int, SearchPolicy]] = {
 
 
 def guided_enabled() -> bool:
-    """Guided (beam + mismatch-routed) search is opt-in: DECOMPNET_GUIDED_SEARCH=1."""
-    return os.environ.get("DECOMPNET_GUIDED_SEARCH", "0") == "1"
+    """Guided (beam + mismatch-routed) search is the default; DECOMPNET_GUIDED_SEARCH=0 opts out of it
+    (back to the single trajectory). Any other value, or the variable unset, keeps it on."""
+    return os.environ.get("DECOMPNET_GUIDED_SEARCH", "1") != "0"
 
 
 def active_policy() -> SearchPolicy:
-    """The policy new runs use: guided when enabled, otherwise the single-trajectory policy."""
+    """The policy new runs use: guided unless switched off, otherwise the single-trajectory policy."""
     return SEARCH_POLICY if guided_enabled() else SINGLE_TRAJECTORY_POLICY
 
 

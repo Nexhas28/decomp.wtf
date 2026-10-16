@@ -116,8 +116,10 @@ machine code, judged by objdiff. Use only the decomp tools. Repeat for up to {co
    functions, you're shown its data next to the original's: fix what differs (order, const, statics,
    values) with edit_file until file_status says it matches; decomp.wtf then links the file.
 6. compile_and_diff says when to move on (no better after 4 compiles in a row; up to 10 for big functions):
-   then release_function with precise notes (what you tried, what is left) and claim the next. Very large
-   functions: get the structure right first; a near miss is worth the extra compiles.
+   then release_function with precise notes (what you tried, what is left) and claim the next. A near miss
+   (same instruction count, only register/stack/order differences) is handed to the built-in permuter the
+   moment you compile it: the result says so. Release it then; the permuter does the shuffling. Very large
+   functions: get the structure right first; that is where your compiles count.
 
 Rules: C/C++ only (no inline asm, asm functions or asm includes); don't touch targets, configs or build
 scripts (the tools refuse). Write code a human would have written: match the file's style and names.

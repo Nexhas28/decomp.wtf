@@ -106,8 +106,9 @@ def _holdout(v):
 #: The governed blocks of project.toml: section -> key -> (default, validator, env override or None, read).
 #: ``read`` is True when the runtime reads the key (from the project or through its env override) and False when
 #: the key is declared but has no runtime reader yet; the effective-configuration diagnostic says so.
-#: Defaults follow what this checkout actually does: guided search, structural rerank, analysis, REA and the
-#: optional retrieval routes stay off until measured (RECHECK-2026-10-16). An env override is the variable
+#: Defaults follow what this checkout actually does: guided search is on (the permuter is the default finisher
+#: for near misses); structural rerank, analysis, REA and the optional retrieval routes stay off until measured
+#: (RECHECK-2026-10-16). An env override is the variable
 #: that governs the behaviour today; when set it wins over the project value.
 CONFIG_SCHEMA: dict[str, dict[str, tuple]] = {
     "matching": {
@@ -118,8 +119,8 @@ CONFIG_SCHEMA: dict[str, dict[str, tuple]] = {
         "score_only_permuter": (True, _bool, None, False),
     },
     "search": {
-        "policy": ("single_v1", _choice("single_v1", "guided_v1"),
-                   ("DECOMPNET_GUIDED_SEARCH", lambda e: "guided_v1" if e == "1" else "single_v1"), True),
+        "policy": ("guided_v1", _choice("single_v1", "guided_v1"),
+                   ("DECOMPNET_GUIDED_SEARCH", lambda e: "single_v1" if e == "0" else "guided_v1"), True),
         "structural_rerank": (False, _bool, ("DECOMPNET_STRUCTURAL_RERANK", lambda e: e == "1"), True),
         "seed": (None, _opt_int, None, False),
         "portfolio_size": (4, _int(1), None, False),
