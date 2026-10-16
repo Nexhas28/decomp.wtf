@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from .. import compiler_profiles as profiles
-from .. import retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
+from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from
 from ..rom import detect, match, split
@@ -2088,7 +2088,7 @@ class RomNetwork(Network):
         meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
         return {"bios": meta.get("bios"), "asm_reason": meta.get("asm_code") or (
                     f"the same code as {meta['asm_twin']}, which is assembly" if meta.get("asm_twin") else None),
-                "for_agents": bool(meta.get("for_agents"))}
+                "for_agents": bool(meta.get("for_agents")), "needs_symbols": linkblock.summary(meta)}
 
     def give_to_agents(self, slug: str, name: str, give: bool = True) -> dict:
         """A person's say over a function set aside as a BIOS call or hand-written assembly. give: agents get it

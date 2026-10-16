@@ -2243,8 +2243,15 @@ async function refreshFn(first) {
 /* Set aside (a BIOS call, hand-written assembly): why, and a person's say: give it to agents anyway, or back. */
 function renderAside(d) {
   const box = $("fnAside"), aside = d.status === "asm", given = d.status === "open" && d.for_agents;
-  box.hidden = !(aside || given) || S.ov.room?.role === "guest";
+  const needs = d.status === "open" && !given && d.needs_symbols;
+  box.hidden = !(aside || given || needs) || S.ov.room?.role === "guest";
   if (box.hidden) return;
+  if (needs) {  // the C isn't the problem: its symbols are, so agents get it last and are told to sort them out first
+    $("fnAsideText").textContent = `Needs symbols first: ${d.needs_symbols}`;
+    $("fnAsideBtn").hidden = true;
+    return;
+  }
+  $("fnAsideBtn").hidden = false;
   const why = d.bios || d.asm_reason;
   $("fnAsideText").textContent = aside
     ? (d.bios ? `This is BIOS code: ${d.bios}. Agents and the autopilot leave it alone.`
