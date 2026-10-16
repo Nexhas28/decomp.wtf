@@ -19,7 +19,7 @@ sources:
 slinky reads a YAML file that lists each segment of a binary and the object files that belong in it, then writes a linker script for GNU `ld` or LLVM `lld` [^repo]. For matching decompilation this produces a linker layout that rebuilds the original ROM addresses, and it allows fixed VRAM addresses per segment. Its YAML input is easier to change than a hand-written linker script when files are added or moved.
 
 ## Local install
-Path `local-tools/slinky/`, version 0.6.0 (tag, commit d01d5c1), entry point `bin/slinky-cli`. Built from source with `cargo install --locked` and runs natively on macOS arm64.
+Path `local-tools/slinky/`, version 0.6.0 (tag, commit d01d5c1), entry point `bin/slinky-cli`. Prebuilt Apple Silicon binary from the upstream GitHub release (no build); runs natively on macOS arm64.
 
 ## Examples
 ```bash

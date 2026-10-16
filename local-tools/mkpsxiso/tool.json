@@ -2,12 +2,14 @@
   "name": "mkpsxiso",
   "repo": "https://github.com/Lameguy64/mkpsxiso",
   "version": "v2.30",
-  "sha256": null,
+  "sha256": "a64d4d57d78ce57cd810a6a044602ce3cf1b552ca7c7e8675518f554206e0b49",
   "category": "disc-image",
-  "platforms": ["psx"],
+  "platforms": [
+    "psx"
+  ],
   "runs_on": "macos-arm64-native",
   "entry": "bin/mkpsxiso",
   "test": "test.sh",
   "status": "pass",
-  "notes": "Contains mkpsxiso and dumpsxiso (both in bin/), built from tag v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214) with CMake Release on macOS arm64. Source was cloned, not downloaded as an archive, so sha256 is null. test.sh builds a small BIN from an XML project, extracts it with dumpsxiso and compares files byte for byte: PASS."
+  "notes": "Prebuilt binaries mkpsxiso and dumpsxiso from the upstream GitHub release v2.30 (asset mkpsxiso-2.30-Darwin.zip, a universal x86_64+arm64 build; sha256 is of that zip). The earlier CMake build is kept aside in bin.local-build/. test.sh builds a small ISO from a tiny XML/file set with mkpsxiso and reads it back with dumpsxiso. Passed on 2026-10-16 with these binaries."
 }

@@ -2,12 +2,14 @@
   "name": "slinky",
   "repo": "https://github.com/decompals/slinky",
   "version": "0.6.0",
-  "sha256": null,
+  "sha256": "4c2c0db5a9f185cfd02d4a0fb4865b506a5a76dda6f008677b5adaaef1c07fb9",
   "category": "linker-script-generator",
-  "platforms": ["n64"],
+  "platforms": [
+    "n64"
+  ],
   "runs_on": "macos-arm64-native",
   "entry": "bin/slinky-cli",
   "test": "test.sh",
   "status": "pass",
-  "notes": "Built from source at tag 0.6.0 (commit d01d5c1) with cargo install --locked --path slinky-cli --root local-tools/slinky. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure."
+  "notes": "Prebuilt Apple Silicon binary from the upstream GitHub release 0.6.0 (asset slinky-cli-aarch64-apple-darwin.tar.gz; sha256 is of that archive). Mach-O arm64; `slinky-cli --version` reports 0.6.0. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure. Passed on 2026-10-16 with this binary."
 }

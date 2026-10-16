@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-# RetDec decompiler (x86_64 build, runs under Rosetta 2). Usage: ./run input.elf -o out.c
-exec arch -x86_64 "$(cd "$(dirname "$0")" && pwd)/bin/retdec-decompiler" "$@"
+# RetDec decompiler (Homebrew Apple Silicon build). Usage: ./run input.elf -o out.c
+exec "$(cd "$(dirname "$0")" && pwd)/bin/retdec-decompiler" "$@"

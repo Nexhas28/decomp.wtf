@@ -58,7 +58,7 @@ from) and uses it in two places (`src/decompnet/app/localtools.py`):
 | [ndstool](./ndstool/) | rom-packer | pass | https://github.com/devkitPro/ndstool | 76e8b681bb225d945a48852821e03114e6c7ce1c | `ndstool/test.sh` |
 | [nodtool](./nodtool/) | disc-image-extract-convert | pass | https://github.com/encounter/nod | v2.0.0-alpha.12 | `nodtool/test.sh` |
 | [pcsx-redux-tools](./pcsx-redux-tools/) | object-converter | pass | https://github.com/grumpycoders/pcsx-redux | e7ced7b681296ace22f7847f7bb3c9a206315571 | `pcsx-redux-tools/test.sh` |
-| [pigment64](./pigment64/) | texture-converter | pass | https://github.com/decompals/pigment64 | 0.6.3 (commit 0fa6b5cf41bb8ec0cf6b82687076931a2e5552c5) | `pigment64/test.sh` |
+| [pigment64](./pigment64/) | texture-converter | pass | https://github.com/decompals/pigment64 | 0.6.3 (release binary) | `pigment64/test.sh` |
 | [pret-gba-tools](./pret-gba-tools/) | asset-converter | pass | https://github.com/pret/pokeemerald | 731ad5bfd6e6f265508d0efcca0ba42f9dcf5881 | `pret-gba-tools/test.sh` |
 | [pygfxd](./pygfxd/) | disassembler | pass | https://github.com/ethteck/pygfxd | fd11c99 | `pygfxd/test.sh` |
 | [pypcode](./pypcode/) | disassembler | pass | https://github.com/angr/pypcode | v4.0.1 | `pypcode/test.sh` |
