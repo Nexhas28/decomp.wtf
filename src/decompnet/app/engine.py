@@ -23,9 +23,9 @@ import threading
 import time
 from pathlib import Path
 
-from .. import scoring, seeds, similarity, snapshots, toolchains
+from .. import retrieval, scoring, seeds, similarity, snapshots, toolchains
 from ..elfobj import FunctionObj
-from ..network import Agent, Network, NetworkError, _hash_token
+from ..network import Agent, Network, NetworkError, _hash_token, config_from
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -138,6 +138,10 @@ class RomNetwork(Network):
         self._ops: dict[int, dict] = {}  # project id -> look-alike index
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
+        # Retrieval indexes (plan P10.2/P10.3): None = not loaded yet; a later loader/PR injects the
+        # corpus-built Function ID and BSim indexes. Retrieval stays off until then (and by default).
+        self.retrieval_fid: retrieval.FunctionIdIndex | None = None
+        self.retrieval_bsim: retrieval.BsimIndex | None = None
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from .permute import Permuter
         from .twins import Twins
@@ -728,7 +732,111 @@ class RomNetwork(Network):
             src = self.store.one("SELECT matched_source FROM functions WHERE project_id=? AND name=?", proj["id"], best["name"])
             if src and src["matched_source"]:
                 lines += ["", f"Matching C of {best['name']}:", "```c", src["matched_source"].strip()[:4000], "```"]
-        return "\n".join(lines)
+        return "\n".join(self._retrieval_brief(proj, fn, lines))
+
+    # --------------------------------------------------- retrieval routes (P10.4/P10.5)
+    # Candidates only: retrieval suggests, compile_and_diff decides. Match state is never touched here.
+
+    def _bsim_target_signature(self, fn, proj):
+        """The BSim signature of one target function, from its stored assembly (the local pilot, P10.3).
+        None when there is no assembly to sign."""
+        if not (fn["asm"] or "").strip():
+            return None
+        cfg = json.loads(proj["config"])
+        profile = (cfg.get("compiler") or {}).get("toolchain", "")
+        return retrieval.BsimSignature.from_lines(
+            fn["name"], fn["asm"].splitlines(), processor=proj["arch"] or "mips", mode="",
+            profile=profile, program_digest=snapshots.target_digest(fn))
+
+    def _retrieval_lookup(self, fn, proj) -> list:
+        """(route_step, lane_result) for every enabled retrieval step, in route order: the result is
+        the lane's answer even when empty/skipped, so the brief can explain *why* nothing came back.
+        Off by default: returns [] before touching any lane or index."""
+        config = config_from(proj)
+        if not (config.function_id_retrieval or config.bsim_retrieval):
+            return []
+        registry = self.load_reference_sources(proj["id"])
+        plan = retrieval.route_plan(config, registry, bsim=self.retrieval_bsim)
+        fid_index = self.retrieval_fid or retrieval.FunctionIdIndex(registry)
+        rows: list = []
+        for step in plan:
+            if step.name not in ("function_id", "bsim") or not step.enabled:
+                continue
+            if step.name == "function_id":
+                result = retrieval.FidLane(fid_index, registry, config).lookup(
+                    snapshots.target_digest(fn), proj["arch"] or "mips", "")
+                rows.append((step, result))
+            elif self.retrieval_bsim is not None:
+                target = self._bsim_target_signature(fn, proj)
+                result = (retrieval.BsimLane(self.retrieval_bsim, registry, config)
+                          .query(target) if target is not None else None)
+                rows.append((step, result))
+        return rows
+
+    def retrieval_candidates(self, fn, project) -> list:
+        """The routed retrieval candidate list for one function (plan P10.4): empty when the project
+        has no retrieval route enabled or nothing is admitted. One dict per candidate,
+        {"route", "candidate", "requires_verification": True} — retrieval never touches match state."""
+        proj = project if isinstance(project, dict) else self._project(project)
+        out = []
+        for step, result in self._retrieval_lookup(fn, proj):
+            for candidate in (result.candidates if result is not None else []):
+                out.append({"route": step.name, "candidate": candidate,
+                            "requires_verification": True})
+        return out
+
+    def retrieval_leakage_check(self, slug: str, answers: dict) -> list:
+        """The project's admitted corpus against benchmark answers (P10.5/B-05): flag any answer
+        accidentally present in the retrieval corpus, from the engine's persisted registry."""
+        proj = self._project(slug)
+        return self.load_reference_sources(proj["id"]).leakage_check(answers)
+
+    def _retrieval_brief(self, proj, fn, lines: list) -> list:
+        """Append routed retrieval candidates to a find_similar brief (plan P10.4). Every candidate
+        is labelled requires-verification. With every flag off (the default) the brief is exactly the
+        pre-retrieval text."""
+        config = config_from(proj)
+        if not (config.function_id_retrieval or config.bsim_retrieval):
+            return lines
+        registry = self.load_reference_sources(proj["id"])
+        plan = retrieval.route_plan(config, registry, bsim=None)
+        lookups = {step.name: result for step, result in self._retrieval_lookup(fn, proj)}
+        steps = [s for s in plan if s.name in ("function_id", "bsim")]
+        if not any(s.enabled for s in steps):
+            lines += ["", "### Retrieval routes (disabled)",
+                      *(f"- {s.name}: {s.reason}" for s in steps)]
+            return lines
+        lines += ["", "### Retrieval candidates — requires verification (compile & diff before trusting)"]
+        for step in steps:
+            if not step.enabled:
+                lines.append(f"- {step.name}: {step.reason}")
+                continue
+            result = lookups.get(step.name)
+            if result is None:
+                lines.append(f"- {step.name}: enabled, but no local index is loaded yet")
+                continue
+            if not result.ok():
+                lines.append(f"- {step.name}: {result.reason}")
+                continue
+            if step.name == "function_id":
+                if not result.candidates:
+                    lines.append("- function_id: no known-library hits")
+                for c in result.candidates:
+                    label = c.suggested_name or c.hit.name
+                    src = c.source_location or "no reusable source (evidence only)"
+                    lines.append(f"- [function_id] {label} ({c.hit.library} {c.hit.corpus_version}) "
+                                 f"source {src} — REQUIRES VERIFICATION")
+            else:
+                if not result.candidates:
+                    lines.append("- bsim: no similar reference functions above the floor")
+                for c in result.candidates:
+                    if c.evidence_only:
+                        lines.append(f"- [bsim] {c.key} ({c.similarity * 100:.0f}% similar) — evidence only, "
+                                     "no reusable source — REQUIRES VERIFICATION")
+                    else:
+                        lines.append(f"- [bsim] {c.key} ({c.similarity * 100:.0f}% similar) source "
+                                     f"{c.source_location} — REQUIRES VERIFICATION")
+        return lines
 
     # ------------------------------------------------------------------ agent tools for ROMs
 

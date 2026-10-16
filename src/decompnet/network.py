@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scheduler, scoring, snapshots, telemetry
+from . import policy, retrieval, scheduler, scoring, snapshots, telemetry
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
@@ -51,6 +51,30 @@ STRATEGIES = {
 
 class NetworkError(Exception):
     """An error meant to be shown to the agent as-is."""
+
+
+# The optional retrieval block of a project's config JSON (plan Section 18.9): every flag defaults
+# off, so projects without the block behave exactly as before.
+RETRIEVAL_KEYS = ("function_id_retrieval", "bsim_retrieval", "external_queries", "route_order",
+                  "bsim_max_cold_cost")
+
+
+def config_from(proj) -> retrieval.RetrievalConfig:
+    """`retrieval.config_from(proj)`: parse the optional ``retrieval`` block of a project's config JSON
+    into a :class:`decompnet.retrieval.RetrievalConfig`. Unknown keys are rejected loudly — a typo must
+    not silently disable (or enable) a route — and every flag defaults off (P10.5)."""
+    cfg = json.loads(proj["config"]) if isinstance(proj["config"], str) else (proj["config"] or {})
+    block = cfg.get("retrieval", {}) or {}
+    if not isinstance(block, dict):
+        raise NetworkError("project config `retrieval` must be a table of retrieval flags")
+    unknown = sorted(set(block) - set(RETRIEVAL_KEYS))
+    if unknown:
+        raise NetworkError(f"unknown retrieval config key(s) {', '.join(unknown)}; "
+                           f"known keys: {', '.join(RETRIEVAL_KEYS)}")
+    try:
+        return retrieval.RetrievalConfig.from_dict(block)
+    except ValueError as e:
+        raise NetworkError(f"bad retrieval config: {e}") from e
 
 
 @dataclass
@@ -868,6 +892,59 @@ class Network:
                 f"{r['matches']} functions / {r['insns']} insns" for i, r in enumerate(s["leaderboard"][:10])]
         return "\n".join(out)
 
+    # ------------------------------------------------------- reference sources (P10.1, 18.6)
+    # The versioned retrieval registry, persisted as reference_sources rows: each project admits its
+    # own reference corpus (project_id), and project_id NULL holds the operator's shared corpus.
+
+    def save_reference_sources(self, registry: retrieval.Registry, project_id: int | None = None) -> None:
+        """Persist a retrieval.Registry as reference_sources rows (plan Section 18.6): the reference
+        corpus every retrieval index is admitted against. Saving replaces the rows of that scope
+        (project or shared corpus) wholesale; the registry identity (name/schema/revision) is kept in
+        settings. Additive schema only — existing databases migrate in place."""
+        with self.store.tx() as db:
+            db.execute("DELETE FROM reference_sources WHERE project_id IS ?", (project_id,))
+            now = time.time()
+            for entry in registry:
+                db.execute(
+                    "INSERT INTO reference_sources(entry_id, project_id, repository, revision, source_location, "
+                    "toolchain, profile, target_digest, processor, mode, provenance, usage_restrictions, "
+                    "source_available, source_digest, holdout, created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (entry.entry_id, project_id, entry.repository, entry.version, entry.source_location,
+                     entry.toolchain, entry.profile, entry.target_identity, entry.processor, entry.mode,
+                     entry.provenance, json.dumps(list(entry.usage_restrictions)),
+                     int(entry.source_available), entry.source_digest, int(entry.holdout), now))
+            db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                       ("retrieval_registry_meta" if project_id is None else
+                        f"retrieval_registry_meta:{project_id}",
+                        json.dumps({"name": registry.name, "schema": registry.schema,
+                                    "revision": registry.revision})))
+
+    def load_reference_sources(self, project_id: int | None = None) -> retrieval.Registry:
+        """Rebuild the retrieval.Registry from reference_sources rows. With a project id, that project's
+        admitted corpus; with None, every row (shared and per-project) for operator inspection."""
+        if project_id is None:
+            rows = self.store.all("SELECT * FROM reference_sources ORDER BY project_id IS NOT NULL, entry_id")
+        else:
+            rows = self.store.all("SELECT * FROM reference_sources WHERE project_id IS ? ORDER BY entry_id",
+                                  project_id)
+        meta = self.store.one("SELECT value FROM settings WHERE key=?",
+                              "retrieval_registry_meta" if project_id is None else
+                              f"retrieval_registry_meta:{project_id}")
+        meta = json.loads(meta["value"]) if meta else {}
+        entries = [retrieval.ReferenceEntry(
+            entry_id=r["entry_id"], repository=r["repository"], version=r["revision"],
+            source_location=r["source_location"], toolchain=r["toolchain"], profile=r["profile"],
+            target_identity=r["target_digest"], processor=r["processor"], mode=r["mode"],
+            provenance=r["provenance"], usage_restrictions=tuple(json.loads(r["usage_restrictions"] or "[]")),
+            source_available=bool(r["source_available"]), source_digest=r["source_digest"],
+            holdout=bool(r["holdout"])) for r in rows]
+        registry = retrieval.Registry.from_json(json.dumps({
+            "schema": int(meta.get("schema", retrieval.REGISTRY_SCHEMA)),
+            "name": str(meta.get("name", "")), "revision": int(meta.get("revision", 0)),
+            "entries": [e.to_dict() for e in entries]}))
+        return registry
+
     # ------------------------------------------------------------- moderation
     # Operator-only actions (CLI), for takedown requests and GDPR erasure requests.
 
@@ -879,6 +956,7 @@ class Network:
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
+            db.execute("DELETE FROM reference_sources WHERE project_id=?", (proj["id"],))
             db.execute("DELETE FROM search_budgets WHERE function_id NOT IN (SELECT id FROM functions)")
             db.execute("DELETE FROM projects WHERE id=?", (proj["id"],))
         return len(ids)
