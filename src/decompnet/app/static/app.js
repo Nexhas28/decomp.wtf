@@ -584,7 +584,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
-  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); loadFixer(); }
+  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); loadFixer(); loadResearcher(); }
   if (tab === "team") renderTeam();
   if (tab === "source" && S.ov) renderSource(S.ov);
   if (tab === "settings") renderProjectSettings();
@@ -1833,8 +1833,40 @@ function renderFixer() {
   };
 }
 
+/* Researchers' model and effort: the function page's Research button, and Job: Research with Claude Code on Tiered
+   (a researcher never runs tiered). */
+const RS = { st: null };
+async function loadResearcher() {
+  try { RS.st = await api("/api/researcher"); } catch { return; }
+  renderResearcher();
+  if (S.tab === "agents") renderLauncher($("launcher"));  // its label names the researchers' model
+}
+const researchModelName = () => {
+  const m = RS.st && RS.st.models.find((x) => x.id === RS.st.settings.model);
+  return m ? m.name.replace(/ 5\.5$/, "") : (RS.st ? RS.st.settings.model : "Sonnet");
+};
+function renderResearcher() {
+  const box = $("researchBody"), st = RS.st;
+  if (!box || !st) return;
+  const set = st.settings, known = st.models.some((m) => m.id === set.model);
+  const models = st.models.map((m) => `<option value="${esc(m.id)}" ${m.id === set.model ? "selected" : ""}>${esc(m.name)} — ${esc(m.note)}</option>`).join("")
+    + (known ? "" : `<option value="${esc(set.model)}" selected>${esc(set.model)}</option>`);
+  const efforts = st.efforts.map((e) => `<option value="${esc(e)}" ${e === set.effort ? "selected" : ""}>${esc(e)}</option>`).join("");
+  box.innerHTML = `<p class="muted small">Used by the <b>Research</b> button on a function, and by Claude Code helpers started with Job: Research on Tiered. (Pick another model in the launcher to override it for those.)</p>
+    <div class="lz-row">
+      <label class="field"><span>Model</span><select data-rs="model">${models}</select></label>
+      <label class="field"><span>Effort</span><select data-rs="effort">${efforts}</select></label>
+    </div>`;
+  const save = async (change) => {
+    try { RS.st = await api("/api/researcher", { method: "POST", body: change }); renderResearcher(); if (S.tab === "agents") renderLauncher($("launcher")); }
+    catch (e) { toast(esc(e.message), "err"); loadResearcher(); }
+  };
+  box.querySelector('[data-rs="model"]').onchange = (e) => save({ model: e.target.value });
+  box.querySelector('[data-rs="effort"]').onchange = (e) => save({ effort: e.target.value });
+}
+
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
-const LZ = { kind: null, model: "", count: 1, per: null, focus: "default", role: "match" };
+const LZ = { kind: null, model: "", count: 1, per: null, focus: "default", role: "match", keepGoing: false };
 /* The launcher's Focus menu: which functions new helpers take. Default leaves claiming as it always was. */
 const FOCUS = [{ id: "default", name: "Default" }, { id: "quick", name: "Quick Wins", note: "small functions only" },
   { id: "close", name: "Close Calls", note: "functions already 90%+ matched" }];
@@ -1852,7 +1884,7 @@ function jobSelect() {
 function jobNote(a) {
   if (LZ.role !== "researcher") return "";
   const web = a.id === "claude" ? "the project's notes and GitHub" : "the project's notes (only Claude Code helpers can read GitHub)";
-  return `<p class="muted small"><b>Research</b>: these helpers match nothing themselves. They read ${web} and leave each open function a short note with tips, so the matching helpers get it right sooner.${a.id === "claude" && LZ.model === "tiered" ? " They use Sonnet instead of Tiered." : ""}</p>`;
+  return `<p class="muted small"><b>Research</b>: these helpers match nothing themselves. They read ${web} and leave each open function a short note with tips, so the matching helpers get it right sooner.${a.id === "claude" && LZ.model === "tiered" ? ` They use ${esc(researchModelName())} (set under Researchers) instead of Tiered.` : ""}</p>`;
 }
 /* A new Claude Code helper starts tiered: Haiku, Sonnet or Opus picked per function. Other agents: their default. */
 const defaultModel = (kind) => (kind === "claude" ? "tiered" : "");
@@ -1887,7 +1919,7 @@ function launchLabel(a, model, count) {
     return `Start ${picked[0] ? picked[0].name : "API model"}${count > 1 ? ` × ${count}` : ""}`;
   }
   const research = LZ.role === "researcher";  // researchers run Sonnet where matchers would run tiered
-  const shown = research && model === "tiered" ? "Sonnet" : model ? modelName(a, model) : "";
+  const shown = research && model === "tiered" ? researchModelName() : model ? modelName(a, model) : "";
   return `Start ${a.name}${research ? " researcher" : ""}${shown ? ` · ${shown}` : ""}${count > 1 ? ` × ${count}` : ""}`;
 }
 
@@ -1900,6 +1932,7 @@ async function startAgents(a, model, count, btn, extra = {}) {
     if (LZ.starred && LZ.role !== "researcher" && (S.ov?.priority || []).length) options.only_starred = true;
     if (LZ.role && LZ.role !== "match") options.role = LZ.role;
     else if (LZ.focus && LZ.focus !== "default") options.focus = LZ.focus;
+    if (LZ.keepGoing && LZ.role !== "researcher") options.keep_going = true;
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
     S.st.settings.launcher = { kind: a.id, model: model || "", count };
     if (model && a.id !== "api") {
@@ -1953,6 +1986,7 @@ function renderLauncher(box, compact = false) {
         ${LZ.role === "researcher" ? "" : focusSelect()}
         <span class="grow"></span>
         <button class="primary" data-act="start" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button></div>
+      ${LZ.role === "researcher" ? "" : `<label class="check"><input type="checkbox" data-f="keep" ${LZ.keepGoing ? "checked" : ""}><span><b>Keep going</b> even when sessions match nothing: normally a helper stops itself after 3 sessions in a row that compile nothing (it keeps giving up on hard functions). Real errors still stop it.</span></label>`}
       ${LZ.role === "researcher" ? "" : `<label class="check"><input type="checkbox" data-f="starred" ${LZ.starred && (S.ov?.priority || []).length ? "checked" : ""} ${(S.ov?.priority || []).length ? "" : "disabled"}><span><b>Only ★ Next in line</b> (${(S.ov?.priority || []).length} pinned): work just on the starred functions and stop when they're all done.${(S.ov?.priority || []).length ? "" : " Open a function and click ★ Next first."}</span></label>`}
         ${jobNote(a)}
         <p class="muted small">${a.id === "api" ? "A built-in agent loop drives the model through the decomp tools." : esc(a.signin)} Each agent takes a different function; a fresh session every few functions keeps its context small.</p>` : ""}
@@ -1967,6 +2001,8 @@ function renderLauncher(box, compact = false) {
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(8, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(20, Number(per.value) || 4)); };
+  const keep = box.querySelector('[data-f="keep"]');
+  if (keep) keep.onchange = () => { LZ.keepGoing = keep.checked; };
   const starred = box.querySelector('[data-f="starred"]');
   if (starred) starred.onchange = () => { LZ.starred = starred.checked; };
   const focus = box.querySelector('[data-f="focus"]');
@@ -2291,7 +2327,7 @@ $("nukeCall").onclick = () => toggleCall("nuke");
 
 /* Research and Auto-fix: a researcher writes this function a note; the auto-fixer repairs its cut, sets it aside
    or hands it to the permuter. Each is one session; the buttons say while it works. */
-const RESEARCH_TIP = "A researcher looks this function up and leaves a note on how to match it (on your Claude plan; one session)";
+const RESEARCH_TIP = "A researcher looks this function up and leaves a note on how to match it (on your Claude plan; one session; its model is set under Agents > Researchers)";
 const FIX_TIP = "The auto-fixer checks this function's cut, whether it is hand-written, and whether only the permuter can finish it, then repairs it (on your Claude plan)";
 let helpTimer = null;
 async function refreshHelp() {
