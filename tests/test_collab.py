@@ -490,3 +490,69 @@ def test_one_attempt_asks_the_host_once(judged):
     answer["host"] = {"score": 0, "matched": True}
     res = guest.attempt(agent, "shop_open", src + " ", "test")
     assert res["matched"] and len(asked) == 2 and _fn(guest)["status"] == "matched"
+
+
+# -- claims: the host hands them out, this copy must be able to take them (stubbed host answers)
+
+@pytest.fixture
+def claims(pair, monkeypatch):
+    """func_80010000 is a BIOS stub in this copy. `offers`: what the stubbed host's /collab/claim answers next
+    (an exception: raised); `calls`: every other host call."""
+    host, guest, link, client, code = pair
+    with guest.store.tx() as db:
+        db.execute("UPDATE functions SET status='asm', meta=? WHERE name='func_80010000'",
+                   (json.dumps({"bios": "B0:0C stub"}),))
+    offers, calls = [], []
+
+    def claim(agent, function, strategy):
+        answer = offers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def call(route, agent, /, **data):
+        calls.append((route, data.get("function")))
+        if isinstance(call.answer, Exception):
+            raise call.answer
+        return call.answer
+    call.answer = ""
+    monkeypatch.setattr(link, "claim", claim)
+    monkeypatch.setattr(link, "call", call)
+    monkeypatch.setattr(link, "sync", lambda: None)
+    monkeypatch.setattr(guest, "_brief", lambda fn, agent, header="": f"{header} {fn['name']}")  # no asm here
+    agent, _ = guest.local_agent("claude-1")
+    return guest, agent, offers, calls, call
+
+
+def test_a_host_offer_this_copy_cant_take_is_given_back(claims):
+    guest, agent, offers, calls, call = claims
+    offers += ["func_80010000", "shop_open"]
+    assert "CLAIMED" in guest.claim(agent, "test") and _fn(guest)["id"] in {
+        r["function_id"] for r in guest.store.all("SELECT function_id FROM claims")}
+    assert calls == [("/collab/release", "func_80010000")]
+
+
+def test_a_host_that_only_offers_stubs_gives_a_clear_answer(claims):
+    from decompnet.app import engine
+
+    guest, agent, offers, calls, call = claims
+    offers += ["func_80010000"] * engine.ROOM_CLAIM_TRIES
+    with pytest.raises(NetworkError, match="kept offering functions this copy can't take"):
+        guest.claim(agent, "test")
+    assert len(calls) == engine.ROOM_CLAIM_TRIES and guest.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
+
+
+def test_a_claim_only_the_host_remembers_is_let_go(claims):
+    guest, agent, offers, calls, call = claims
+    offers += [NetworkError("you already hold func_80010000; match it or release_function it first"), "shop_open"]
+    assert "CLAIMED" in guest.claim(agent, "test", "shop_open")
+    assert calls == [("/collab/release", "func_80010000")]
+
+
+def test_release_always_reaches_the_host(claims):
+    guest, agent, offers, calls, call = claims
+    out = guest.release(agent, "func_80010000", "", "test")  # held on the host only
+    assert "Released func_80010000 in the room" in out and calls == [("/collab/release", "func_80010000")]
+    call.answer = NetworkError("you don't hold a claim on func_80010000")
+    with pytest.raises(NetworkError, match="don't hold a claim"):  # held nowhere: still says so
+        guest.release(agent, "func_80010000", "", "test")

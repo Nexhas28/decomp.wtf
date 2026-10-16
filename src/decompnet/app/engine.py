@@ -94,6 +94,8 @@ _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 # hex words ("add", "dead", "cafe") still resolve as names
 _ADDRESS = re.compile(r"^(?:0x([0-9A-Fa-f]{1,8})|([0-9A-Fa-f]{8}))$", re.I)
 # per-function compiler comments some hosts' builds honour (this one doesn't): only the room's host can judge them
+ROOM_CLAIM_TRIES = 6  # host offers this copy can't take, given back before a room claim gives up
+_HOST_HOLDS = re.compile(r"^you already hold (\S+?);")
 _DIRECTIVE = re.compile(r"/\*\s*decomp-(?:compiler|assembler|cflags)\s*:")
 
 
@@ -1631,12 +1633,49 @@ class RomNetwork(Network):
             return super().claim(agent, project, function, strategy)
         if function:
             function = self._function(function, project)["name"]
-        name = link.claim(agent, function, strategy)
-        if name is None:
-            return "Nothing left to claim in this room — every open function is matched or someone is on it. 🎉"
-        link.sync()
-        fn = self.claim_row(agent, project, name, strategy)
-        return self._brief(fn, agent, header="CLAIMED")
+        # The host hands out the claim, this copy has to be able to take it too: a BIOS stub or hand-written
+        # assembly here, or something this copy has as matched, is given straight back on the host, so the two
+        # never disagree about who holds what (an older host can't be told what to skip: ask it again).
+        refused, retried = [], False
+        for _ in range(ROOM_CLAIM_TRIES):
+            try:
+                name = link.claim(agent, function, strategy)
+            except NetworkError as e:
+                held = _HOST_HOLDS.match(str(e))
+                if held is None or retried or self._holds(agent, held.group(1), project):
+                    raise
+                self._release_on_host(link, agent, held.group(1))  # a claim this copy never got: let it go
+                retried = True
+                continue
+            if name is None:
+                return "Nothing left to claim in this room — every open function is matched or someone is on it. 🎉"
+            link.sync()
+            try:
+                fn = self.claim_row(agent, project, name, strategy)
+            except NetworkError as e:
+                self._release_on_host(link, agent, name)
+                if function or str(e).startswith("you already hold"):
+                    raise
+                refused.append(f"{name} ({e})")
+                continue
+            return self._brief(fn, agent, header="CLAIMED")
+        raise NetworkError("the room's host kept offering functions this copy can't take ("
+                           + ("; ".join(refused[-3:]) or "it says you hold one this copy doesn't")
+                           + "); they were given back. Call claim_function again, or name a function.")
+
+    def _holds(self, agent: Agent, name: str, project: str | None) -> bool:
+        try:
+            fid = self._function(name, project)["id"]
+        except NetworkError:
+            return False
+        return self.store.one("SELECT 1 FROM claims WHERE function_id=? AND agent_id=?", fid, agent.id) is not None
+
+    @staticmethod
+    def _release_on_host(link, agent: Agent, name: str) -> None:
+        try:
+            link.call("/collab/release", agent, function=name, notes="")
+        except NetworkError:
+            pass  # not held there any more (or unreachable: the host's claim expires on its own)
 
     def claim_many(self, agent: Agent, project: str | None, count: int, strategy: str = "easiest") -> str:
         """Several small functions at once (count 2-6): the next one by `strategy` and, when it's small, its
@@ -1908,9 +1947,23 @@ class RomNetwork(Network):
         if (fork := self.fork_slug(project)):
             return self.forks.release(agent, fork, function, notes)
         link = self._link(project)
-        if link is not None:
-            link.call("/collab/release", agent, function=self._function(function, project)["name"], notes=notes)
-        return super().release(agent, function, notes, project)
+        if link is None:
+            return super().release(agent, function, notes, project)
+        # always tell the host, even when this copy has no claim: the host's claim is the one that blocks
+        name = self._function(function, project)["name"]
+        try:
+            link.call("/collab/release", agent, function=name, notes=notes)
+            on_host = True
+        except NetworkError as e:
+            if "don't hold a claim" not in str(e):
+                raise
+            on_host = False
+        try:
+            return super().release(agent, function, notes, project)
+        except NetworkError:
+            if not on_host:
+                raise
+            return f"Released {name} in the room (this copy had no claim on it). Call claim_function for a new one."
 
     def edit_context(self, agent: Agent, project: str | None, old: str, new: str, message: str,
                      function: str | None = None) -> str:
