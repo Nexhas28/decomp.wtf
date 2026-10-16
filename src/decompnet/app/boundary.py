@@ -414,11 +414,24 @@ def queue_permuter(net, agent, slug: str, function: str, reason: str = "") -> st
     """The auto-fixer's tool: hand a function whose C is right but whose registers aren't to the permuter, with
     the best attempt as its starting point. An earlier "wall" release spent its permuter budget: that is reset."""
     _own_copy(net, slug)
+    _mips_rom(net, net.project_row(slug))
+    return _to_permuter(net, agent, slug, function, "queued by the auto-fixer"
+                        + (f": {reason.strip()[:200]}" if reason.strip() else ""))
+
+
+def permute_now(net, agent, slug: str, function: str) -> str:
+    """The function page's Permuter button: the same hand-off, asked for by the user. Any ROM project, and a room
+    member's copy too (its permuter runs what is handed to it and sends a match to the host)."""
+    if net.fork_slug(slug):
+        raise NetworkError("the permuter works on ROM projects, not public decomps")
+    return _to_permuter(net, agent, slug, function, "sent to the permuter by you")
+
+
+def _to_permuter(net, agent, slug: str, function: str, what: str) -> str:
     proj = net.project_row(slug)
     permuter = getattr(net, "permuter", None)
     if permuter is None:
         raise NetworkError("this project has no permuter")
-    _mips_rom(net, proj)
     from .permute import MAX_INSNS
 
     fn = net._function(function, slug)
@@ -432,8 +445,7 @@ def queue_permuter(net, agent, slug: str, function: str, reason: str = "") -> st
         return f"{fn['name']} is already {held} by the permuter."
     with net.store.tx() as db:
         db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
-        net._event(db, proj["id"], agent.id, "permuter", f"{fn['name']} queued by the auto-fixer"
-                   + (f": {reason.strip()[:200]}" if reason.strip() else ""))
+        net._event(db, proj["id"], agent.id, "permuter", f"{fn['name']} {what}")
     permuter.enqueue(fn, fn["best_source"], fn["best_score"], agent.name)
     try:
         permuter.start(slug)

@@ -34,7 +34,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from .. import __version__, cache as ccache, hostenv, scheduler, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
-from . import agents, chat, collab, connect, localtools, tools, updates
+from . import agents, boundary, chat, collab, connect, localtools, tools, updates
 from . import fixer as fixermod
 from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
@@ -1254,14 +1254,20 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     @mcp.custom_route("/api/function-help", methods=["GET", "POST"])
     async def api_function_help(request: Request) -> Response:
         """The function page's Research and Auto-fix buttons: GET ?slug=&function= what each is doing for it (and
-        why the auto-fixer can't run here); POST {slug, function, job: "research"|"fix"} starts it."""
+        why the auto-fixer can't run here); POST {slug, function, job: "research"|"fix"|"permute"} starts it."""
         if (bad := guard(request, write=request.method == "POST")):
             return bad
         data = dict(request.query_params) if request.method == "GET" else await body(request)
         slug, function = str(data.get("slug", "")), str(data.get("function", ""))
 
+        def permuting() -> str:
+            try:
+                return net.permuter.holds(net._function(function, slug)["id"])
+            except NetworkError:
+                return ""
+
         def state() -> dict:
-            return {"fix": fixer.holds(slug, function), "fix_unavailable": fixer.why_not(slug),
+            return {"fix": fixer.holds(slug, function), "fix_unavailable": fixer.why_not(slug), "permuter": permuting(),
                     "research": manager.research_running(slug, function),
                     "has_research": bool(net.research_notes(slug, function))}
         try:
@@ -1270,8 +1276,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     await call(lambda: manager.start_research(slug, function))
                 elif data.get("job") == "fix":
                     await call(lambda: fixer.run_for(slug, function))
+                elif data.get("job") == "permute":
+                    text = await call(lambda: boundary.permute_now(net, net.local_agent("you")[0], slug, function))
+                    if text.startswith("⚠"):
+                        return fail(ValueError(text.removeprefix("⚠ ")))
+                    return JSONResponse(state() | {"message": text})
                 else:
-                    return fail(ValueError("job is research or fix"))
+                    return fail(ValueError("job is research, fix or permute"))
             return JSONResponse(state())
         except (NetworkError, ValueError, RuntimeError) as e:
             return fail(e)
