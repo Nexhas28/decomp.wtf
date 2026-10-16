@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import policy, retrieval, scheduler, scoring, snapshots, telemetry
+from . import policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config, maspsx_variant_config, variant_compiler_config
@@ -946,6 +946,33 @@ class Network:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def _validity(self, fn, source: str) -> validity.Validity:
+        """Run the undefined-behaviour guard on one candidate source.
+
+        The judge is byte-exact and therefore blind to undefined behaviour: a source
+        that reads through an uninitialised pointer can match the target's instruction
+        shapes (see decompnet.validity for the measured case). Returns an always-ok
+        verdict when the project context cannot be resolved, so the guard can never
+        turn into an outage.
+        """
+        try:
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", (fn["project_id"],))
+            ctx = self._context(fn["project_id"], fn["unit"])
+            cfg = compiler_config(Path(proj["root"]), json.loads(proj["config"]))
+        except Exception:  # pragma: no cover - defensive: never block on guard setup
+            return validity.Validity(ok=True, detail="guard skipped: context unavailable")
+        return validity.check(cfg, ctx["header"], source, compile_source)
+
+    def _flag_validity(self, db, fn, source: str, why: str, verdict) -> None:
+        """Record a validity verdict: a meta flag on the function plus an operator note."""
+        meta = fn["meta"]
+        meta = json.loads(meta) if meta else {}
+        meta["validity"] = {"why": why, **verdict.as_dict()}
+        db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                   (fn["project_id"], fn["id"], None,
+                    f"⚠ validity guard ({why}): {validity.describe(verdict)}", time.time()))
+
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
                 stale_reason: str | None = None):
@@ -990,6 +1017,20 @@ class Network:
                     db.execute("UPDATE search_budgets SET turns_used=0, epoch=?, reset_reason='better-source', "
                                "last_at=? WHERE function_id=? AND turns_used > 0",
                                (f"best-{score}", now, fn["id"]))
+                # A near-miss improvement is exactly where undefined behaviour hides (an
+                # uninitialised pointer that lands in a plausible register scores well by
+                # shape). Flag it without blocking: the match guard below is the hard gate.
+                if cur.rowcount and score <= 500:
+                    verdict = self._validity(fn, source)
+                    if not verdict.ok:
+                        self._flag_validity(db, fn, source, f"score {score}", verdict)
+            if matched:
+                verdict = self._validity(fn, source)
+                if not verdict.ok:
+                    # Refuse the match: a byte-identical build from a source with an
+                    # uninitialised use is not finished work. Stay open and say why.
+                    matched = False
+                    self._flag_validity(db, fn, source, "match refused", verdict)
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
                            "matched_at=?, best_score=0, best_source=? WHERE id=?",
