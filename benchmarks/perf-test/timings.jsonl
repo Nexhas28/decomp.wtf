@@ -1,0 +1,49 @@
+{"tag": "c2", "args": ["diff", "func_800A4620", "/Users/<user>/Decomp/work/perf-test/func_800A4620.c"], "wall_s": 0.275, "score": 10486, "rc": 0, "out_bytes": 4017}
+{"tag": "a628-c1-full", "args": ["full", "diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.044, "score": null, "rc": 2, "out_bytes": 410}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.128, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.076, "score": 120, "rc": 0, "out_bytes": 657}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.083, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.092, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "release-tag", "args": ["release", "func_8003A628", "perf test: tried 4, stuck at score 120 (stored best 10), suspect jr-epilogue load-delay nop + %lo-fold allocator tie, documented wall"], "wall_s": 0.392, "score": null, "rc": 0, "out_bytes": 142}
+{"tag": "full", "args": ["claim", "func_8003ED00"], "wall_s": 0.968, "score": 10350, "rc": 0, "out_bytes": 37602}
+{"tag": "rel", "args": ["release", "func_800A4620", "perf test: re-granted by fallback, releasing immediately (already measured wall)"], "wall_s": 0.486, "score": null, "rc": 0, "out_bytes": 142}
+{"tag": "full", "args": ["claim", "func_8003F1C0"], "wall_s": 0.833, "score": 15, "rc": 0, "out_bytes": 13054}
+{"tag": "full", "args": ["get", "func_8003F1C0"], "wall_s": 0.123, "score": 15, "rc": 0, "out_bytes": 12833}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.06, "score": 235, "rc": 0, "out_bytes": 2035}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0_nosched.c"], "wall_s": 0.074, "score": 235, "rc": 0, "out_bytes": 2035}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.067, "score": 255, "rc": 0, "out_bytes": 2086}
+{"tag": "rel", "args": ["release", "func_8003F1C0", "perf test: tried 3, floor 235 with current pipeline (stored best 15 unreproducible: new pipeline emits load-delay nops before jal/jr + mflo v0 tie). -fno-schedule-insns no effect; operand swap worse (255)."], "wall_s": 0.261, "score": null, "rc": 0, "out_bytes": 142}
+{"tag": "r2-claim-B65C", "args": ["claim", "func_8004B65C"], "wall_s": 1.146, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B65C", "args": ["diff", "func_8004B65C", "..."], "wall_s": 0.105, "score": 4550, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-B65C-fail", "args": ["release", "func_8004B65C"], "wall_s": 0.842, "score": null, "rc": 2, "out_bytes": -1}
+{"tag": "r2-claim-B738", "args": ["claim", "func_8004B738"], "wall_s": 0.699, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B738-base", "args": ["diff", "func_8004B738"], "wall_s": 0.116, "score": 2845, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B738-v2", "args": ["diff", "func_8004B738"], "wall_s": 0.099, "score": 2860, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-B738", "args": ["release", "func_8004B738"], "wall_s": 0.074, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-closest-A2D38", "args": ["claim", "closest"], "wall_s": 0.084, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-A2D38", "args": ["release", "func_800A2D38"], "wall_s": 0.067, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-CDE4", "args": ["claim", "func_8004CDE4"], "wall_s": 0.114, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CDE4-base", "args": ["diff", "func_8004CDE4"], "wall_s": 0.115, "score": 1420, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CDE4-v2", "args": ["diff", "func_8004CDE4"], "wall_s": 0.122, "score": 1560, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CDE4-cz1320", "args": ["diff", "func_8004CDE4"], "wall_s": 0.103, "score": 1320, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-CDE4", "args": ["release", "func_8004CDE4"], "wall_s": 0.488, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-57A0C", "args": ["claim", "func_80057A0C"], "wall_s": 1.059, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-57A0C-base", "args": ["diff", "func_80057A0C"], "wall_s": 0.129, "score": 3380, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-57A0C-v2", "args": ["diff", "func_80057A0C"], "wall_s": 0.108, "score": 3425, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-57A0C-v3", "args": ["diff", "func_80057A0C"], "wall_s": 0.1, "score": 3375, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-57A0C", "args": ["release", "func_80057A0C"], "wall_s": 0.747, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-CB78", "args": ["claim", "func_8004CB78"], "wall_s": 1.076, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CB78-v2", "args": ["diff", "func_8004CB78"], "wall_s": 0.126, "score": 7068, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CB78-v3", "args": ["diff", "func_8004CB78"], "wall_s": 0.109, "score": 6327, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CB78-v4", "args": ["diff", "func_8004CB78"], "wall_s": 0.109, "score": 6588, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-CB78-v5", "args": ["diff", "func_8004CB78"], "wall_s": 0.116, "score": 7110, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-CB78", "args": ["release", "func_8004CB78"], "wall_s": 0.116, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-574F0", "args": ["claim", "func_800574F0"], "wall_s": 0.628, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-574F0-wall", "args": ["diff", "func_800574F0"], "wall_s": 0.089, "score": 3200, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-574F0", "args": ["release", "func_800574F0"], "wall_s": 0.295, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-claim-B0570", "args": ["claim", "func_800B0570"], "wall_s": 0.588, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B0570-base", "args": ["diff", "func_800B0570"], "wall_s": 0.108, "score": 2421, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B0570-v2", "args": ["diff", "func_800B0570"], "wall_s": 0.108, "score": 2797, "rc": 0, "out_bytes": -1}
+{"tag": "r2-diff-B0570-v3", "args": ["diff", "func_800B0570"], "wall_s": 0.1, "score": 2630, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-B0570", "args": ["release", "func_800B0570"], "wall_s": 0.239, "score": null, "rc": 0, "out_bytes": -1}
+{"tag": "r2-release-B65C-final", "args": ["release", "func_8004B65C"], "wall_s": 0.961, "score": null, "rc": 0, "out_bytes": -1, "note": "required bridge daemon restart to re-resolve agent 847"}

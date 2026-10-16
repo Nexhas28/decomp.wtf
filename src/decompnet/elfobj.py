@@ -235,7 +235,30 @@ def list_functions(data: bytes) -> list[str]:
     return list(_function_symbols(ELFFile(BytesIO(data))))
 
 
+def function_from_payload(data: bytes, name: str) -> FunctionObj | None:
+    """A candidate the Game Boy lane produced: a magic-tagged JSON payload rather than an ELF object
+    (SM83 has no ELF toolchain in this pipeline — see rom/gb_build.py)."""
+    from .rom.gb_build import PAYLOAD_MAGIC, parse_payload
+
+    if not data.startswith(PAYLOAD_MAGIC):
+        return None
+    try:
+        payload = parse_payload(data)
+    except Exception:
+        return None
+    funcs = payload.get("functions") or {}
+    key = name if name in funcs else (f"_{name}" if f"_{name}" in funcs else None)
+    if key is None:
+        return None
+    fn = funcs[key]
+    return FunctionObj(name=name, arch=str(payload.get("arch") or "sm83"), big_endian=False,
+                       code=bytes.fromhex(fn.get("code") or ""), relocs=list(fn.get("relocs") or []))
+
+
 def extract_function(data: bytes, name: str) -> FunctionObj | None:
+    payload = function_from_payload(data, name)
+    if payload is not None:
+        return payload
     elf = ELFFile(BytesIO(data))
     arch, big_endian = _arch_of(elf)
     found = _function_symbols(elf).get(name)
