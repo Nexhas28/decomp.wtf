@@ -1538,7 +1538,14 @@ class RomNetwork(Network):
                 s = trial.by_name[new]
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (proj["id"], new, s.address, s.size, s.kind))
-            db.execute("UPDATE functions SET name=? WHERE project_id=? AND (name=? OR vram=?)", (new, proj["id"], old, addr))
+            # The function `old` names; by address only when that is unambiguous (Game Boy banks share CPU
+            # addresses: another bank's function at the same address must keep its name)
+            row = db.execute("SELECT id FROM functions WHERE project_id=? AND name=?", (proj["id"], old)).fetchone()
+            if row is None:
+                at = db.execute("SELECT id FROM functions WHERE project_id=? AND vram=?", (proj["id"], addr)).fetchall()
+                row = at[0] if len(at) == 1 else None
+            if row is not None:
+                db.execute("UPDATE functions SET name=? WHERE id=?", (new, row["id"]))
             for u, header in changed.items():
                 version = self._next_version(db, proj["id"])
                 db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
