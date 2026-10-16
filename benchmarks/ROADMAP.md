@@ -81,14 +81,32 @@ checksum verified; **3,108 functions discovered in 9.8 s** with 758 resolved cal
 vector `nop` / `cp $11` at 0x150 (the real CGB compatibility check), largest function 228 instructions.
 Tests: `tests/test_gb.py` — 85 passing, including an end-to-end import test.
 
-### Next (matching lane)
+### Matching lane (built — Wave 4)
 
-1. **Toolchain**: an SDCC/GBDK (or RGBDS + a C compiler) profile in `toolchains.py`, with the flags a
-   cartridge build actually used. Until then `diff` on a Game Boy function answers with the honest
-   "no compiler profile" message.
-2. **Bank-aware relocation model**: the CPU sees 0x4000-0x7FFF switched by the MBC, so two banks can
-   share a CPU address. Functions are currently addressed by flat ROM offset; the matcher needs
-   bank+address pairs, plus MBC bank-register writes as relocations.
-3. **Symbol/split conventions**: pret/pokered-style naming (`LoadGBPal`, `wram_*`) and a splat-like
-   split driven by the discovered call graph rather than fixed 0x400 extents.
-4. **Draft generation**: m2c is MIPS-only, so Game Boy needs either its own SM83→C draft or none.
+| Piece | What it does |
+| --- | --- |
+| `toolchains.toml` → `gbdk-2020` | The Game Boy C toolchain, registered and **pinned for all five platform builds** (macos-arm64/x86_64, linux64/arm64, win64) with sha256s: GBDK-2020 4.5.0 = SDCC 4.5.1 with the Sharp SM83 back end, `sdasgb`, `sdldgb`, `makebin` and the libraries. |
+| `rom/gb_build.py` | The build lane: `sdcc -msm83 -S` → `sdasgb -l` → the listing's instruction bytes, per function. **Absolute mode**: pass the project's symbol table and every external reference is injected as `.equ _sym, 0xADDR`, so a candidate's `call`/`jp` carries the ROM's own address — nothing is masked. A reference the table does not define is **refused by name** instead of assembling to zeros. |
+| `scoring` + `rom/sm83.py` | Capstone has no SM83 back end, so `rom/sm83.py` exposes a capstone-shaped `Decoder` (with `id`/`group`, the members the normaliser reads) and scoring registers `("sm83", False)` against it: Game Boy candidates travel the ordinary prepare/diff path. |
+| `elfobj.function_from_payload` | A magic-tagged JSON payload is accepted where every other lane produces ELF, so `extract_function` works unchanged for SM83. |
+
+**Validated on the real cartridge** (Zelda: Link's Awakening DX): three ROM functions whose body is
+`ret` were matched byte-identically (score 0/100) by compiling `void f(void) { }` through the lane, and
+symbol injection was verified by a candidate whose `call` carried the ROM's real address `0x4006`
+(`c3 06 40` — SDCC chose a tail call; the address is exact). Tests: `tests/test_gb_toolchain.py` (8).
+
+### Next (to make it agent-facing)
+
+1. **Thread the function name + symbol table into `compile_source` for SM83** so the app's `diff` and
+   judge use the lane directly (today `gb_build` is a library/CLI: `python -m decompnet.rom.gb_build
+   --src f.c --name f --symbols syms.json`). Then flip GB/GBC imports from `asm` to `open` and agents
+   can claim and match Game Boy functions.
+2. **Bank-aware model**: candidates must link against the MBC bank window (0x4000-0x7FFF) rather than
+   flat offsets, and bank-register writes are relocations.
+3. **Split quality**: [mgbdis v3.0](https://github.com/mattcurrie/mgbdis) (RGBDS-compatible output +
+   symbol files) does proper code/data separation; use it in place of the current call-graph extents.
+4. **Optional**: [binutils-sm83](https://github.com/msinger/binutils-sm83) is a real SM83 binutils port
+   (no prebuilt releases — a source build), which would let the Game Boy lane produce ELF objects and
+   reuse the standard path end to end; [rgbds](https://github.com/gbdev/rgbds) 1.0.4 is installed for
+   the matching-assembly side; pret/pokered and pret/pokecrystal are the reference for symbol naming.
+5. **Draft generation**: m2c is MIPS-only, so Game Boy needs its own SM83→C draft or none.

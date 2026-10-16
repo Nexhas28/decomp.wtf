@@ -210,3 +210,40 @@ def terminates(code: bytes, addr: int) -> bool:
     """True when the instruction at `addr` ends a function's straight-line flow."""
     text, _ = decode(code[addr:], addr)
     return is_return(text)
+
+
+# ---------------------------------------------------------------- capstone-shaped adapter
+
+#: Instructions that change control flow. The scoring normaliser asks capstone for CS_GRP_JUMP; the
+#: adapter answers for that group (and any other) from this set, since the caller only asks about jumps.
+_JUMPY = frozenset({"jp", "jr", "call", "ret", "reti", "rst", "halt"})
+
+
+class Insn:
+    """The subset of capstone's instruction object the scoring pipeline reads (`id`, `group`, the
+    operand text and the encoding), so an SM83 candidate travels the same path as every other arch."""
+
+    __slots__ = ("address", "size", "bytes", "mnemonic", "op_str", "id")
+
+    def __init__(self, address: int, size: int, raw: bytes, mnemonic: str, op_str: str):
+        self.address, self.size, self.bytes = address, size, raw
+        self.mnemonic, self.op_str = mnemonic, op_str
+        # capstone gives a real instruction a non-zero id and renders undecodable bytes with id 0
+        self.id = 0 if mnemonic == "db" else 1
+
+    def group(self, _group) -> bool:
+        return self.mnemonic in _JUMPY
+
+
+class Decoder:
+    """`capstone.Cs`-shaped SM83 decoder: `for ins in Decoder().disasm(code, addr)`.
+
+    Capstone has no SM83 back end, so this is what lets Game Boy candidates go through the same
+    preparation and diff path as every other architecture."""
+
+    version = "sm83-1"
+
+    def disasm(self, code: bytes, addr: int = 0):
+        for address, text, size in disassemble(code, addr):
+            mnemonic, _, op_str = text.partition(" ")
+            yield Insn(address, size, code[address - addr:address - addr + size], mnemonic, op_str)

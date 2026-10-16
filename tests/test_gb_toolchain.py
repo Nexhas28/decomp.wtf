@@ -1,0 +1,97 @@
+"""The Game Boy C toolchain lane: SDCC/GBDK-2020 → SM83 bytes → the fork's scoring.
+
+The compile tests are skipped when the toolchain isn't installed (it is a download, per platform —
+see toolchains.toml); the registry and decoder tests always run.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from decompnet import scoring
+from decompnet import toolchains as tc
+from decompnet.elfobj import FunctionObj, extract_function
+from decompnet.rom import gb_build, sm83
+
+needs_toolchain = pytest.mark.skipif(not gb_build.available(),
+                                     reason="the Game Boy C toolchain (gbdk-2020) is not installed")
+
+
+# ------------------------------------------------------------------ registry
+
+def test_the_gb_toolchain_is_registered_and_pinned():
+    t = tc.get("gbdk-2020")
+    assert t.arch == "sm83"
+    assert t.platform.startswith("Game Boy")
+    assert t.kind == "compiler"
+    platforms = {p for part in t.parts for p in part.get("platforms", [])}
+    assert {"macos-arm64", "macos-x86_64", "linux-x86_64", "linux-aarch64", "windows-x86_64"} <= platforms
+    assert all(part.get("sha256") for part in t.parts), "every download must be pinned"
+
+
+# ------------------------------------------------------------------ the build lane
+
+@needs_toolchain
+def test_compiles_a_leaf_function_to_exact_sm83():
+    funcs = gb_build.build_source("void f(void) { }")
+    assert funcs["f"].code == bytes.fromhex("c9")  # ret
+    zero = gb_build.build_source("typedef unsigned char u8;\nu8 f(void) { return 0; }")
+    assert zero["f"].code == bytes.fromhex("afc9")  # xor a, a · ret
+    eleven = gb_build.build_source("typedef unsigned char u8;\nu8 f(void) { return 0x11; }")
+    assert eleven["f"].code == bytes.fromhex("3e11c9")  # ld a, $11 · ret
+
+
+@needs_toolchain
+def test_symbols_resolve_to_the_roms_own_addresses():
+    """Absolute mode: the caller supplies the project's symbol table and the candidate's call carries
+    the ROM's real address (which is what byte-identical matching needs)."""
+    funcs = gb_build.build_source("void g(void);\nvoid f(void) { g(); }", symbols={"g": 0x4006})
+    code = funcs["f"].code
+    assert code[1:3] == bytes.fromhex("0640"), f"expected the ROM address 0x4006 in {code.hex()}"
+    assert code[0] in (0xC3, 0xCD)  # jp (tail call) or call
+    # an unknown symbol is not silently assembled as zero
+    with pytest.raises(Exception):
+        gb_build.build_source("void g(void);\nvoid f(void) { g(); }")
+
+
+@needs_toolchain
+def test_payload_round_trips_into_a_function_object():
+    payload = gb_build.build_payload("typedef unsigned char u8;\nu8 f(void) { return 0x11; }", name="f")
+    assert payload.startswith(gb_build.PAYLOAD_MAGIC)
+    fn = extract_function(payload, "f")
+    assert fn is not None and fn.arch == "sm83" and fn.code == bytes.fromhex("3e11c9")
+
+
+@needs_toolchain
+def test_a_reporting_header_and_includes_are_accepted(tmp_path):
+    fn = gb_build.compile_function("void f(void) { }", "f", context_header="typedef unsigned char u8;")
+    assert fn.code == b"\xc9"
+
+
+# ------------------------------------------------------------------ scoring (no toolchain needed)
+
+def test_scoring_reads_sm83_instructions_without_capstone():
+    insns = list(scoring._decoder("sm83", 0).disasm(bytes.fromhex("3e11c9cd0640"), 0x100))
+    assert [(i.mnemonic, i.op_str) for i in insns] == [("ld", "a, $11"), ("ret", ""), ("call", "$4006")]
+    assert all(i.id for i in insns)
+    assert insns[2].group(None) is True and insns[0].group(None) is False
+    assert insns[2].size == 3 and insns[2].address == 0x103  # after ld a,$11 (2) and ret (1)
+    assert insns[2].bytes == bytes.fromhex("cd0640")
+
+
+def test_scoring_matches_identical_sm83_code_and_reports_a_difference():
+    target = FunctionObj("func_000b58", "sm83", False, bytes.fromhex("c9"), [])
+    same = FunctionObj("f", "sm83", False, bytes.fromhex("c9"), [])
+    assert scoring.diff(target, same).score == 0
+    other = FunctionObj("f", "sm83", False, bytes.fromhex("afc9"), [])
+    assert scoring.diff(target, other).score > 0
+
+
+def test_the_decoder_covers_the_instruction_set_scoring_will_see():
+    # every opcode the assembler can emit must decode to a non-empty mnemonic, or a diff would
+    # silently compare garbage
+    for op in range(0x100):
+        for op2 in (None, 0x00, 0x37):
+            code = bytes([op]) if op2 is None else bytes([0xCB, op]) if op == 0xCB else bytes([op, op2])
+            text, ln = sm83.decode(code, 0)
+            assert text and ln >= 1
