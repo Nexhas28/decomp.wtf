@@ -122,6 +122,22 @@ def test_gemini_cli_helpers_carry_on_as_antigravity():
     assert "gemini" not in agents.KINDS and agents.KINDS["antigravity"].command == "agy"
 
 
+def test_opencode_own_install_beats_a_stale_copy_on_path(tmp_path, monkeypatch):
+    def exe(p):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("#!/bin/sh\n")
+        p.chmod(0o755)
+        return str(p)
+    home, brew = tmp_path / "home", tmp_path / "brew"
+    home.mkdir()
+    monkeypatch.setattr(agents.Path, "home", lambda: home)
+    monkeypatch.setenv("PATH", str(brew))
+    on_path = exe(brew / "opencode")
+    assert agents._which("opencode") == on_path  # only the PATH copy: still found
+    own = exe(home / ".opencode" / "bin" / "opencode")
+    assert agents._which("opencode") == own
+
+
 def test_connect_antigravity(tmp_path, monkeypatch):
     monkeypatch.setattr(connect, "_which", lambda cmd: f"/bin/{cmd}")
     monkeypatch.setattr(connect, "bridge_command", lambda: ["/usr/bin/python3", "-m", "decompnet.app.cli", "mcp"])
