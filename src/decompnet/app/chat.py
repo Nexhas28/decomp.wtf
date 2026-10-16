@@ -269,8 +269,9 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             raise ToolError(f"{fn['name']} has no address/size recorded")
         try:
             res = await anyio.to_thread.run_sync(
-                ghidra.decompile_rom_function, proj, fn["vram"], fn["size"],
-                Path(net.workspace) / "ghidra-evidence")
+                lambda: ghidra.decompile_rom_function(
+                    proj, fn["vram"], fn["size"], Path(net.workspace) / "ghidra-evidence",
+                    rom_offset=fn["rom_offset"]))
         except ghidra.GhidraUnavailable as e:
             raise ToolError(str(e)) from None
         if res["status"] == "timeout":
