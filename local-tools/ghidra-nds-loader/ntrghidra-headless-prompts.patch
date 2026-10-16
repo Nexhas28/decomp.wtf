@@ -1,0 +1,37 @@
+diff
+--- a/src/main/java/ntrghidra/NTRGhidraLoader.java	2026-10-16 13:07:51
++++ b/src/main/java/ntrghidra/NTRGhidraLoader.java	2026-10-16 13:07:51
+@@ -74,6 +74,8 @@
+ 	}
+ 
+ 	protected boolean promptToAskCPU() {
++		// Headless (analyzeHeadless) has no GUI: use -Dntrghidra.arm7=true to pick the ARM7 binary, default ARM9.
++		if (java.awt.GraphicsEnvironment.isHeadless()) return Boolean.getBoolean("ntrghidra.arm7");
+ 		String message = "<html>" +
+ 						 "You have loaded what looks like a Nintendo DS program." +
+ 						 " <br><br>" +
+@@ -102,6 +104,8 @@
+ 	}
+ 
+ 	protected int promptToAskSDK() {
++		// Headless: treat as homebrew (no SDK decompression); -Dntrghidra.sdk=true selects commercial ROM handling.
++		if (java.awt.GraphicsEnvironment.isHeadless()) return Boolean.getBoolean("ntrghidra.sdk") ? OptionDialog.OPTION_THREE : OptionDialog.OPTION_TWO;
+ 		String message = "<html>" +
+ 						 "Nintendo DS binaries from official games use a known SDK compression algorithm." +
+ 						 " <br><br>" +
+diff
+--- a/src/main/java/ntrghidra/OverlaySelectionDialog.java	2026-10-16 13:07:51
++++ b/src/main/java/ntrghidra/OverlaySelectionDialog.java	2026-10-16 13:07:51
+@@ -171,6 +171,12 @@
+ 	}
+ 
+ 	public boolean[] show(final Component parent) {
++		// Headless: no dialog possible, enable every overlay.
++		if (java.awt.GraphicsEnvironment.isHeadless()) {
++			boolean[] all = new boolean[items == null ? 0 : items.length];
++			Arrays.fill(all, true);
++			return all;
++		}
+ 		DockingWindowManager.showDialog(parent, this);
+ 		return getSelected();
+ 	}

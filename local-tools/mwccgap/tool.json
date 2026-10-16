@@ -1,0 +1,13 @@
+{
+  "name": "mwccgap",
+  "repo": "https://github.com/mkst/mwccgap",
+  "version": "147598b36b198f267e80adbe04dd5804d070dbb3",
+  "sha256": null,
+  "category": "global-asm-processor",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "run",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Pure-Python (stdlib) source copy in src/. The real MWCC compiler is proprietary and not included; test.sh drives the full INCLUDE_ASM transplant pipeline with fake-mwcc.py (own stand-in compiler emitting a MWCC-shaped little-endian MIPS ELF) and the decomp.wtf binutils-mips assembler (or MIPS_AS / mips-linux-gnu-as), checks the disassembly, the missing-.s error path and the 16 upstream unit tests. Not tested against real MWCC output. License: see src/LICENSE."
+}

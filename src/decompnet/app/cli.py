@@ -117,6 +117,21 @@ def _restart_state() -> dict | None:
         return None
 
 
+def _secret_for(state_file: Path, restarted: dict | None) -> str:
+    """The GUI secret. Reused from the previous launch whenever one exists — including after the app was
+    stopped or killed — so an open browser tab and long-lived agent sessions survive a restart (their
+    `decomp_live` cookie stays valid). A brand-new secret is minted only when no previous state exists."""
+    if restarted:
+        return restarted["secret"]
+    try:
+        prev = json.loads(state_file.read_text(encoding="utf-8"))
+        if isinstance(prev.get("secret"), str) and prev["secret"]:
+            return prev["secret"]
+    except (OSError, ValueError):
+        pass
+    return secrets.token_urlsafe(24)
+
+
 def run(args) -> int:
     import uvicorn
 
@@ -140,7 +155,7 @@ def run(args) -> int:
 
     sock = _listen(restarted["port"] if restarted else args.port, exact=bool(restarted) or _fixed_port())
     port = sock.getsockname()[1]
-    secret = restarted["secret"] if restarted else secrets.token_urlsafe(24)
+    secret = _secret_for(state_file, restarted)
     state_file.write_text(json.dumps({"port": port, "secret": secret, "pid": os.getpid()}), encoding="utf-8")
     try:
         os.chmod(state_file, 0o600)

@@ -117,8 +117,33 @@ def test_donated_compute_round_trip(tmp_path):
     assert job["function"] == "clamp_s32" and job["toolchain"] == "gcc-2.7.2-kmc" and job["target"]["code"]
     from decompnet.permuter import LocalScorer
     assert LocalScorer(job, log=lambda *_: None).score(SOLUTIONS["clamp_s32"]) == 0  # same verdict locally
-    out = jobs.submit(net, worker, "demo-n64", "clamp_s32", SOLUTIONS["clamp_s32"])
+    out = jobs.submit(net, worker, "demo-n64", "clamp_s32", SOLUTIONS["clamp_s32"], snapshot=job["snapshot"])
     assert out["matched"] and net.store.one("SELECT status FROM functions WHERE name='clamp_s32'")["status"] == "matched"
+
+
+@needs_n64
+def test_job_carries_identities_and_rejects_stale_snapshot(tmp_path):
+    from decompnet.search.policy import active_policy, parse_policy
+    net = Network(tmp_path / "s.db")
+    import_project(net.store, PROJECTS / "demo-n64", log=lambda *_: None)
+    a = net.authenticate(net.register_agent("a"))
+    net.compile_and_diff(a, "clamp_s32", WRONG_CLAMP, project="demo-n64")
+    net.release(a, "clamp_s32", "", project="demo-n64")
+    worker = net.authenticate(net.register_agent("worker"))
+    job = jobs.next_job(net, worker)
+    fid = net.store.one("SELECT id FROM functions WHERE name='clamp_s32'")["id"]
+    assert job["snapshot"] and job["seed"].startswith(f"{fid}-")
+    assert parse_policy(job["policy"]).id == job["policy"]["id"]
+    assert job["policy"] == active_policy().to_dict()
+    out = jobs.submit(net, worker, "demo-n64", "clamp_s32", SOLUTIONS["clamp_s32"])
+    assert not out["accepted"] and "snapshot missing" in out["reason"]
+    out = jobs.submit(net, worker, "demo-n64", "clamp_s32", SOLUTIONS["clamp_s32"], snapshot="0" * 64)
+    assert not out["accepted"] and "stale job" in out["reason"]
+    assert net.store.one("SELECT COUNT(*) AS n FROM attempts WHERE agent_id=?", worker.id)["n"] == 0
+    assert net.store.one("SELECT status FROM functions WHERE id=?", fid)["status"] == "open"
+    out = jobs.submit(net, worker, "demo-n64", "clamp_s32", SOLUTIONS["clamp_s32"], snapshot=job["snapshot"])
+    assert out["accepted"] and out["matched"]
+    assert net.store.one("SELECT status FROM functions WHERE id=?", fid)["status"] == "matched"
 
 
 zlib_ready = (PROJECTS / "zlib-n64" / "original" / "zlib.h").exists()

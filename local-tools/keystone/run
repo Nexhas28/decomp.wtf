@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# kstool CLI: ./run <arch+mode> '<asm>'   e.g. ./run mipsbe 'jr $ra'
+# Python: local-tools/keystone/.venv/bin/python -c 'import keystone'
+exec "$(cd "$(dirname "$0")" && pwd)/bin/kstool" "$@"

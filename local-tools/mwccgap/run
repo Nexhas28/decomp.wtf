@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entry point: runs mwccgap (pure-Python, stdlib only) from the bundled source copy.
+# Usage: run input.c output.o [--mwcc-path ... --as-path ... --as-march ... ] [mwcc flags]
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec python3 "$HERE/src/mwccgap.py" "$@"

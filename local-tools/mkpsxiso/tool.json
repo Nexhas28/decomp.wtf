@@ -1,0 +1,13 @@
+{
+  "name": "mkpsxiso",
+  "repo": "https://github.com/Lameguy64/mkpsxiso",
+  "version": "v2.30",
+  "sha256": null,
+  "category": "disc-image",
+  "platforms": ["psx"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/mkpsxiso",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Contains mkpsxiso and dumpsxiso (both in bin/), built from tag v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214) with CMake Release on macOS arm64. Source was cloned, not downloaded as an archive, so sha256 is null. test.sh builds a small BIN from an XML project, extracts it with dumpsxiso and compares files byte for byte: PASS."
+}

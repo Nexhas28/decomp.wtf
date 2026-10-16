@@ -22,6 +22,7 @@ function duration(h) { return h < 1 ? `${Math.max(1, Math.round(h * 60))} min` :
 function bytes(n) { return n >= 1 << 20 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} bytes`; }
 function money(usd) { return usd >= 10 ? `$${usd.toFixed(0)}` : `$${usd.toFixed(2)}`; }
 
+let apiRetried = false;
 async function api(path, { method = "GET", body, raw } = {}) {
   const opts = { method, headers: {} };
   if (method !== "GET") opts.headers["X-Decomp"] = "1";
@@ -30,7 +31,16 @@ async function api(path, { method = "GET", body, raw } = {}) {
   const res = await fetch(path, opts);
   let data = null;
   try { data = await res.json(); } catch { /* not json */ }
-  if (!res.ok) throw new Error((data && data.error) || `request failed (${res.status})`);
+  if (res.status === 401 && !apiRetried) {
+    // The app restarted and this tab's session key no longer matches. Reload once so the page
+    // re-enters (the app keeps its key across restarts now), instead of silently freezing on
+    // the last-known state; if the key genuinely changed, the app's own page explains how to
+    // reopen it — this tab never loops.
+    apiRetried = true;
+    location.reload();
+    return null;
+  }
+  if (!res.ok) { const err = new Error((data && data.error) || `request failed (${res.status})`); err.status = res.status; throw err; }
   return data;
 }
 
@@ -44,8 +54,14 @@ function toast(html, kind = "") {
 }
 
 async function followJob(id, logEl, onUpdate) {
-  for (;;) {
-    const job = await api(`/api/job?id=${id}`);
+  for (let fails = 0; ;) {
+    let job;
+    try { job = await api(`/api/job?id=${id}`); fails = 0; } catch (e) {
+      // the app busy or briefly unreachable: keep following unless it stays that way
+      if (!(e instanceof TypeError || e.status >= 500) || ++fails >= 10) throw e;
+      await sleep(1000);
+      continue;
+    }
     if (logEl) { logEl.textContent = job.log.join("\n"); logEl.scrollTop = logEl.scrollHeight; }
     if (onUpdate) onUpdate(job.log);
     if (job.state === "done") return job.result;
@@ -251,7 +267,8 @@ function parseRom(buf) {
 
 /* What the user dropped, from its first bytes (nothing is uploaded until they confirm). */
 const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStation 2", playstation: "PlayStation 1 or 2",
-  gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", nds: "Nintendo DS" };
+  gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", gb: "Game Boy",
+  gbc: "Game Boy Color", nds: "Nintendo DS" };
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
@@ -273,6 +290,19 @@ function identifyHead(head, file) {
   const stem = file.name.replace(/\.[^.]*$/, "");
   const base = { title: stem, size: file.size };
   if (text(0, 8) === "PS-X EXE") return { ...base, platform: "psx", order: "PS-X EXE", entry: dv.getUint32(0x10, true) };
+  // Game Boy / Game Boy Color: Nintendo logo at 0x104, header checksum over 0x134-0x14C, and a size
+  // that is a power-of-two number of 16 KiB banks. The same three checks the server makes (rom/gb.py).
+  if (head.length > 0x14d && head[0x104] === 0xce && head[0x105] === 0xed && head[0x106] === 0x66 && head[0x107] === 0x66) {
+    let sum = 0x19;
+    for (let i = 0x134; i < 0x14d; i++) sum += head[i];
+    const size = file.size;
+    if (((-sum) & 0xff) === head[0x14d] && size >= 0x8000 && size <= 0x800000 && (size & (size - 1)) === 0) {
+      const flag = head[0x143];
+      const color = (flag & 0x80) !== 0;
+      const title = (color ? ascii(0x134, 0x143) : ascii(0x134, 0x144)) || stem;
+      return { ...base, platform: color ? "gbc" : "gb", order: "cartridge", code: "", title, cgb: flag };
+    }
+  }
   if (head.length > 0xc0 && head[0xb2] === 0x96 && head[3] === 0xea) {  // GBA: fixed byte, header checksum, ARM branch
     let sum = 0;
     for (let i = 0xa0; i < 0xbd; i++) sum += head[i];
@@ -307,11 +337,11 @@ function identifyHead(head, file) {
 function notSupported(head, file) {
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
   const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
-  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy Advance and DS games.";
+  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy, Game Boy Color, Game Boy Advance and DS games.";
   if (text(0, 4) === "XEX2" || ext === "xex") return "That's an Xbox 360 program. Xbox 360 games aren't supported yet.";
   if (["nsp", "xci", "nso", "nro", "nca"].includes(ext) || text(0, 4) === "NSO0" || text(0, 4) === "PFS0") return "That's a Nintendo Switch file. Switch games aren't supported yet.";
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
-  if (["nes", "gb", "gbc", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
+  if (["nes", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
   if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
   if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
   if (ext === "apk") return "Android apps aren't supported yet.";
@@ -339,6 +369,10 @@ async function pickFile(file) {
   const facts = p === "n64"
     ? [["Game code", info.code || "—"], ["Region", info.region], ["Size", MB(info.size)], ["Format", info.order],
        ["Entry", hex8(info.entry)], ["Looks like", info.compiler === "IDO" ? "IDO" : "GCC (KMC)"]]
+    : (p === "gb" || p === "gbc")
+    ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
+       ["Cartridge", (info.cgb & 0x80) ? (info.cgb === 0xc0 ? "Color only" : "Color enhanced") : "original Game Boy"],
+       ["Project", "mgbdis"]]
     : [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        info.code ? ["Game ID", info.code] : ["Entry", info.entry != null ? hex8(info.entry) : "from the disc"],
        ["Project", ["gc", "wii", "gcwii"].includes(p) ? "dtk-template" : p === "nds" ? "ds-decomp" : p === "gba" ? "luvdis" : "splat"]];
@@ -363,6 +397,10 @@ function setupCompilers(info) {
   else if (p === "psx") fillCompilers(select, "gcc-2.7.2-psx", "PS1");
   else if (p === "ps2") fillCompilers(select, "ee-gcc-2.96", "PS2");
   else if (p === "gba") fillCompilers(select, "agbcc", "GBA");
+  else if (p === "gb" || p === "gbc") {
+    $("compilerRow").hidden = true; note.hidden = false;
+    note.textContent = "Game Boy and Game Boy Color games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
+  }
   else if (p === "playstation") {
     $("compilerRow").hidden = true; note.hidden = false;
     note.textContent = "The compiler is picked from the disc: PSY-Q-era GCC for PlayStation, EE-GCC for PlayStation 2. You can change it later.";
@@ -485,15 +523,22 @@ $("pathPick").onclick = (e) => {
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");
 
 /* ------------------------------------------------------------------ project */
+let openGen = 0;
 async function openProject(slug, tab = "overview") {
   show("project");
+  stopPolling(); clearInterval(teamTimer);
+  const gen = ++openGen, here = () => gen === openGen && S.slug === slug && !$("project").hidden;
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
   $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; $("now").innerHTML = ""; $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
   try {
     if (!S.st) await loadState();
-    S.ov = await api(`/api/project?slug=${slug}`);
+    if (!here()) return;
+    const ov = await api(`/api/project?slug=${slug}`);
+    if (!here()) return;
+    S.ov = ov;
   } catch (e) {
+    if (!here()) return;
     toast(esc(e.message), "err");
     location.hash = "#/";
     return;
@@ -515,8 +560,11 @@ async function openProject(slug, tab = "overview") {
   if (setup) { renderForkSetup(); return; }
   setTab(tab);
   renderStats(S.ov);
-  await refreshMap();
-  await poll(true);
+  try { await refreshMap(); } catch (e) { if (here()) toast(esc(e.message), "err"); }
+  if (!here()) return;
+  try { await poll(true); } catch (e) { if (here()) toast(esc(e.message), "err"); }
+  if (!here()) return;
+  stopPolling();
   S.timer = setInterval(() => poll(false), 1000);
   S.statsTimer = setInterval(loadStats, 8000);
   loadStats();
@@ -536,7 +584,7 @@ function setTab(tab) {
   document.querySelectorAll("[data-pane]").forEach((p) => { p.hidden = p.dataset.pane !== tab; });
   if (tab === "overview") { if (S.map.length) layoutMap(); renderOverview(); }
   if (tab === "functions") renderList();
-  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); }
+  if (tab === "agents") { renderLauncher($("launcher")); renderSessions(S.sessions); renderPrio(); renderTrust(S.ov); }
   if (tab === "team") renderTeam();
   if (tab === "source" && S.ov) renderSource(S.ov);
   if (tab === "settings") renderProjectSettings();
@@ -593,7 +641,10 @@ async function poll(first) {
   try {
     const live = await api(`/api/live?slug=${slug}&e=${S.e}&a=${S.a}&s=${encodeURIComponent(JSON.stringify(S.seq))}`);
     if (slug !== S.slug) return;
-    S.ov = live.overview;
+    // the live feed's overview is the engine's own (no server-side verification block): carry the
+    // truthful scope forward between /api/project and /api/state refreshes instead of flickering
+    S.ov = Object.assign({}, live.overview,
+      { verification: live.overview.verification || (S.ov && S.ov.verification) || null });
     let mapDirty = false;
     const rescanned = !first && live.events.some((ev) => ev.kind === "rescan");
     for (const ev of live.events) {
@@ -640,7 +691,7 @@ async function poll(first) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
     }
     addThoughts(live.sessions, first);
-    if (S.tab === "agents") renderSessions(live.sessions);
+    if (S.tab === "agents") { renderSessions(live.sessions); renderTrust(S.ov); }
     renderNow(live.claims);
     renderStats(live.overview);
     const claimSig = live.claims.map((c) => c.name + "\u0000" + c.agent).join("\n");
@@ -666,6 +717,7 @@ async function poll(first) {
 async function loadStats() {
   if (!S.slug || S.tab !== "overview") return;
   try { S.stats = await api(`/api/stats?slug=${S.slug}`); } catch { return; }
+  try { S.cacheInfo = await api("/api/cache"); } catch { /* the app is going away: keep the last state */ }
   renderOverview();
 }
 
@@ -925,6 +977,100 @@ function renderOverview() {
   $("recentMatches").innerHTML = recent.length ? recent.map((f) => `<li><span class="ok">✓</span>${fnLink(f.name)}<span class="grow"></span><span class="muted small">${esc(f.matched_by || "")} · ${esc(since(f.matched_at))}</span></li>`).join("")
     : `<li class="muted small">No matches yet.</li>`;
   $("recentMatches").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+  renderTrust(S.ov);
+  renderCache(S.cacheInfo);
+}
+
+/* A.2/P11.7: the truthful verification scope — receipt coverage, the matched epoch, candidate
+   origins and the recorded wall/stall reasons. Counts, never a rounded green percentage that
+   overclaims. Shown on the overview and the Agents tab; a payload without the block hides both. */
+function tabPanel(pane, id) {
+  const tab = document.querySelector(`.ptab[data-pane="${pane}"]`);
+  if (!tab) return null;
+  const host = tab.querySelector(".cols") || tab.querySelector(".agents-grid") || tab;
+  let p = document.getElementById(id);
+  if (!p) {
+    p = document.createElement("section");
+    p.id = id;
+    p.className = "panel";
+    p.hidden = true;
+    host.append(p);
+  }
+  return p;
+}
+
+function renderTrust(ov) {
+  const v = ov && ov.verification;
+  for (const [pane, id] of [["overview", "trustPanel"], ["agents", "trustPanelAgents"]]) {
+    const p = tabPanel(pane, id);
+    if (!p) continue;
+    if (!v) { p.hidden = true; continue; }
+    p.hidden = false;
+    p.innerHTML = trustPanel(v, ov.matched || 0);
+    p.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+  }
+}
+
+function trustPanel(v, matched) {
+  const receipts = v.receipts || 0;
+  const gap = matched - receipts;
+  const list = (obj) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${esc(k)} ×${n}`);
+  const verdict = !matched ? `<p class="muted small">No matches to verify yet.</p>`
+    : gap > 0 ? `<p class="bad small">${gap.toLocaleString()} matched function${gap === 1 ? "" : "s"} without a receipt: accepted before (or outside) snapshot verification.</p>`
+    : `<p class="ok small">Every matched function has a receipt.</p>`;
+  return `<header class="panel-head"><h2>Verification</h2></header>
+    <p class="muted small">${receipts.toLocaleString()} receipt${receipts === 1 ? "" : "s"} for ${matched.toLocaleString()} matched functions · matched epoch ${v.matched_epoch ?? "?"}</p>
+    ${verdict}
+    <p class="muted small">candidate origins: ${list(v.origins).join(" · ") || "none recorded"}</p>
+    <p class="muted small">budget stall resets: ${list(v.stalls).join(" · ") || "none recorded"}</p>
+    <p class="muted small">known walls: ${list(v.walls).join(" · ") || "none recorded"}</p>${pressureLines(v)}`;
+}
+
+/* P11.7: queue/lock pressure (the shared worker budget), whether analysis is cold or warm, and per
+   function why it is stalled and what can happen next. Missing fields (an older server) show nothing. */
+function pressureLines(v) {
+  let out = "";
+  const r = v.resources;
+  if (r && r.used) {
+    const pools = Object.keys(r.limits || r.used).map((k) => `${esc(k)} ${r.used[k] || 0}/${(r.limits || {})[k] ?? "?"}`);
+    out += `<p class="muted small">worker pressure (in use / allowed): ${pools.join(" · ")}</p>`;
+  }
+  const a = v.analysis;
+  if (a) {
+    const sessions = (a.sessions || []).map((s) => `${esc(s.provider || "?")} ${esc(s.temperature || s.state || "?")}${s.pending ? ` (${s.pending} waiting)` : ""}`);
+    out += `<p class="muted small">analysis: ${a.broker_started ? esc(a.state || "unknown") : "not started (cold)"}${sessions.length ? ` · ${sessions.join(" · ")}` : ""}</p>`;
+  }
+  const st = v.stalled || [];
+  if (st.length) {
+    out += `<p class="muted small">stalled functions (${st.length}${st.length >= 20 ? "+" : ""}):</p><ul class="small">${st.map((x) => `<li>${fnLink(x.function)}<span class="muted small"> · ${esc(x.reason)} · next: ${esc(x.next_action)}</span></li>`).join("")}</ul>`;
+  } else if (v.stalled) {
+    out += `<p class="muted small">stalled functions: none</p>`;
+  }
+  return out;
+}
+
+/* A.4/P2.8: the compile-cache diagnostics — the cache's own counts (entries and bytes on disk, hits and
+   misses, published puts, coalesced waiters, quarantines, evictions), or a clear "off". Older servers
+   send only `stats`: those fields fall back, never to an invented number. */
+function renderCache(info) {
+  const p = tabPanel("overview", "cachePanel");
+  if (!p) return;
+  if (!info) { p.hidden = true; return; }
+  p.hidden = false;
+  if (!info.enabled) {
+    p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2></header>
+      <p class="muted small">off — ${esc(info.reason || "not configured")}</p>`;
+    return;
+  }
+  const s = info.stats || {};
+  const num = (k) => (info[k] != null ? info[k] : (s[k] || 0));
+  const hits = num("hits"), misses = num("misses"), total = hits + misses;
+  const rate = info.hit_rate != null ? Math.round(100 * info.hit_rate) : total ? Math.round((100 * hits) / total) : null;
+  const quarantined = num("quarantined"), evicted = num("evicted");
+  p.innerHTML = `<header class="panel-head"><h2>Compile cache</h2><span class="muted small">${esc(info.dir || "")}</span></header>
+    <p class="${quarantined ? "bad" : "muted"} small">${num("entries").toLocaleString()} entries · ${bytes(info.bytes || 0)} on disk · ${hits.toLocaleString()} hits / ${misses.toLocaleString()} misses · ${rate == null ? "n/a" : `${rate}%`} hit rate · ${num("puts").toLocaleString()} published · ${num("coalesced").toLocaleString()} coalesced waiters · ${quarantined.toLocaleString()} quarantined · ${evicted.toLocaleString()} evicted</p>
+    ${quarantined ? `<p class="bad small">tampered or corrupt entries were quarantined, never served.</p>` : ""}
+    <p class="muted small" title="${esc(info.diagnose || "")}">hover for quotas and the cache's own diagnosis</p>`;
 }
 
 function renderAgentsKpi(ov) {
@@ -980,12 +1126,23 @@ function renderNext(ov) {
 
 /* ------------------------------------------------------------------ team (rooms) */
 let teamTimer = null;
+/* What the team pane shows, minus the heartbeat times that change on every poll without changing the pane. */
+const teamSig = (o) => JSON.stringify(o, (k, v) => (k === "last_seen" || k === "last_ok" ? undefined : v));
 async function renderTeam() {
   const box = $("teamBox");
   clearInterval(teamTimer);
   if (!S.ov) return;
   const room = S.ov.room;
-  if (room && room.role === "guest") { renderGuest(box, room); teamTimer = setInterval(() => { if (S.tab === "team" && S.ov.room) renderGuest(box, S.ov.room); }, 4000); return; }
+  if (room && room.role === "guest") {
+    renderGuest(box, room);
+    let sig = teamSig(room);
+    teamTimer = setInterval(() => {
+      if (S.tab !== "team" || !S.ov.room || teamSig(S.ov.room) === sig) return;  // unchanged: keep the DOM (and clicks)
+      sig = teamSig(S.ov.room);
+      renderGuest(box, S.ov.room);
+    }, 4000);
+    return;
+  }
   if (S.ov.kind === "fork" && !S.ov.ready) {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
       <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.wtf.</p>
@@ -997,19 +1154,25 @@ async function renderTeam() {
   const info = await api(`/api/collab?slug=${S.slug}`).catch((e) => { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; });
   if (!info || S.tab !== "team") return;
   renderHost(box, info);
+  let sig = teamSig(info);
   teamTimer = setInterval(async () => {
     if (S.tab !== "team" || !S.slug) { clearInterval(teamTimer); return; }
     if (box.contains(document.activeElement) && document.activeElement.matches("input")) return;  // typing
     const inf = await api(`/api/collab?slug=${S.slug}`).catch(() => null);
-    if (inf && inf.sharing && S.tab === "team") renderHost(box, inf);
+    if (!inf || !inf.sharing || S.tab !== "team" || teamSig(inf) === sig) return;  // unchanged: keep the DOM (and clicks)
+    sig = teamSig(inf);
+    renderHost(box, inf);
   }, 5000);
 }
 
 function renderGuest(box, room) {
   const members = room.members || [];
   const waiting = /waiting for the host/i.test(room.error || "");
-  const people = members.map((m) => `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
-      <span>${m.agents && m.agents.length ? esc(m.agents.join(", ")) : "no agents yet"} · ${m.matched || 0} matched${m.working && m.working.length ? ` · on ${esc(m.working.slice(0, 3).join(", "))}` : ""}</span></div></div>`).join("");
+  const people = members.map((m) => {
+    const agents = Array.isArray(m.agents) ? m.agents : [], working = Array.isArray(m.working) ? m.working : [];
+    return `<div class="line-item"><span class="dot ${m.online ? "on" : ""}"></span><div class="txt"><b>${esc(m.name)}${m.name === room.member ? " (you)" : ""}</b>
+      <span>${agents.length ? esc(agents.join(", ")) : "no agents yet"} · ${esc(m.matched || 0)} matched${working.length ? ` · on ${esc(working.slice(0, 3).join(", "))}` : ""}</span></div></div>`;
+  }).join("");
   box.innerHTML = `<h2 class="pane-title">${waiting ? "Waiting for the host to let you in" : room.connected ? "In a team room" : "The room is offline"}</h2>
     <p class="muted">${waiting ? `You asked to join as <b>${esc(room.member)}</b>. Your agents start working with the room as soon as the host lets you in.`
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
@@ -1171,7 +1334,7 @@ async function installToolchain(id, proprietary) {
 
 /* ------------------------------------------------------------------ public decomps */
 const PLAT_ORDER = ["gc", "wii", "ps", "ps2", "n64", "gba", "nds", "switch", "win32", "xbox360", "3ds", "xbox", "psp"];
-const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
+const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", gb: "GB", gbc: "GBC", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
 const cat = { list: null, downloaded: null, plat: "", q: "", done: false };
 
 /* The list decomp.dev had, as this install downloaded it before the directory was retired (none on a new one). */
@@ -1256,12 +1419,13 @@ function openForkDialog(p) {
     <p class="muted small">Next you add <b>your own copy of the game</b>. Its code stays on your computer; your agent's provider sees the functions it works on. Setting up runs the project's own build scripts, as building it yourself would, so fork projects you trust. Matches are committed to a local <code>decomp-wtf</code> branch, and decomp.wtf never pushes it anywhere: anything you send upstream is up to you and the project's rules.</p>
     <div class="row"><button class="primary" id="forkGo" type="button" disabled>Fork it</button><button class="ghost" data-close type="button">Cancel</button></div>
     <pre class="joblog" id="forkLog" hidden></pre>`);
+  const polBox = body.querySelector("#forkPolicy"), go = body.querySelector("#forkGo");
   api("/api/fork/policy", { method: "POST", body: { repo: p.repo_url } }).catch((e) => ({ error: e.message, lines: [], files: [], lean: "silent" })).then((pol) => {
-    if (!$("forkPolicy")) return;  // (the dialog was closed meanwhile)
-    $("forkPolicy").innerHTML = policyHtml(pol);
-    const ok = $("forkOk");
-    $("forkGo").disabled = !!ok;
-    if (ok) ok.onchange = () => { $("forkGo").disabled = !ok.checked; };
+    if (!polBox.isConnected || $("dialog").hidden) return;  // (the dialog was closed or replaced meanwhile)
+    polBox.innerHTML = policyHtml(pol);
+    const ok = polBox.querySelector("#forkOk");
+    go.disabled = !!ok;
+    if (ok) ok.onchange = () => { go.disabled = !ok.checked; };
   });
   body.querySelector("#forkGo").onclick = async () => {
     $("forkGo").disabled = true;
@@ -1337,6 +1501,7 @@ async function renderForkSetup() {
     $("fsGo").onclick = () => $("fsFile").click();
     $("fsFile").onchange = () => {
       const f = $("fsFile").files[0];
+      $("fsFile").value = "";  // the same file again retries
       if (!f) return;
       $("fsUp").hidden = false;
       run(() => uploadFile(`/api/fork/game?slug=${encodeURIComponent(S.slug)}&confirmed=1&name=${encodeURIComponent(f.name)}`, f,
@@ -1914,7 +2079,7 @@ function highlightC(text) {
   const kw = /\b(void|int|char|short|long|float|double|unsigned|signed|struct|union|enum|typedef|static|extern|const|volatile|return|if|else|for|while|do|switch|case|default|break|continue|goto|sizeof|s8|u8|s16|u16|s32|u32|s64|u64|f32|f64)\b/g;
   return esc(text).split("\n").map((line) => {
     if (/^\s*(\/\*|\*|\/\/)/.test(line)) return `<span class="cm">${line}</span>`;
-    return line.replace(kw, '<span class="kw">$1</span>').replace(/\b(0x[0-9A-Fa-f]+|\d+)\b/g, '<span class="num">$1</span>');
+    return line.replace(kw, '<span class="kw">$1</span>').replace(/(?<!&#)\b(0x[0-9A-Fa-f]+|\d+)\b/g, '<span class="num">$1</span>');
   }).join("\n");
 }
 
@@ -1928,7 +2093,7 @@ async function openFn(name) {
   if (!again) { S.ftab = null; S.which = "latest"; S.diffKey = null; $("diff").innerHTML = ""; $("diffSum").textContent = ""; }
   drawMap();
   document.querySelectorAll("#fnRows tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.fn === name));
-  await refreshFn(true);
+  await refreshFn(!again);
 }
 
 function fnBadge(d = S.fnDetail) {
@@ -1954,12 +2119,17 @@ document.querySelectorAll("#diffWhich [data-which]").forEach((b) => {
   };
 });
 
-let fnBusy = false;
+/* The latest request wins: a reply for a function you've since left is dropped, and the one you're on still loads. */
+let fnReq = 0, fnFirst = false;
 async function refreshFn(first) {
-  if (fnBusy || !S.fn) return;
-  fnBusy = true;
+  if (!S.fn) return;
+  const req = ++fnReq;
+  if (first) fnFirst = true;
+  first = fnFirst;
   try {
     const d = await api(`/api/function?slug=${S.slug}&name=${encodeURIComponent(S.fn)}`);
+    if (req !== fnReq) return;
+    fnFirst = false;
     if (d.name !== S.fn) return;
     S.fnDetail = d;
     $("fnAddr").textContent = S.ov.kind === "fork"
@@ -1999,8 +2169,10 @@ async function refreshFn(first) {
     const tab = S.ftab || (d.status === "matched" || !d.scores.length ? "code" : "diff");
     showFnTab(tab);
   } catch (e) {
+    if (req !== fnReq) return;
+    fnFirst = false;
     if (first) toast(esc(e.message), "err");
-  } finally { fnBusy = false; }
+  }
 }
 
 /* Editing a function yourself: a highlighted editor over a textarea, judged like an agent's attempt. */
@@ -2032,12 +2204,17 @@ $("fnEdit").addEventListener("keydown", (e) => {
 $("tryBtn").onclick = () => tryIt();
 
 async function tryIt() {
-  const name = S.fn, source = $("fnEdit").value, msg = $("tryMsg");
+  const name = S.fn, slug = S.slug, source = $("fnEdit").value, msg = $("tryMsg");
   if (!name || !source.trim() || $("tryBtn").disabled) return;
   $("tryBtn").disabled = true;
   msg.hidden = false; msg.className = "try-msg"; msg.textContent = "Compiling…";
+  const moved = () => S.fn !== name || S.slug !== slug;
   try {
-    const r = await api("/api/try", { method: "POST", body: { slug: S.slug, name, source } });
+    const r = await api("/api/try", { method: "POST", body: { slug, name, source } });
+    if (moved()) {  // you've moved on meanwhile: the result isn't for what's open now
+      if (!r.matched) api("/api/release", { method: "POST", body: { slug, name } }).catch(() => {});
+      return;
+    }
     if (r.matched) {
       S.myClaim = null;
       msg.className = "try-msg ok"; msg.textContent = "Byte-identical. Saved as a match, credited to you.";
@@ -2048,13 +2225,15 @@ async function tryIt() {
       msg.textContent = r.score == null ? "It didn't compile:" : (r.text.split("\n")[0] || `score ${r.score}`);
       if (r.score == null) msg.textContent += "\n" + r.text.split("\n").slice(1, 12).join("\n");
     }
-    S.editDirty = false;
+    S.editDirty = !r.matched;  // not a match yet: keep what you wrote in the editor
     S.diffKey = null;
     await refreshFn(false);
+    if (moved()) return;
     if (r.score != null) { S.ftab = "diff"; showFnTab("diff"); }
   } catch (e) {
+    if (moved()) return;
     msg.className = "try-msg bad"; msg.textContent = e.message;
-  } finally { $("tryBtn").disabled = false; }
+  } finally { if (!moved()) $("tryBtn").disabled = false; }
 }
 /* The function stays yours only while you're on it: give it back when you move on. */
 function giveBack(next) {
@@ -2268,7 +2447,11 @@ document.querySelectorAll(".drawer").forEach((d) => {
   });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { if (!$("launchPop").hidden) { hideLaunch(); return; } closeAll(); return; }
+  if (e.key === "Escape") {
+    if (!$("launchPop").hidden) { hideLaunch(); return; }
+    if (e.target.matches && e.target.matches("textarea")) { e.target.blur(); return; }  // leave the field, keep the edits
+    closeAll(); return;
+  }
   if (e.target.closest("input, textarea, select") || e.metaKey || e.ctrlKey || e.altKey) return;  // typing
   if (!$("drawer").hidden && (e.key === "j" || e.key === "k")) { e.preventDefault(); stepFn(e.key === "j" ? 1 : -1); return; }
   if (e.key === "/" && S.slug && $("drawer").hidden) {

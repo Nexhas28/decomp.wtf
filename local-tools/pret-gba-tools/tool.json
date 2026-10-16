@@ -1,0 +1,13 @@
+{
+  "name": "pret-gba-tools",
+  "repo": "https://github.com/pret/pokeemerald",
+  "version": "731ad5bfd6e6f265508d0efcca0ba42f9dcf5881",
+  "sha256": null,
+  "category": "asset-converter",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/gbagfx",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Tools built from the tools/ folder of pret/pokeemerald commit 731ad5b (extracted via git archive into a fresh scratch dir, clang, flags from pret build logs). Binaries in bin/: bin2c, gbafix, gbagfx, jsonproc, mapjson, mid2agb, preproc, ramscrgen, rsfont, scaninc, wav2agb. test.sh exercises gbagfx (PNG and LZ77 round trip), preproc (charmap .string), scaninc (transitive includes) and gbafix (ROM header patch). Passed on 2026-10-16. Licence file is in the pinned tools/ folder (not read)."
+}

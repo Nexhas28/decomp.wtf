@@ -1,0 +1,13 @@
+{
+  "name": "ccc",
+  "repo": "https://github.com/chaoticgd/ccc",
+  "version": "v2.1",
+  "sha256": null,
+  "category": "ps2-symbols",
+  "platforms": ["ps2", "mips"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/stdump",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Prebuilt arm64 binaries stdump, objdump, demangle, uncc. test.sh passes (ccc: PASS, exit 0). Build source commit not recorded; version is latest tag v2.1 at check time."
+}

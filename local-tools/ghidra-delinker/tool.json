@@ -1,0 +1,13 @@
+{
+  "name": "ghidra-delinker",
+  "repo": "https://github.com/boricj/ghidra-delinker-extension",
+  "version": "v0.9.2 (commit b3890c4443e4ab802c26b66d84821d3ac9362c18, Ghidra 12.1.4 build)",
+  "sha256": "44c569cbaa8f35faccba3e5c632ae6202420a36082352638f48f0dfa37ad5765",
+  "category": "ghidra-extension",
+  "platforms": ["x86", "x86_64", "mips"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20260926_ghidra-delinker-extension.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Prebuilt release zip for Ghidra 12.1.4. test.sh installs it into a throwaway user.home, imports a self-built x86-64 ELF, runs the bundled headless DelinkProgram.java script (exporter 'ELF relocatable object') and checks foo.o has U bar/U counter symbols and R_X86_64_PC32 relocations. Needs JDK 21, clang, lld@21, llvm@21 from Homebrew. Real Ghidra install untouched."
+}

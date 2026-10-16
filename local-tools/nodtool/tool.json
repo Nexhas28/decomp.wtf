@@ -1,0 +1,13 @@
+{
+  "name": "nodtool",
+  "repo": "https://github.com/encounter/nod",
+  "version": "v2.0.0-alpha.12",
+  "sha256": null,
+  "category": "disc-image-extract-convert",
+  "platforms": ["gamecube", "wii"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/nodtool",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Mach-O arm64 binary; `nodtool -V` reports 2.0.0-alpha.12 commit ebd80cac99b48a323200d84365e07a58cc27412d, which matches the upstream tag v2.0.0-alpha.12 (published 2026-09-16, Apache-2.0). The build command and source archive were not recorded, so sha256 is null. test.sh builds a synthetic GCM image in a mktemp dir and checks info, extract (file bytes and main.dol bytes), convert to RVZ and back (cmp identical). Last run: PASS, exit 0."
+}

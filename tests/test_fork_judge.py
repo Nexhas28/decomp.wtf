@@ -17,6 +17,7 @@ import pytest
 
 from decompnet import toolchains
 from decompnet.app.engine import RomNetwork
+from decompnet.forks.objdiff import summarise
 
 pytestmark = pytest.mark.skipif(
     toolchains.installed("gcc-2.7.2-kmc") is None or toolchains.installed("objdiff-cli") is None
@@ -208,3 +209,17 @@ def test_lines_the_file_already_has_may_come_along(fork):
     with pytest.raises(Exception) as e:
         net.compile_and_diff(agent, "read_gain", "struct Gain { float v; };\n" + GAIN, slug)
     assert "struct Gain" in str(e.value) and "edit_file" in str(e.value)
+
+
+def test_objdiff_summary_uses_the_shared_shape():
+    rows = [(" ", "mov", "mov"), ("i", "lw $t0", "lw $t1"), (">", "", "nop"), ("<", "nop", ""), ("|", "addu", "subu")]
+    s = summarise(rows, 80.0)
+    assert set(s) == {"schema_version", "counts", "observations", "hypotheses", "coverage", "verification"}
+    assert s["counts"]["operand"] == 1 and s["counts"]["insertion"] == 1 and s["counts"]["deletion"] == 1
+    assert s["counts"]["unclassified"] == 1
+    assert s["coverage"] == {"status": "unknown"}
+    assert s["verification"] == {"function_link_match": "unverified", "object_match": "mismatch"}
+    clean = summarise([(" ", "mov", "mov"), ("i", "lw $t0", "lw $t1"), (">", "", "nop")], 90.0)
+    assert clean["counts"]["unclassified"] == 0 and clean["coverage"] == {"status": "complete"}
+    assert clean["verification"] == {"function_link_match": "unverified", "object_match": "mismatch"}
+    assert summarise([], 100.0)["verification"]["object_match"] == "exact"

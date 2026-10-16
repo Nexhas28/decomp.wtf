@@ -1,0 +1,13 @@
+{
+  "name": "findcode",
+  "repo": "https://github.com/decompals/findcode",
+  "version": "07472cd381e5e3029c33838c45e763cf76b697a6",
+  "sha256": null,
+  "category": "rom-analysis",
+  "platforms": ["n64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "bin/findcode",
+  "test": "test.sh",
+  "status": "fail",
+  "notes": "Build fails on macOS arm64 with Apple clang 21: pinned fmt (74c51ff) and fmt 11.0.2 both hit consteval errors. Upstream Makefile mkdir call also needs MKDIR=\"mkdir -p\" MKDIR_OPTS= on macOS. No binary installed. test.sh exits 1 because bin/findcode is missing."
+}

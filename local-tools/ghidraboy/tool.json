@@ -1,0 +1,13 @@
+{
+  "name": "ghidraboy",
+  "repo": "https://github.com/Gekkio/GhidraBoy",
+  "version": "20250830 (upstream release, GhidraBoy-1.7.1) + local port to Ghidra 12.1.4 (ghidra-12.1-port.patch)",
+  "sha256": "dc012b0067b7586cbe2275db2197adb93450826fa706717646cd6d9900fc4342",
+  "category": "ghidra-extension",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": "ghidra_12.1.4_PUBLIC_20261016_GhidraBoy.zip",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Game Boy (SM83) Ghidra loader and language. Upstream is archived and lists only Ghidra 11.x; the zip here is ported to Ghidra 12.1.4. test.sh unpacks it into a throwaway Ghidra user dir, imports an rgbds-built ROM with analyzeHeadless and GameBoyLoader, and checks the SM83 language, rom block and decoded instructions. Passes. Requires Java 21 and rgbds."
+}

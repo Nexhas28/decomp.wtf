@@ -1,0 +1,13 @@
+{
+  "name": "unicorn",
+  "repo": "https://github.com/unicorn-engine/unicorn",
+  "version": "2.1.4",
+  "sha256": null,
+  "category": "emulator",
+  "platforms": ["macos-arm64"],
+  "runs_on": "macos-arm64-native",
+  "entry": ".venv/bin/python",
+  "test": "test.sh",
+  "status": "pass",
+  "notes": "Python bindings (unicorn 2.1.4 from PyPI) installed into a uv venv at .venv/. Upstream tag 2.1.4 targets commit 1730bd8d4ce6dbca658637f4b7dec81a7eff3a12. Smoke test emulates MIPS32 BE, ARM Thumb and PPC32 BE snippets and checks result registers. Test run 2026-10-16T12:04:53Z."
+}

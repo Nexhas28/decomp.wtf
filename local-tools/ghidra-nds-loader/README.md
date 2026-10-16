@@ -1,0 +1,9 @@
+# ghidra-nds-loader (NTRGhidra)
+
+Ghidra loader + plugin (Apache-2.0, https://github.com/pedro-javierf/NTRGhidra) for Nintendo DS (NTR) and DSi ROMs. It reads the cartridge header, maps the ARM9 or ARM7 binary at its RAM address (optionally decompressing commercial SDK-compressed ARM9), creates the DS memory regions and IO register labels, loads overlays and sets the entry point. Useful for decomp.wtf NDS projects that want to explore a ROM in Ghidra before or while matching it.
+
+Run: `bash local-tools/ghidra-nds-loader/test.sh`. For real use, install `ghidra_12.1.4_PUBLIC_20261016_NTRGhidra.zip` through Ghidra's File > Install Extensions, restart, import a .nds file and pick "Nintendo DS (NTR) and DSi (TWL)". It then asks homebrew vs commercial, and ARM7 vs ARM9.
+
+Install: repo master at commit 9e0674c (release v1.5.1, which upstream says supports Ghidra 12.0.4), built with Gradle 9.1 against Ghidra 12.1.4 with no source changes needed to compile. The one local change is `ntrghidra-headless-prompts.patch`: upstream pops up GUI dialogs from the loader, which crash `analyzeHeadless` with a HeadlessException, so the patch skips them in headless mode only (defaults: homebrew, ARM9, all overlays; `-Dntrghidra.arm7=true` / `-Dntrghidra.sdk=true` override). GUI behaviour is unchanged. The built zip is kept in this folder (sha256 in tool.json).
+
+Test result: pass (2026-10-16). The test installs the zip into a throwaway Ghidra user dir, builds a tiny NDS-shaped image (valid header CRC, 12-byte ARM9 stub from arm-none-eabi-as), imports it headlessly with `-loader NTRGhidraLoader`, and checks for language ARM:LE:32:v5t, the ARM9_Main_Memory block at 0x02000000, IO/VRAM regions, the REG_A_DISPCNT label, the `_entry_arm9` function and the first disassembled instruction. The GUI dialogs and ARM7 / SDK-decompression / overlay paths were not exercised. Needs Java 21.
