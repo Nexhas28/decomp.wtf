@@ -186,3 +186,27 @@ def drop_delay_nops(asm_text: str) -> tuple[str, NopDropReport]:
         return asm_text, NopDropReport(tuple(decisions), False)
     out = [line for i, line in enumerate(lines) if i not in remove]
     return "\n".join(out), NopDropReport(tuple(decisions), True)
+
+
+# The PSY-Q/maspsx assembler expands the `move` macro as `addu $d,$s,$zero`; modern binutils expands
+# the same macro as `or $d,$s,$zero`, which does not reproduce PSX ROMs. This pass rewrites the
+# generated assembly so the modern assembler emits the original encoding.
+
+_MOVE_RE = re.compile(r"^(?P<indent>[ \t]*)move(?P<sep>[ \t]+)(?P<dst>\$[A-Za-z0-9]+),(?P<src>\$[A-Za-z0-9]+)"
+                      r"(?P<tail>[ \t]*(?:#.*)?)$")
+
+
+def expand_move_addu(asm_text: str) -> tuple[str, int]:
+    """Rewrite `move $d,$s` as `addu $d,$s,$zero`. Returns (text, count).
+
+    Only whole-line `move` pseudo-instructions are rewritten; every other line is byte-identical."""
+    out: list[str] = []
+    count = 0
+    for line in asm_text.split("\n"):
+        m = _MOVE_RE.match(line)
+        if m is None:
+            out.append(line)
+            continue
+        out.append(f"{m['indent']}addu{m['sep']}{m['dst']},{m['src']},$zero{m['tail']}")
+        count += 1
+    return "\n".join(out), count

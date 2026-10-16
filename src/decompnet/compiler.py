@@ -72,6 +72,13 @@ class CompilerConfig:
     wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
     cache: bool = True  # content-addressed compile cache (plan P2.4-P2.6); False disables read+write
     cache_dir: str | None = None  # cache location; default: DECOMPNET_CACHE_DIR or <tmp>/decompnet-cache
+    # Optional two-stage variant: compile to assembly, run the named text pass, then assemble with
+    # `asm_cmd`. Used for the PSY-Q assembler variant (see decompnet.rom.maspsx): the pinned GNU as 2.6
+    # materialises gcc's blocking load-delay nop and expands `move` the PSY-Q way, while modern binutils
+    # drops the nop but expands `move` as `or` - neither alone reproduces every ROM function, so the
+    # variant is tried per attempt and only kept when it scores better.
+    asm_cmd: tuple[str, ...] | None = None  # assembler argv template: {src} {obj} {include}
+    asm_pass: str | None = None  # registered asm pass applied to the generated .s before assembly
 
 
 @dataclass
@@ -158,6 +165,10 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
             check_source(source)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
+
+    if cfg.asm_cmd is not None:
+        # variant compiles are attempt-scoped and few: run them directly, never through the cache
+        return _compile_variant(cfg, context_header, source)
 
     cache = _cache_for(cfg)
     if cache is not None:
@@ -318,6 +329,78 @@ def _run_attempt(cfg: CompilerConfig, work: Path, argv: list[str], root: str,
                         "no-output", None)
     payload = obj.read_bytes()
     return _Attempt(CompileResult(True, payload, log[-2000:]), ccache.OUTCOME_SUCCESS, payload)
+
+
+def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> CompileResult:
+    """Two-stage compile for an assembler variant: `gcc -S`, the named asm pass, then `cfg.asm_cmd`.
+
+    Staging matches _compile_legacy (fresh temp tree, include copy, context.h), so the only difference
+    from a normal compile is which assembler runs and what text it is handed."""
+    from . import toolchains
+
+    with tempfile.TemporaryDirectory(prefix="decompnet-var-") as tmp:
+        work = Path(tmp)
+        inc = work / "include"
+        inc.mkdir()
+        for d in cfg.include_dirs:
+            shutil.copytree(d, inc, dirs_exist_ok=True)
+        (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
+        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n",
+                                     encoding="utf-8", newline="\n")
+
+        root = _root(cfg, work)
+        subst = {"{src}": f"{root}/func.c", "{asm}": f"{root}/func.s", "{obj}": f"{root}/func.o",
+                 "{include}": f"{root}/include"}
+        # `-S` instead of `-c`, and the object path element becomes the assembly path: passing two -o
+        # flags (or letting gcc write assembly into func.o) makes the stage fail on old GCCs.
+        compile_argv: list[str] = []
+        saw_dash_s = False
+        for a in cfg.cmd:
+            if a == "-c":
+                a = "-S"
+            if a == "{obj}":
+                a = "{asm}"
+            if a == "-S":
+                saw_dash_s = True
+            compile_argv.append(subst.get(a, a))
+        compile_argv = [a.replace("{include}", subst["{include}"]) for a in compile_argv]
+        if not saw_dash_s:
+            compile_argv.insert(1, "-S")
+        if "{asm}" not in compile_argv:
+            compile_argv += ["-o", subst["{asm}"]]
+        wsl_extra = {"outputs": ["func.s", "func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {}
+        try:
+            with _SLOTS:
+                proc = _exec(cfg, work, compile_argv, cfg.timeout, **wsl_extra)
+        except subprocess.TimeoutExpired:
+            return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
+        log = (proc.stdout + proc.stderr).replace(root + "/", "")
+        asm_file = work / "func.s"
+        if proc.returncode != 0 or not asm_file.exists():
+            return CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
+
+        asm_text = asm_file.read_text(encoding="utf-8", errors="replace")
+        if cfg.asm_pass:
+            try:
+                asm_text = toolchains.apply_asm_pass(cfg.asm_pass, asm_text)
+            except ValueError as e:
+                return CompileResult(False, None, f"asm pass failed: {e}")
+            asm_file.write_text(asm_text, encoding="utf-8", newline="\n")
+
+        asm_subst = {"{src}": f"{root}/func.s", "{asm}": f"{root}/func.s", "{obj}": f"{root}/func.o",
+                     "{include}": f"{root}/include"}
+        asm_argv = [asm_subst.get(a, a) for a in cfg.asm_cmd]
+        asm_argv = [a.replace("{include}", asm_subst["{include}"]) for a in asm_argv]
+        try:
+            with _SLOTS:
+                proc = _exec(cfg, work, asm_argv, cfg.timeout, **wsl_extra)
+        except subprocess.TimeoutExpired:
+            return CompileResult(False, None, f"assembler timed out after {cfg.timeout}s")
+        log += (proc.stdout + proc.stderr).replace(root + "/", "")
+        obj = work / "func.o"
+        if proc.returncode != 0 or not obj.exists():
+            return CompileResult(False, None, log[-4000:] or f"assembler exited with {proc.returncode}")
+        return CompileResult(True, obj.read_bytes(), log[-2000:])
 
 
 def _compile_legacy(cfg: CompilerConfig, context_header: str, source: str) -> CompileResult:

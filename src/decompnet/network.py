@@ -14,13 +14,13 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import policy, retrieval, scheduler, scoring, snapshots, telemetry
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
-from .project import compiler_config
+from .project import compiler_config, variant_compiler_config
 from .store import Store
 
 CLAIM_TTL = 30 * 60
@@ -433,7 +433,42 @@ class Network:
         d = scoring.diff(self._target_obj(fn, proj), cand)
         if verdict is not None:
             d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+        if verdict is not True and 0 < d.score <= self._VARIANT_MAX_SCORE:
+            # near miss: try the attempt-scoped assembler variant and keep it only when it is better
+            alt = self._variant_attempt(fn, proj, source, ctx, d)
+            if alt is not None:
+                return alt
         return result, cand, verdict, problems, d
+
+    #: Only near misses are worth a second compile. The variant is never applied project-wide: a global
+    #: assembler swap measurably regresses already-matched functions (the pinned GNU as 2.6 keeps a
+    #: blocking load-delay nop some ROM functions really have, while modern binutils drops it), so it is
+    #: tried per attempt and kept only when it scores strictly better.
+    _VARIANT_MAX_SCORE = 200
+
+    def _variant_attempt(self, fn, proj, source: str, ctx, base_diff):
+        """Compile `source` with the assembler variant; return the better (result, cand, verdict,
+        problems, diff) tuple, or None when the variant is unavailable or no better."""
+        try:
+            cfg = json.loads(proj["config"])
+            vcfg = variant_compiler_config(Path(proj["root"]), cfg)
+        except (ValueError, OSError):
+            return None
+        if vcfg is None:
+            return None
+        vres = compile_source(vcfg, ctx["header"], source)
+        if not vres.ok or not vres.obj:
+            return None
+        vcand, vverdict, vproblems = self._evaluate(fn, proj, vres.obj)
+        if vcand is None:
+            return None
+        vd = scoring.diff(self._target_obj(fn, proj), vcand)
+        if vverdict is not None:
+            vd = scoring.DiffResult(0 if vverdict else max(1, vd.score), vd.max_score, vd.rows, vverdict)
+        if vd.score >= base_diff.score:
+            return None
+        note = f"assembler variant ({vcfg.asm_pass} + modern binutils): score {base_diff.score} -> {vd.score}"
+        return replace(vres, log=(vres.log or "") + "\n" + note), vcand, vverdict, vproblems, vd
 
     def _stale_text(self, proj, fn, snap: dict, why: str) -> str:
         cur = self._context(proj["id"], fn["unit"])

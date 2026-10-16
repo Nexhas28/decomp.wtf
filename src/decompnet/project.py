@@ -95,6 +95,45 @@ def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
     )
 
 
+#: The assembler variant used for the attempt-scoped fallback (see compiler.CompilerConfig.asm_cmd):
+#: modern binutils + the PSY-Q `move` expansion. Tried only when a base attempt is a near miss.
+ASM_VARIANT_PASS = "psyq-move-addu"
+ASM_VARIANT_TOOLCHAIN = "binutils-mips"
+
+
+def variant_compiler_config(root: Path, cfg: dict, *, asm_pass: str = ASM_VARIANT_PASS):
+    """The same compile, assembled by the modern mips binutils with the PSY-Q passes applied.
+
+    Returns None when the toolchain is not installed (the fallback then simply does not run)."""
+    from dataclasses import replace
+
+    from . import toolchains
+
+    base = compiler_config(root, cfg)
+    if base.asm_cmd is not None:
+        return None
+    try:
+        asm_dir = Path(toolchains.path(ASM_VARIANT_TOOLCHAIN))
+    except toolchains.ToolchainError:
+        return None
+    asm = asm_dir / "as"
+    if not asm.exists():
+        for candidate in ("mips-ps2-decompals-as", "mipsel-linux-gnu-as"):
+            if (asm_dir / candidate).exists():
+                asm = asm_dir / candidate
+                break
+        else:
+            return None
+    endian = "-EB" if cfg.get("big_endian") else "-EL"
+    return replace(
+        base,
+        asm_cmd=(str(asm), endian, "-o", "{obj}", "{src}"),
+        asm_pass=asm_pass,
+        cache=False,
+        ro_paths=tuple({*base.ro_paths, str(asm_dir)}),
+    )
+
+
 def target_objects(root: Path, cfg: dict) -> list[Path]:
     t = cfg["target"]
     if isinstance(t.get("build_from"), list):  # one object per source file, named after it
