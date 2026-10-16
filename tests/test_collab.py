@@ -3,20 +3,34 @@
 import json
 import re
 import shutil
+import subprocess
+import sys
+import time
 
 import pytest
 from starlette.testclient import TestClient
 
+from decompnet import compiler_profiles as profiles
 from decompnet import toolchains
 from decompnet.app import collab
 from decompnet.app.engine import RomNetwork
 from decompnet.network import NetworkError
 
+from . import test_rom
 from .test_app_engine import CLAMP, DAMAGE
-from .test_rom import built  # noqa: F401
 
-pytestmark = pytest.mark.skipif(toolchains.installed("gcc-2.7.2-kmc") is None or not shutil.which("ld.lld"),
-                                reason="needs gcc-2.7.2-kmc")
+DEMO_TOOLS = toolchains.installed("gcc-2.7.2-kmc") is not None and bool(shutil.which("ld.lld"))
+
+
+@pytest.fixture(scope="module")
+def built():
+    """Demo Quest 64 (see test_rom): the tests that use it need gcc-2.7.2-kmc and ld.lld; the compiler-settings
+    tests below don't."""
+    if not DEMO_TOOLS:
+        pytest.skip("needs gcc-2.7.2-kmc and ld.lld")
+    if not test_rom.ROM.exists():
+        subprocess.run([sys.executable, str(test_rom.DEMO / "build.py")], check=True)
+    return test_rom.ROM.read_bytes()
 
 
 @pytest.fixture(scope="module")
@@ -227,3 +241,126 @@ def test_members_stay_in_the_room_when_their_app_restarts(built, tmp_path):  # n
     again.links[gslug].stop()
     again.links[gslug].sync()
     assert [m["name"] for m in room._members_now()] == ["sam"]
+
+
+# -- compiler settings: members compile with exactly the host's (no ROM or compile needed)
+
+HOST_COMPILER = {"toolchain": "gcc-2.7.2-psx", "flags": ["-O2", "-G0"], "wrapper": "cc", "timeout": 20,
+                 "provenance": "explicit", "include_dirs": ["/host/only/include"]}
+HOST_ASSIGNMENTS = {"compiler_profiles": {"ovl": {"toolchain": "gcc-2.8.1-psx", "flags": ["-O1", "-G0"]}},
+                    "compiler_ranges": [{"start": 0x80100000, "end": 0x80200000, "profile": "ovl", "segment": "ovl_shop"}],
+                    "compiler_functions": {"func_80010000": "ovl"}}
+
+
+def _rom_project(net, root, compiler: dict, **extra) -> str:
+    cfg = {"kind": "rom", "platform": "psx", "segments": [{"name": "main"}, {"name": "ovl_shop"}],
+           "rom": {"sha1": "ab" * 20, "title": "TEST", "game_code": "SLUS-00000", "region": "USA"},
+           "compiler": compiler, **extra}
+    root.mkdir(parents=True, exist_ok=True)
+    with net.store.tx() as db:
+        pid = db.execute("INSERT INTO projects(slug,name,root,config) VALUES(?,?,?,?)",
+                         ("test", "TEST", str(root), json.dumps(cfg))).lastrowid
+        for name, vram, unit in (("func_80010000", 0x80010000, "main"), ("shop_open", 0x80100000, "ovl_shop")):
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,seed,unit,vram) VALUES(?,?,8,2,?,?,?)",
+                       (pid, name, "/* old draft */", unit, vram))
+        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                   "VALUES(?,1,'',NULL,'basic types',?,'')", (pid, time.time()))
+    return "test"
+
+
+@pytest.fixture
+def pair(tmp_path):
+    """A host whose compiler settings were tuned over time, and a member who joined with only toolchain and flags."""
+    host = RomNetwork(tmp_path / "h.db", tmp_path / "h")
+    slug = _rom_project(host, tmp_path / "h" / "test", HOST_COMPILER, **HOST_ASSIGNMENTS)
+    room = host.rooms[slug] = collab.Room(host, slug)
+    code = room.open_invite()
+    client = TestClient(collab.host_app(host, host.rooms), base_url="http://192.168.1.20:6481")
+    joined = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": "kai", "sha1": "ab" * 20}).json()
+    guest = RomNetwork(tmp_path / "g.db", tmp_path / "g")
+    _rom_project(guest, tmp_path / "g" / "test", {"toolchain": "gcc-2.7.2-psx", "flags": ["-O2"], "timeout": 20,
+                                                   "sandbox": "member-only"})
+    link = guest.link_project("test", {"url": "http://192.168.1.20:6481", "room": slug, "token": joined["token"],
+                                       "member": joined["name"]}, client=client, start=False)
+    return host, guest, link, client, code
+
+
+def _cfg(net):
+    return json.loads(net.project_row("test")["config"])
+
+
+def _updates(net):
+    return [e["detail"] for e in net.store.all("SELECT detail FROM events WHERE kind='collab'")
+            if e["detail"].startswith("compiler settings updated")]
+
+
+def test_members_compile_with_the_host_compiler_settings(pair):
+    host, guest, link, client, code = pair
+    link.sync()
+    mine = _cfg(guest)
+    assert profiles.shared(mine) == profiles.shared(_cfg(host))
+    assert mine["compiler_ranges"] == HOST_ASSIGNMENTS["compiler_ranges"] and mine["compiler"]["flags"] == ["-O2", "-G0"]
+    assert "include_dirs" not in mine["compiler"]  # the host's machine-local keys stay on the host...
+    assert mine["compiler"]["sandbox"] == "member-only"  # ...and the member keeps its own
+    assert guest.store.one("SELECT COUNT(*) AS n FROM functions WHERE seed IS NOT NULL")["n"] == 0  # old drafts dropped
+    assert len(_updates(guest)) == 1 and "gcc-2.7.2-psx -O2 -G0" in _updates(guest)[0]
+    link.sync()  # nothing changed: nothing rewritten, no second note in the feed
+    assert len(_updates(guest)) == 1
+
+
+def test_host_changes_reach_members_on_the_next_sync(pair):
+    host, guest, link, client, code = pair
+    link.sync()
+    host.set_compiler("test", "gcc-2.7.2-psx", ["-O2", "-G8"], compiler_functions={},
+                      compiler_ranges=[{"start": 0x80100000, "end": 0x80300000, "profile": "ovl"}])
+    link.sync()
+    mine = _cfg(guest)
+    assert mine["compiler"]["flags"] == ["-O2", "-G8"] and "compiler_functions" not in mine
+    assert mine["compiler_ranges"] == [{"start": 0x80100000, "end": 0x80300000, "profile": "ovl"}]
+    assert profiles.shared(mine) == profiles.shared(_cfg(host)) and len(_updates(guest)) == 2
+
+
+def test_a_member_cannot_change_the_compiler_settings(pair):
+    host, guest, link, client, code = pair
+    link.sync()
+    with pytest.raises(NetworkError, match="follows the room host's compiler settings"):
+        guest.set_compiler("test", "gcc-2.8.1-psx")
+    with pytest.raises(NetworkError, match="follows the room host's compiler settings"):
+        guest.set_compiler("test", compiler_functions={})
+    guest.links.clear()  # the app restarted and the link isn't running yet: still refused
+    with pytest.raises(NetworkError, match="follows the room host's compiler settings"):
+        guest.set_compiler("test", "gcc-2.8.1-psx")
+    host.set_compiler("test", "gcc-2.8.1-psx")  # the host itself can
+
+
+def test_a_reconnect_or_local_drift_brings_the_host_settings_back(pair):
+    host, guest, link, client, code = pair
+    link.sync()
+    cfg = _cfg(guest)
+    cfg["compiler"]["flags"] = ["-O3"]  # e.g. edited outside the app
+    with guest.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE slug='test'", (json.dumps(cfg),))
+    fresh = collab.Link(guest, "test", link.url, link.room, link.token, link.member, client=client)  # cursors at 0
+    fresh.sync()
+    assert _cfg(guest)["compiler"]["flags"] == ["-O2", "-G0"]
+
+
+def test_hello_carries_the_settings_but_nothing_machine_local(pair):
+    host, guest, link, client, code = pair
+    hello = client.get("/collab/hello", params={"invite": code, "room": "test"}).json()
+    assert hello["compiler"]["toolchain"] == "gcc-2.7.2-psx" and "include_dirs" not in hello["compiler"]
+    assert hello["compiler_settings"] == profiles.shared(_cfg(host))
+
+
+def test_an_old_host_or_an_unknown_compiler(pair):
+    host, guest, link, client, code = pair
+    before = _cfg(guest)
+    link.apply({"e": 0, "events": [], "claims": [], "members": []})  # an older host sends no settings
+    assert _cfg(guest) == before
+    cfg = _cfg(host)
+    cfg["compiler"]["toolchain"] = "gcc-from-the-future"  # a compiler this member's version doesn't know
+    with host.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE slug='test'", (json.dumps(cfg),))
+    with pytest.raises(NetworkError, match="can't use the room host's compiler settings"):
+        link.sync()
+    assert "gcc-from-the-future" in link.error and _cfg(guest) == before  # loud, and nothing half-applied

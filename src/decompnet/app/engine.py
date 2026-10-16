@@ -1796,7 +1796,9 @@ class RomNetwork(Network):
             verdict = link.attempt(agent, name, source)
             if not verdict.get("matched"):
                 res["text"] += ("\n⚠️ The room's host could not confirm this match on their copy (score "
-                                f"{verdict.get('score')}). Check that both of you use the same compiler settings.")
+                                f"{verdict.get('score')}). This copy follows the host's compiler settings"
+                                + (f", but the last sync failed: {link.error}" if link.error else
+                                   "; if the host just changed them, the next sync brings them") + ".")
             else:
                 res["text"] += "\nShared with the room: the host confirmed the match."
         elif before is None or res["score"] < before:
@@ -2682,6 +2684,9 @@ class RomNetwork(Network):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
         cfg = json.loads(proj["config"])
+        if cfg.get("link"):  # the saved link, not self.links: also before restore_links() ran
+            raise NetworkError("this project follows the room host's compiler settings (the host re-checks every "
+                               "match with them): ask the host to change them")
         before = toolchains.profile_of(proj)
         before_digest = snapshots.compiler_digest(proj)
         label: list[str] = []
@@ -2712,6 +2717,10 @@ class RomNetwork(Network):
                 "SELECT name FROM functions WHERE project_id=?", proj["id"])})
         except (ValueError, toolchains.ToolchainError) as e:
             raise NetworkError(str(e))
+        self._save_compiler(proj, cfg, change, before_digest, "compiler", '; '.join(label) or 'compiler')
+
+    def _save_compiler(self, proj, cfg: dict, change, before_digest: str, kind: str, label: str) -> None:
+        """Save a validated compiler change, drop what was made for the old compiler and record it."""
         # the compiler digest also covers keys the profile doesn't model (cmd, include_dirs, ...)
         identity_changed = change.is_identity_change or \
             snapshots.compiler_digest({"config": json.dumps(cfg)}) != before_digest
@@ -2727,13 +2736,59 @@ class RomNetwork(Network):
                     "AND function_id IN (SELECT id FROM functions WHERE project_id=?)",
                     (f"profile-{change.after_identity[:16]}", time.time(), proj["id"]))
             # The event carries the P4.1 invalidation contract: provenance, identity, what it invalidates.
-            detail = (f"{'; '.join(label) or 'compiler'} (provenance {change.provenance[0]} -> "
+            detail = (f"{label} (provenance {change.provenance[0]} -> "
                       f"{change.provenance[1]}; identity {change.before_identity[:12]} -> "
                       f"{change.after_identity[:12]}")
             if identity_changed:
                 detail += f"; invalidated: {', '.join(change.invalidates or toolchains.INVALIDATED)}"
             detail += ")"
-            self._event(db, proj["id"], None, "compiler", detail)
+            self._event(db, proj["id"], None, kind, detail)
+
+    def apply_remote_compiler(self, slug: str, settings: dict) -> bool:
+        """Member side: compile with exactly the room host's compiler settings (compiler_profiles.shared). The host
+        re-compiles every match with its own, so any difference (flags, assembler, a range or function override)
+        turns a local match into a rejected one. This machine's own keys (include paths, sandbox, ...) are kept.
+        Returns whether anything changed. A toolchain that isn't installed here is still applied: compiles then
+        say so, instead of quietly using another compiler."""
+        if not isinstance(settings, dict) or not isinstance(settings.get("compiler"), dict) or not settings["compiler"]:
+            raise NetworkError("the room's host sent no compiler settings")
+        proj = self._project(slug)
+        cfg = json.loads(proj["config"])
+        theirs = profiles.shared({"compiler": settings["compiler"], **{k: settings.get(k) for k in profiles.KEYS}})
+        if profiles.shared(cfg) == theirs:
+            return False
+        before = toolchains.profile_of(proj)
+        before_digest = snapshots.compiler_digest(proj)
+        mine = {k: v for k, v in (cfg.get("compiler") or {}).items() if k in snapshots.COMPILE_KEYS}
+        if theirs["compiler"].get("toolchain") != (cfg.get("compiler") or {}).get("toolchain"):
+            mine.pop("cmd", None)  # a custom command template belongs to the old compiler (as in set_compiler)
+        cfg["compiler"] = {**mine, **theirs["compiler"]}
+        for key in profiles.KEYS:
+            if theirs[key]:
+                cfg[key] = theirs[key]
+            else:
+                cfg.pop(key, None)
+        try:
+            profile = toolchains.profile_from(cfg["compiler"])
+            if profile.toolchain:
+                toolchains.get(profile.toolchain)
+            # function names aren't checked: the host did, and a rename may reach this copy a sync later
+            profiles.validate(cfg)
+        except (ValueError, TypeError, toolchains.ToolchainError) as e:
+            raise NetworkError(f"can't use the room host's compiler settings here ({e}): "
+                               "updating decomp.wtf to the host's version may help") from None
+        missing = sorted({t for t in [profile.toolchain, *(p.get("toolchain") for p in theirs["compiler_profiles"].values())]
+                          if t and toolchains.installed(t) is None})
+        n = {k: len(theirs[k]) for k in profiles.KEYS}
+        label = (f"compiler settings updated from the room's host: {profile.toolchain or 'command'} "
+                 f"{' '.join(profile.flags)}".rstrip()
+                 + (f", wrapper {theirs['compiler']['wrapper']}" if theirs["compiler"].get("wrapper") not in (None, "cc") else "")
+                 + (f"; {n['compiler_profiles']} profiles, {n['compiler_ranges']} ranges, "
+                    f"{n['compiler_functions']} function overrides" if any(n.values()) else "")
+                 + (f"; not installed here yet: {', '.join(missing)} (install from Setup)" if missing else ""))
+        self._save_compiler(proj, cfg, toolchains.profile_diff(before, profile, note="room host"), before_digest,
+                            "collab", label)
+        return True
 
     def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,

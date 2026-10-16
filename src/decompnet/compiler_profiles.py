@@ -9,9 +9,13 @@ settings (timeout, sandbox, include paths, etc.) from the default compiler.
 
 from __future__ import annotations
 
-from . import toolchains
+import hashlib
+import json
+
+from . import snapshots, toolchains
 
 UNSET = object()
+KEYS = ("compiler_profiles", "compiler_ranges", "compiler_functions")
 
 
 def validate(cfg: dict, function_names: set[str] | None = None) -> None:
@@ -91,3 +95,17 @@ def effective_compiler(cfg: dict, fn=None) -> dict:
         compiler.pop("cmd", None)
         compiler.update(cfg["compiler_profiles"][profile], profile=profile)
     return compiler
+
+
+def shared(cfg: dict) -> dict:
+    """The compiler settings a room's members follow (see app/collab.py): the default compiler and every profile
+    assignment. Keys that describe one machine (a command template, include paths, read-only mounts, sandbox,
+    image) never travel: each side keeps its own."""
+    compiler = {k: v for k, v in (cfg.get("compiler") or {}).items() if k not in snapshots.COMPILE_KEYS}
+    return {"compiler": compiler, "compiler_profiles": cfg.get("compiler_profiles") or {},
+            "compiler_ranges": cfg.get("compiler_ranges") or [], "compiler_functions": cfg.get("compiler_functions") or {}}
+
+
+def digest(settings: dict) -> str:
+    """A short hash of shared() settings: equal on both sides of a room exactly when the settings are."""
+    return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:16]
