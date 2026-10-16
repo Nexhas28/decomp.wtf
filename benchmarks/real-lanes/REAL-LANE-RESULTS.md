@@ -1,7 +1,7 @@
 # Workstream C — real analysis lanes: commands, outputs, outcomes
 
 Host: macOS (darwin arm64), 2026-10-16. Every command below was executed verbatim; outputs are
-quoted/summarised. Artifacts live under `/Users/shanemcgovern/Decomp/java` and the throwaway
+quoted/summarised. Artifacts live under `/Users/<user>/Decomp/java` and the throwaway
 `/tmp/wc3-lanes` area — nothing outside the workspace was installed or modified. The pinned Ghidra
 install (`~/Documents/Codex/2026-10-14/i-want/work/ghidra-displaylink/ghidra_12.1.4_PUBLIC`) and the
 rea-agents package (`~/.local/lib/node_modules/rea-agents`) were used read-only.
@@ -32,7 +32,7 @@ GHIDRA_JAVA_OPTIONS and JAVA_TOOL_OPTIONS (the latter reaches the LaunchSupport 
 failure fixed here). `rea.allowed_env()` now injects JAVA_HOME and GHIDRA_INSTALL_DIR into the REA
 sidecar allowlist (REA's `GhidraInstallation.js` reads exactly those two variables).
 
-Smoke check: `java_home → /Users/shanemcgovern/Decomp/java/jdk-21.0.12.1+1/Contents/Home`,
+Smoke check: `java_home → /Users/<user>/Decomp/java/jdk-21.0.12.1+1/Contents/Home`,
 `java_version → 21`, `ghidra_home → .../ghidra_12.1.4_PUBLIC`, `available → True`.
 
 ## 2. Real-lane bugs found and fixed (evidence the lanes are real)

@@ -3,13 +3,13 @@
   "document": "decomp-wtf-implementation-plan Phase 0 / P0.1 baseline manifest",
   "plan": {
     "title": "decomp.wtf: Matching Accuracy, Performance and Analysis Integration",
-    "source": "/Users/shanemcgovern/Downloads/decomp-wtf_implementation-plan.md",
+    "source": "/Users/<user>/Downloads/decomp-wtf_implementation-plan.md",
     "document_version": "1.0"
   },
   "checkout": {
     "repository": "https://github.com/Nexhas28/decomp.wtf",
     "reviewed_commit": "575b4a30ed481ff5497dfb9ce4f599368a95a04a",
-    "working_tree": "/Users/shanemcgovern/Decomp/decomp-wtf",
+    "working_tree": "/Users/<user>/Decomp/decomp-wtf",
     "commit": "575b4a30ed481ff5497dfb9ce4f599368a95a04a",
     "commit_subject": "Discontinue decomp.wtf",
     "tree_status_at_baseline": "clean (HEAD == reviewed commit, unmodified)",
@@ -45,7 +45,7 @@
   },
   "rea": {
     "status": "local-checkout-suspected",
-    "path_candidate": "/Users/shanemcgovern/dev/g8r-private/rea",
+    "path_candidate": "/Users/<user>/dev/g8r-private/rea",
     "notes": "Recorded artifact identity and MCP schema when Phase 9 starts."
   },
   "baseline_tests": {

@@ -53,7 +53,7 @@ functions), so the documented per-function-file recipe is the supported route.
 ## Re-verification commands
 
 ```bash
-cd /Users/shanemcgovern/Decomp/decomp-wtf
+cd /Users/<user>/Decomp/decomp-wtf
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_external_permuter.py -q   # A.11 evidence (7 tests)
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_rea.py -q                 # A.12 evidence (42 tests, incl. real lanes)
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_retrieval.py -q           # A.13 evidence (incl. real FID/BSim lanes)

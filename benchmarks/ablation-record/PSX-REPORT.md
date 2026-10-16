@@ -42,8 +42,8 @@ SQLite backup API, never a raw WAL copy:
 
     python3 - <<'EOF'
     import sqlite3
-    src = sqlite3.connect("file:/Users/shanemcgovern/Decomp/.decomp/decomp.db?mode=ro", uri=True)
-    dst = sqlite3.connect("/Users/shanemcgovern/Decomp/benchmarks/results/psx-ablation/app.db")
+    src = sqlite3.connect("file:/Users/<user>/Decomp/.decomp/decomp.db?mode=ro", uri=True)
+    dst = sqlite3.connect("/Users/<user>/Decomp/benchmarks/results/psx-ablation/app.db")
     with dst: src.backup(dst)
     EOF
 
@@ -56,17 +56,17 @@ point-in-time snapshot). Verified again after both runs: state unchanged, integr
 See `psx-ablation/run.sh` (run-001) and `psx-ablation/run-002.sh` (run-002). The run-002 command:
 
     docker run --rm --platform linux/arm64 \
-      -v /Users/shanemcgovern/Decomp/decomp-wtf:/w:ro \
-      -v /Users/shanemcgovern/Decomp/slus-01363-4:/Users/shanemcgovern/Decomp/slus-01363-4:ro \
-      -v /Users/shanemcgovern/Decomp/benchmarks:/Users/shanemcgovern/Decomp/benchmarks \
-      -v "$HOME/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains":/Users/shanemcgovern/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains:ro \
-      -e DECOMPNET_TOOLCHAINS=/Users/shanemcgovern/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains \
+      -v /Users/<user>/Decomp/decomp-wtf:/w:ro \
+      -v /Users/<user>/Decomp/slus-01363-4:/Users/<user>/Decomp/slus-01363-4:ro \
+      -v /Users/<user>/Decomp/benchmarks:/Users/<user>/Decomp/benchmarks \
+      -v "$HOME/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains":/Users/<user>/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains:ro \
+      -e DECOMPNET_TOOLCHAINS=/Users/<user>/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains \
       -e PYTHONPATH=/w/src \
       python:3.12-bookworm bash -c 'pip install -q capstone pyelftools rabbitizer pyyaml && \
         python3 /w/benchmarks/harness/ablate.py \
-          --db /Users/shanemcgovern/Decomp/benchmarks/results/psx-ablation/app.db \
-          --project-root /Users/shanemcgovern/Decomp/slus-01363-4 \
-          --results-root /Users/shanemcgovern/Decomp/benchmarks/results \
+          --db /Users/<user>/Decomp/benchmarks/results/psx-ablation/app.db \
+          --project-root /Users/<user>/Decomp/slus-01363-4 \
+          --results-root /Users/<user>/Decomp/benchmarks/results \
           --run-id psx-ablation/run-002 --sample 8 --max-steps 300 --timebox 1140 --per-run-wall 240'
 
 ## Per-function results (run-002, 300 steps)

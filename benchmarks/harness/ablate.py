@@ -15,8 +15,8 @@ program. Example (run from the repo root):
 
     docker run --rm --platform linux/arm64 \
       -v "$PWD":/w:ro \
-      -v /Users/shanemcgovern/Decomp/slus-01363-4:/proj:ro \
-      -v /Users/shanemcgovern/Decomp/benchmarks:/bench \
+      -v $HOME/Decomp/slus-01363-4:/proj:ro \
+      -v $HOME/Decomp/benchmarks:/bench \
       -v "$HOME/.local/share/decomp-wtf/backup/decomp-wtf-home-volume/.local/share/decompnet/toolchains":/tc:ro \
       -e DECOMPNET_TOOLCHAINS=/tc -e PYTHONPATH=/w/src \
       python:3.12-bookworm bash -c "pip install -q capstone pyelftools && \

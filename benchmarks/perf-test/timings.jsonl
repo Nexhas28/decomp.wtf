@@ -1,17 +1,17 @@
-{"tag": "c2", "args": ["diff", "func_800A4620", "/Users/shanemcgovern/Decomp/work/perf-test/func_800A4620.c"], "wall_s": 0.275, "score": 10486, "rc": 0, "out_bytes": 4017}
-{"tag": "a628-c1-full", "args": ["full", "diff", "func_8003A628", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.044, "score": null, "rc": 2, "out_bytes": 410}
-{"tag": "full", "args": ["diff", "func_8003A628", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.128, "score": 210, "rc": 0, "out_bytes": 679}
-{"tag": "full", "args": ["diff", "func_8003A628", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.076, "score": 120, "rc": 0, "out_bytes": 657}
-{"tag": "full", "args": ["diff", "func_8003A628", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.083, "score": 210, "rc": 0, "out_bytes": 679}
-{"tag": "full", "args": ["diff", "func_8003A628", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.092, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "c2", "args": ["diff", "func_800A4620", "/Users/<user>/Decomp/work/perf-test/func_800A4620.c"], "wall_s": 0.275, "score": 10486, "rc": 0, "out_bytes": 4017}
+{"tag": "a628-c1-full", "args": ["full", "diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.044, "score": null, "rc": 2, "out_bytes": 410}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.128, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.076, "score": 120, "rc": 0, "out_bytes": 657}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.083, "score": 210, "rc": 0, "out_bytes": 679}
+{"tag": "full", "args": ["diff", "func_8003A628", "/Users/<user>/Decomp/work/perf-test/func_8003A628.c"], "wall_s": 0.092, "score": 210, "rc": 0, "out_bytes": 679}
 {"tag": "release-tag", "args": ["release", "func_8003A628", "perf test: tried 4, stuck at score 120 (stored best 10), suspect jr-epilogue load-delay nop + %lo-fold allocator tie, documented wall"], "wall_s": 0.392, "score": null, "rc": 0, "out_bytes": 142}
 {"tag": "full", "args": ["claim", "func_8003ED00"], "wall_s": 0.968, "score": 10350, "rc": 0, "out_bytes": 37602}
 {"tag": "rel", "args": ["release", "func_800A4620", "perf test: re-granted by fallback, releasing immediately (already measured wall)"], "wall_s": 0.486, "score": null, "rc": 0, "out_bytes": 142}
 {"tag": "full", "args": ["claim", "func_8003F1C0"], "wall_s": 0.833, "score": 15, "rc": 0, "out_bytes": 13054}
 {"tag": "full", "args": ["get", "func_8003F1C0"], "wall_s": 0.123, "score": 15, "rc": 0, "out_bytes": 12833}
-{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.06, "score": 235, "rc": 0, "out_bytes": 2035}
-{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003F1C0_nosched.c"], "wall_s": 0.074, "score": 235, "rc": 0, "out_bytes": 2035}
-{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/shanemcgovern/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.067, "score": 255, "rc": 0, "out_bytes": 2086}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.06, "score": 235, "rc": 0, "out_bytes": 2035}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0_nosched.c"], "wall_s": 0.074, "score": 235, "rc": 0, "out_bytes": 2035}
+{"tag": "full", "args": ["diff", "func_8003F1C0", "/Users/<user>/Decomp/work/perf-test/func_8003F1C0.c"], "wall_s": 0.067, "score": 255, "rc": 0, "out_bytes": 2086}
 {"tag": "rel", "args": ["release", "func_8003F1C0", "perf test: tried 3, floor 235 with current pipeline (stored best 15 unreproducible: new pipeline emits load-delay nops before jal/jr + mflo v0 tie). -fno-schedule-insns no effect; operand swap worse (255)."], "wall_s": 0.261, "score": null, "rc": 0, "out_bytes": 142}
 {"tag": "r2-claim-B65C", "args": ["claim", "func_8004B65C"], "wall_s": 1.146, "score": null, "rc": 0, "out_bytes": -1}
 {"tag": "r2-diff-B65C", "args": ["diff", "func_8004B65C", "..."], "wall_s": 0.105, "score": 4550, "rc": 0, "out_bytes": -1}

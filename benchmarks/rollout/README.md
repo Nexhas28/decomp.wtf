@@ -4,7 +4,7 @@ Canary-first staging, executed 16 Oct 2026:
 
 1. Fixture lanes: full test suite (388 passed; environment lanes recorded).
 2. Private canary: fork wheel (dist/decompnet-0.10.6-py3-none-any.whl) installed in
-   /Users/shanemcgovern/Decomp/canary-venv; ran with DECOMP_HOME=canary-home on port 19388 against a
+   /Users/<user>/Decomp/canary-venv; ran with DECOMP_HOME=canary-home on port 19388 against a
    WAL-safe copy of the live DB (canary-home/.decomp/decomp.db).
    Evidence the canary ran the fork:
    - the copied DB gained the fork's tables on open (attempt_snapshots, candidates,
@@ -19,7 +19,7 @@ Canary-first staging, executed 16 Oct 2026:
    (benchmarks/RUNBOOKS.md 24.0: restore via sqlite backup API).
 
 CUTOVER EXECUTED 16 Oct 2026:
-- pre-cutover backup: /Users/shanemcgovern/Decomp/.decomp/backups/pre-cutover-20261016-001806.db (sqlite backup API)
+- pre-cutover backup: /Users/<user>/Decomp/.decomp/backups/pre-cutover-20261016-001806.db (sqlite backup API)
 - live app stopped, fork wheel installed into ~/.local/share/uv/tools/decompnet via `uv pip install --reinstall --no-deps`
 - restart raced the swarm bridges (they self-heal via ensure_app): two instances briefly existed
   (6464/6465); both killed; bridges restarted exactly one fork instance

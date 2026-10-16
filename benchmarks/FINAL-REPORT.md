@@ -1,6 +1,6 @@
 # Final delivery report (plan Section 27) — PR-01..PR-30 coverage
 
-Working tree: /Users/shanemcgovern/Decomp/decomp-wtf, base 575b4a30 (the plan's reviewed commit).
+Working tree: /Users/<user>/Decomp/decomp-wtf, base 575b4a30 (the plan's reviewed commit).
 Every row below maps a plan PR to its commit and evidence. Status: ✅ = implemented + tested +
 committed; ⏳ = in flight.
 

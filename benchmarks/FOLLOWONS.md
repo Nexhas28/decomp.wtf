@@ -4,7 +4,7 @@ Executed 16 Oct 2026 after the PR-01..PR-30 fork was complete. Everything below 
 or retained as artifacts; the goal's four workstreams all landed.
 
 ## 1. Phase 12 rollout — DONE (production runs the fork)
-- Canary-first: fork wheel staged in `/Users/shanemcgovern/Decomp/canary-venv`, run with
+- Canary-first: fork wheel staged in `/Users/<user>/Decomp/canary-venv`, run with
   `DECOMP_HOME=canary-home` on port 19388 against a WAL-safe copy of the live DB. Evidence:
   the copy gained the fork's tables on open, and an end-to-end MCP smoke (real gcc-2.8.1-psx
   compile of func_800A1D6C, score 78210) recorded an attempt WITH an attempt_snapshots row.
@@ -28,7 +28,7 @@ or retained as artifacts; the goal's four workstreams all landed.
   12 tests, red-first; suite delta +12 passes.
 
 ## 3. Real analysis lanes — DONE (commit fe542e3)
-- Temurin JDK 21.0.12.1+1 provisioned in `/Users/shanemcgovern/Decomp/java` (Adoptium checksum
+- Temurin JDK 21.0.12.1+1 provisioned in `/Users/<user>/Decomp/java` (Adoptium checksum
   verified; full JDK required by REA's Ghidra doctor). Discovery wiring: `DECOMP_JAVA_HOME` /
   workspace / PATH; `DECOMP_GHIDRA_HOME`; sandbox-safe `-Duser.home` relocation.
 - Real executions now PASS: G-09 real import/decompile vs nm oracle; Function ID loads and
@@ -46,7 +46,7 @@ or retained as artifacts; the goal's four workstreams all landed.
 - benchmarks/harness/ablate.py: guided-v1 beam-4 vs baseline beam-1 at equal 300-step budgets,
   cold/warm cache pairing, real gcc-2.8.1-psx compiles, in-memory scoring (zero DB writes), on a
   WAL-safe copy of the production DB. Records: benchmarks/ablation-record/PSX-REPORT.md +
-  /Users/shanemcgovern/Decomp/benchmarks/results/psx-ablation/ (8,404 step rows).
+  /Users/<user>/Decomp/benchmarks/results/psx-ablation/ (8,404 step rows).
 - Result: solved 0/7 vs 0/7 on the 8 easiest open near-misses — an honest null result (single
   seed, arm64/qemu timing, easiest-sample bias all documented). Guided evaluates ~2.8x
   candidates at ~2.8x compiles; warm cache cuts real compiles ~20%. One genuine toolchain wall

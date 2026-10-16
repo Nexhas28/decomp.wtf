@@ -5,7 +5,7 @@ sssssssssssssssssssssssssssssssss.....sF..F.F..ssssss                    [100%]
 ==================================== ERRORS ====================================
 ________________ ERROR at setup of test_fork_state_after_setup _________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -46,7 +46,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _______ ERROR at setup of test_agent_matches_a_new_function_and_commits ________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -87,7 +87,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ______ ERROR at setup of test_decomp_wtfs_own_tries_leave_no_claim_behind ______
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -128,7 +128,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 __ ERROR at setup of test_near_miss_gets_a_diff_and_release_restores_the_best __
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -169,7 +169,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ________________________ ERROR at setup of test_guards _________________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -210,7 +210,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ____________________ ERROR at setup of test_read_and_search ____________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -251,7 +251,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ____________________ ERROR at setup of test_function_detail ____________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -292,7 +292,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _____________________ ERROR at setup of test_find_similar ______________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -333,7 +333,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _______________ ERROR at setup of test_ghidra_drafts_for_a_unit ________________
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -374,7 +374,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 __ ERROR at setup of test_rewriting_a_matched_function_must_keep_it_matching ___
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -415,7 +415,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _ ERROR at setup of test_a_unit_without_a_compiled_object_is_measured_as_not_matched _
 
-tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3'), _retention_count=3, _retention_policy='all')
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0x109598fb0>, _basetemp=PosixPath...rs/ff/<tmp>/T/pytest-of-<user>/pytest-3'), _retention_count=3, _retention_policy='all')
 
     @pytest.fixture(scope="module")
     def fork(tmp_path_factory):
@@ -456,7 +456,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 ________________ ERROR at setup of test_agent_session_over_http ________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_agent_session_over_http0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_agent_session_over_http0')
 
     @pytest.fixture
     def server(tmp_path):
@@ -473,7 +473,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -550,7 +550,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ______________ ERROR at setup of test_tools_require_a_valid_token ______________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_tools_require_a_valid_tok0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_tools_require_a_valid_tok0')
 
     @pytest.fixture
     def server(tmp_path):
@@ -567,7 +567,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -644,7 +644,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ________________ ERROR at setup of test_every_solution_matches _________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_every_solution_matches0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_every_solution_matches0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -661,7 +661,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -738,7 +738,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________ ERROR at setup of test_wrong_attempt_gets_scored_diff _____________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_wrong_attempt_gets_scored0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_wrong_attempt_gets_scored0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -755,7 +755,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -832,7 +832,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_compile_error_and_rejection_are_reported ________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_compile_error_and_rejecti0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_compile_error_and_rejecti0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -849,7 +849,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -926,7 +926,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____ ERROR at setup of test_claims_are_exclusive_and_scheduler_spreads_work ____
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_claims_are_exclusive_and_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_claims_are_exclusive_and_0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -943,7 +943,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1020,7 +1020,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_release_hands_off_best_attempt_and_notes ________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_release_hands_off_best_at0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_release_hands_off_best_at0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1037,7 +1037,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1114,7 +1114,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________ ERROR at setup of test_context_edits_are_regression_tested __________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_context_edits_are_regress0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_context_edits_are_regress0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1131,7 +1131,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1208,7 +1208,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _ ERROR at setup of test_scratch_compiles_on_matched_functions_give_no_credit __
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_scratch_compiles_on_match0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_scratch_compiles_on_match0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1225,7 +1225,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1302,7 +1302,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _________________________ ERROR at setup of test_auth __________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_auth0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_auth0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1319,7 +1319,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1396,7 +1396,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ________________________ ERROR at setup of test_export _________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_export0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_export0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1413,7 +1413,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1490,7 +1490,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______________ ERROR at setup of test_status_shows_legal_basis ________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_status_shows_legal_basis0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_status_shows_legal_basis0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1507,7 +1507,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1584,7 +1584,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ___________________ ERROR at setup of test_moderation_tools ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_moderation_tools0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_moderation_tools0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1601,7 +1601,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1678,7 +1678,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ___ ERROR at setup of test_every_new_session_starts_with_what_agents_learned ___
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_every_new_session_starts_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_every_new_session_starts_0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1695,7 +1695,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1772,7 +1772,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _ ERROR at setup of test_big_functions_get_more_compiles_before_the_nudge_to_move_on _
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_big_functions_get_more_co0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_big_functions_get_more_co0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1789,7 +1789,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1866,7 +1866,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________________ ERROR at setup of test_registration_guards __________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_registration_guards0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_registration_guards0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1883,7 +1883,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -1960,7 +1960,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 _______ ERROR at setup of test_reputation_gates_header_edits_and_budget ________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_reputation_gates_header_e0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_reputation_gates_header_e0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -1977,7 +1977,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2054,7 +2054,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________ ERROR at setup of test_function_page_has_full_history _____________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_function_page_has_full_hi0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_function_page_has_full_hi0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -2071,7 +2071,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2148,7 +2148,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 __________ ERROR at setup of test_upstream_export_commits_with_credit __________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_upstream_export_commits_w0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_upstream_export_commits_w0')
 
     @pytest.fixture
     def net(tmp_path):
@@ -2165,7 +2165,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2400,7 +2400,7 @@ E        +    where <built-in method startswith of str object at 0x10bfedb30> = 
 tests/test_fork_judge.py:202: AssertionError
 ________________________ test_a_public_decomp_together _________________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_a_public_decomp_together0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_a_public_decomp_together0')
 
     @needs_tools
     def test_a_public_decomp_together(tmp_path):
@@ -2443,7 +2443,7 @@ E               ninja isn't installed
 src/decompnet/forks/project.py:354: ForkError
 _____________________ test_expired_claims_are_reclaimable ______________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_expired_claims_are_reclai0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_expired_claims_are_reclai0')
 
     @needs_host_gcc
     def test_expired_claims_are_reclaimable(tmp_path):
@@ -2458,7 +2458,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/Users/shanemcgovern/Decomp/decomp-wtf/projects/demo')}
+kwargs = {'cwd': PosixPath('/Users/<user>/Decomp/decomp-wtf/projects/demo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2535,7 +2535,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________________ test_hash_only_project_stores_no_code _____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_hash_only_project_stores_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_hash_only_project_stores_0')
 
     @needs_host_gcc
     def test_hash_only_project_stores_no_code(tmp_path):
@@ -2554,7 +2554,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 input = None, capture_output = False, timeout = None, check = True
 popenargs = (['gcc', '-c', '-std=gnu11', '-O2', '-fno-pic', '-fno-asynchronous-unwind-tables', ...],)
-kwargs = {'cwd': PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_hash_only_project_stores_0/hashdemo')}
+kwargs = {'cwd': PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_hash_only_project_stores_0/hashdemo')}
 
     def run(*popenargs,
             input=None, capture_output=False, timeout=None, check=False, **kwargs):
@@ -2631,7 +2631,7 @@ clang: error: unknown argument: '-fno-reorder-blocks-and-partition'
 clang: error: unknown argument: '-flive-patching=inline-only-static'
 ____________________ test_builds_find_decomp_wtfs_own_ninja ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_builds_find_decomp_wtfs_o0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_builds_find_decomp_wtfs_o0')
 monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c19be00>
 
     def test_builds_find_decomp_wtfs_own_ninja(tmp_path, monkeypatch):
@@ -2663,7 +2663,7 @@ src/decompnet/app/updates.py:57: in record
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = PosixPath('/Users/shanemcgovern/Library/Application Support/decompnet/install.json')
+self = PosixPath('/Users/<user>/Library/Application Support/decompnet/install.json')
 mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
 
     def open(self, mode='r', buffering=-1, encoding=None,
@@ -2676,7 +2676,7 @@ mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
             encoding = io.text_encoding(encoding)
 >       return io.open(self, mode, buffering, encoding, errors, newline)
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       PermissionError: [Errno 1] Operation not permitted: '/Users/shanemcgovern/Library/Application Support/decompnet/install.json'
+E       PermissionError: [Errno 1] Operation not permitted: '/Users/<user>/Library/Application Support/decompnet/install.json'
 
 ../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: PermissionError
 ______________________________ test_branch_update ______________________________
@@ -2696,7 +2696,7 @@ src/decompnet/app/updates.py:57: in record
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = PosixPath('/Users/shanemcgovern/Library/Application Support/decompnet/install.json')
+self = PosixPath('/Users/<user>/Library/Application Support/decompnet/install.json')
 mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
 
     def open(self, mode='r', buffering=-1, encoding=None,
@@ -2709,12 +2709,12 @@ mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
             encoding = io.text_encoding(encoding)
 >       return io.open(self, mode, buffering, encoding, errors, newline)
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       PermissionError: [Errno 1] Operation not permitted: '/Users/shanemcgovern/Library/Application Support/decompnet/install.json'
+E       PermissionError: [Errno 1] Operation not permitted: '/Users/<user>/Library/Application Support/decompnet/install.json'
 
 ../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: PermissionError
 ___________________ test_install_runs_uv_then_the_new_setup ____________________
 
-tmp_path = PosixPath('/private/var/folders/ff/4j_0xvl94ls07d2zzzr0b0r00000gn/T/pytest-of-shanemcgovern/pytest-3/test_install_runs_uv_then_the_0')
+tmp_path = PosixPath('/private/var/folders/ff/<tmp>/T/pytest-of-<user>/pytest-3/test_install_runs_uv_then_the_0')
 monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10c191820>
 
     @pytest.mark.skipif(sys.platform == "win32", reason="a shell script stands in for uv")
@@ -2740,7 +2740,7 @@ src/decompnet/app/updates.py:57: in record
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = PosixPath('/Users/shanemcgovern/Library/Application Support/decompnet/install.json')
+self = PosixPath('/Users/<user>/Library/Application Support/decompnet/install.json')
 mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
 
     def open(self, mode='r', buffering=-1, encoding=None,
@@ -2753,7 +2753,7 @@ mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
             encoding = io.text_encoding(encoding)
 >       return io.open(self, mode, buffering, encoding, errors, newline)
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E       PermissionError: [Errno 1] Operation not permitted: '/Users/shanemcgovern/Library/Application Support/decompnet/install.json'
+E       PermissionError: [Errno 1] Operation not permitted: '/Users/<user>/Library/Application Support/decompnet/install.json'
 
 ../../.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py:1013: PermissionError
 =========================== short test summary info ============================
