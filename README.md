@@ -354,7 +354,7 @@ the game.
 | **GameCube · Wii** | ★ **Recommended** | ✓ disc (ISO, RVZ, WBFS…) or DOL | CodeWarrior GC 1.0 – Wii 1.7 | ✓ dtk-template | ✓ |
 | **Nintendo 64** | ★ **Recommended** | ✓ ROM | KMC GCC 2.7.2 · IDO 5.3 / 7.1 | ✓ export | ✓ |
 | **PlayStation** | Beta | ✓ disc (.bin, .iso, .chd) or EXE | GCC 2.7.2 / 2.8.1 (PSY-Q era) | ✓ export | ✓ |
-| **PlayStation 2** | Beta | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
+| **PlayStation 2** | Switched off for now | – | EE-GCC 2.96 is a 32-bit Linux binary with no public source, so it has no native Mac build yet | – | ✓ |
 | **Game Boy · Game Boy Color** | Beta | ✓ ROM (.gb, .gbc) | GBDK-2020 (SDCC) | – | – |
 | **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
@@ -372,7 +372,7 @@ full decomp you can port and mod:
   its original address: right for matching and for a port, while a mod that makes code bigger needs a shiftable
   build, which is coming.
 
-**Beta: PlayStation, PlayStation 2, Game Boy, Game Boy Color, Game Boy Advance and DS.** They work end to end and
+**Beta: PlayStation, Game Boy, Game Boy Color, Game Boy Advance and DS.** They work end to end and
 are tested on homemade games, much less on real ones so far. Expect rough edges: when something fails, the app's
 error panel copies everything a bug report needs. Public decomps of any platform run in their own project's build, so
 their status is the project's.

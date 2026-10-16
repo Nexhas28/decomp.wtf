@@ -15,6 +15,10 @@ targets:
     platform: macOS
     sources:
       - DecompWTF
+      # The native Apple Silicon compilers, copied into Resources/prebuilt so an installed `decomp` finds them too.
+      - path: toolchains/prebuilt
+        type: folder
+        buildPhase: resources
     info:
       path: DecompWTF/Info.plist
       properties:

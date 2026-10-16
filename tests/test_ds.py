@@ -28,10 +28,17 @@ pytestmark = pytest.mark.skipif(
     reason="needs CodeWarrior for DS (mwccarm, proprietary) and ds-decomp")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def demo_rom():
+    """Builds Demo Quest DS once; without zlib's source (projects/zlib-n64/prepare.py) that can't happen, so skip."""
+    if not ROM.exists():
+        if not (ROOT / "projects" / "zlib-n64" / "original" / "zlib.h").exists():
+            pytest.skip("the demo ROM isn't built and needs zlib's source: run python3 -I projects/zlib-n64/prepare.py")
+        subprocess.run([sys.executable, str(DEMO / "build.py")], check=True)
+
+
 @pytest.fixture(scope="module")
 def ds(tmp_path_factory):
-    if not ROM.exists():
-        subprocess.run([sys.executable, str(DEMO / "build.py")], check=True)
     work = tmp_path_factory.mktemp("ds")
     net = RomNetwork(work / "app.db", work)
     slug = net.import_rom(ROM, confirmed=True, log=lambda *_: None)
