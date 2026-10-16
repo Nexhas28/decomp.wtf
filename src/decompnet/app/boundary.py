@@ -315,6 +315,12 @@ def follow_layout(net, proj, functions: list[dict]) -> int:
                 recut(net, proj, prev, r, r["vram"] + (r["size"] or 0), None, check=False)
             except NetworkError:
                 continue
+            if r["best_source"]:  # its notes moved with it; its best attempt is kept the same way
+                with net.store.tx() as db:
+                    db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                               (proj["id"], prev["id"], None, f"Best attempt at {r['name']} (0x{r['vram']:08X}, score "
+                                f"{r['best_score']}) before the host joined it into {prev['name']}:\n{r['best_source']}",
+                                time.time()))
             joined += 1
             done = False
             break
