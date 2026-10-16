@@ -1731,7 +1731,8 @@ function renderSessions(sessions) {
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
     const live = ["starting", "working", "waiting"].includes(s.state);
     const b = s.compiles != null ? s : board.get(s.agent);  // this session's own work (names are reused)
-    const facts = [s.model ? esc(s.model) : "default model", s.only_starred ? "only ★" : "", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
+    const model = s.tiered ? `tiered · ${s.model ? `${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}` : "picking a model"}${s.tier ? ` · ${esc(s.tier.replace("_", " "))}` : ""}` : s.model ? esc(s.model) : "default model";
+    const facts = [model, s.only_starred ? "only ★" : "", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
     return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
@@ -1766,13 +1767,15 @@ $("stopAll").onclick = async () => {
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
 const LZ = { kind: null, model: "", count: 1, per: null };
+/* A new Claude Code helper starts tiered: Haiku, Sonnet or Opus picked per function. Other agents: their default. */
+const defaultModel = (kind) => (kind === "claude" ? "tiered" : "");
 function launcherInit() {
   if (LZ.kind || !S.st) return;
   const l = S.st.settings.launcher || {};
   const ready = S.st.agents.filter((a) => a.installed && a.id !== "api");
   const known = S.st.agents.find((a) => a.id === l.kind && (a.installed || a.id === "api"));
   LZ.kind = known ? known.id : (ready[0] ? ready[0].id : "api");
-  LZ.model = known ? (l.model || "") : "";
+  LZ.model = known ? (l.model || defaultModel(known.id)) : defaultModel(LZ.kind);
   LZ.count = l.count || 1;
   const eps = S.st.settings.endpoints || [];
   LZ.eps = (l.endpoints || []).filter((id) => eps.some((e) => e.id === id));
@@ -1846,7 +1849,8 @@ function renderLauncher(box, compact = false) {
     const known = opts.some((o) => o.id === LZ.model);
     body = `<label class="field"><span>Model</span><select data-f="model">${opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === LZ.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")}
         <option value="__other" ${known ? "" : "selected"}>Another model…</option></select></label>
-      <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${known ? "" : esc(LZ.model)}" ${known ? "hidden" : ""}>`;
+      <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${known ? "" : esc(LZ.model)}" ${known ? "hidden" : ""}>
+      ${a.id === "claude" ? `<p class="muted small">Tiered (the usual choice) gives each function its own session and picks the model for it: Haiku for near misses, Sonnet for fresh functions, Opus for escalated ones and header work.</p>` : ""}`;
   }
   const ready = a.installed;
   box.innerHTML = `<div class="lz-kinds">${kinds}</div>
@@ -1861,7 +1865,7 @@ function renderLauncher(box, compact = false) {
     </div>`;
   wireCopies(box);
   const rerender = () => { renderLauncher(box, compact); if (box !== $("launcher") && S.tab === "agents") renderLauncher($("launcher")); };
-  box.querySelectorAll(".lz-kind").forEach((b) => { b.onclick = () => { LZ.kind = b.dataset.k; LZ.model = (S.st.settings.launcher || {}).kind === LZ.kind ? S.st.settings.launcher.model || "" : ""; rerender(); }; });
+  box.querySelectorAll(".lz-kind").forEach((b) => { b.onclick = () => { LZ.kind = b.dataset.k; LZ.model = (S.st.settings.launcher || {}).kind === LZ.kind ? S.st.settings.launcher.model || defaultModel(LZ.kind) : defaultModel(LZ.kind); rerender(); }; });
   const sel = box.querySelector('select[data-f="model"]'), custom = box.querySelector('[data-f="custom"]');
   const label = () => { const btn = box.querySelector('[data-act="start"]'); if (btn) btn.textContent = launchLabel(a, LZ.model, LZ.count); };
   if (sel) sel.onchange = () => { if (sel.value === "__other") { custom.hidden = false; custom.focus(); LZ.model = custom.value.trim(); } else { custom.hidden = true; LZ.model = sel.value; } label(); };
