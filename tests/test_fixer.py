@@ -370,3 +370,30 @@ def test_the_map_hears_what_the_fixer_and_researchers_hold(net):
     net._research_held[fid] = (1, 9e12)
     live = net.live("game")
     assert live["fixing"] == ["func_80001000"] and live["researching"] == ["func_80001038"]
+
+
+def test_auto_fix_one_function_from_its_page(net):
+    started = []
+
+    class Manager:
+        def start_fixer(self, slug, items, model, effort, on_done):  # noqa: ARG002
+            started.append([(i["function"], sorted(i["kinds"]), i["note"][:40]) for i in items])
+            return "fixer-1"
+
+    fx = fixer.Fixer(net, Manager())
+    out = fx.run_for("game", "func_80001010")  # no note on it: a person's ask, every kind of repair
+    assert started == [[("func_80001010", ["boundary", "permuter", "set_aside"], "A person asked the auto-fixer to look at")]]
+    assert out["running"] == "fixer-1" and fx.holds("game", "func_80001010") == "fixing"
+    fx.run_for("game", "func_80001038")  # busy: it waits for the next list
+    assert fx.holds("game", "func_80001038") == "waiting" and len(started) == 1
+
+
+def test_research_one_function_from_its_page(net):
+    agent, _ = net.local_agent("claude-9")
+    net.role[agent.id] = "researcher"
+    net.research_pin[agent.id] = "func_80001038"
+    rows = net.research_candidates("game", agent.id, 3, reserve=True)
+    assert [r["name"] for r in rows] == ["func_80001038"]
+    assert net.live("game")["researching"] == ["func_80001038"]  # the map shows it
+    net.add_research_note(agent, "game", "func_80001038", "try a u8 loop counter")
+    assert agent.id not in net.research_pin  # done: the session stops after its one function

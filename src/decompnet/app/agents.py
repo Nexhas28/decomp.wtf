@@ -1024,6 +1024,22 @@ class Manager:
                     log.info("disown %s: %s", name, e)
         return stopped
 
+    def start_research(self, slug: str, function: str) -> str:
+        """The function page's Research button: one researcher (Claude Code, the researchers' model) writes this
+        function its note, then stops."""
+        if not _which(KINDS["claude"].command):
+            raise RuntimeError("researching needs Claude Code installed")
+        name = self.net._function(function, slug)["name"]
+        for s in self.sessions.values():
+            if s.slug == slug and s.options.get("research_function") == name and not s.stop.is_set() \
+                    and s.state in ("starting", "working", "waiting"):
+                return s.id
+        return self.start("claude", slug, 1, {"role": RESEARCHER, "research_function": name, "per_session": 1})[0]
+
+    def research_running(self, slug: str, function: str) -> bool:
+        return any(s.slug == slug and s.options.get("research_function") == function and not s.stop.is_set()
+                   and s.state in ("starting", "working", "waiting") for s in self.sessions.values())
+
     # -- the auto-fixer (fixer.py): one Claude Code session with the repairs no decompiling agent may make
 
     def start_fixer(self, slug: str, items: list[dict], model: str, effort: str, on_done=lambda slug: None) -> str:
@@ -1263,6 +1279,9 @@ class Manager:
         if role and hasattr(self.net, "role"):
             self.net.role[agent.id] = role
             s.push("info", f"role: {role}")
+        if (only := s.options.get("research_function")) and hasattr(self.net, "research_pin"):
+            self.net.research_pin[agent.id] = only  # the function page's Research button: this one function
+            s.push("info", f"researching {only} only")
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
         failures = throttles = 0
@@ -1278,6 +1297,9 @@ class Manager:
         while not s.stop.is_set():
             if fixer and s.runs >= 1:
                 s.push("info", "done: the auto-fixer went through its list")
+                break
+            if s.options.get("research_function") and s.runs >= 1:
+                s.push("info", "done: the note is written")
                 break
             if (waves := (s.options.get("team") or {}).get("waves")) and s.runs >= waves:
                 s.push("info", f"done: {waves} waves")
@@ -1378,6 +1400,7 @@ class Manager:
                 log.info("auto-fixer done hook: %s", e)
         if role:
             getattr(self.net, "role", {}).pop(agent.id, None)
+            getattr(self.net, "research_pin", {}).pop(agent.id, None)
             getattr(self.net, "role_model", {}).pop(agent.id, None)
             if hasattr(self.net, "release_research"):
                 self.net.release_research(agent.id)  # what it was handed goes back to the other researchers

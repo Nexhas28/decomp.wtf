@@ -2245,6 +2245,7 @@ function callButton(b, on, text, tip) {
 async function refreshTeam() {
   const fn = S.fn, call = $("teamCall"), nuke = $("nukeCall");
   if (!fn || $("drawer").hidden) { clearInterval(callTimer); callTimer = null; return; }
+  refreshHelp();
   let t;
   try { t = await api(`/api/team?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
   if (fn !== S.fn) return;
@@ -2287,6 +2288,38 @@ async function toggleCall(kind) {
 }
 $("teamCall").onclick = () => toggleCall("call");
 $("nukeCall").onclick = () => toggleCall("nuke");
+
+/* Research and Auto-fix: a researcher writes this function a note; the auto-fixer repairs its cut, sets it aside
+   or hands it to the permuter. Each is one session; the buttons say while it works. */
+const RESEARCH_TIP = "A researcher looks this function up and leaves a note on how to match it (on your Claude plan; one session)";
+const FIX_TIP = "The auto-fixer checks this function's cut, whether it is hand-written, and whether only the permuter can finish it, then repairs it (on your Claude plan)";
+let helpTimer = null;
+async function refreshHelp() {
+  const fn = S.fn, rb = $("researchCall"), fb = $("fixCall");
+  if (!fn || $("drawer").hidden) { clearInterval(helpTimer); helpTimer = null; return; }
+  let h;
+  try { h = await api(`/api/function-help?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
+  if (fn !== S.fn) return;
+  const matched = S.fnDetail && S.fnDetail.status === "matched";
+  rb.hidden = fb.hidden = !!matched;
+  callButton(rb, h.research, h.research ? "Researching…" : "Research", h.research ? "A researcher is writing this function a note" : RESEARCH_TIP);
+  callButton(fb, !!h.fix, h.fix === "fixing" ? "Auto-fixing…" : h.fix === "waiting" ? "Auto-fix: next" : "Auto-fix",
+    h.fix_unavailable || (h.fix === "fixing" ? "The auto-fixer is on this function" : h.fix === "waiting" ? "The auto-fixer takes it after its current list" : FIX_TIP));
+  rb.disabled = h.research; fb.disabled = !!h.fix || !!h.fix_unavailable;
+  if (h.research || h.fix) { if (!helpTimer) helpTimer = setInterval(refreshHelp, 4000); }
+  else if (helpTimer) { clearInterval(helpTimer); helpTimer = null; refreshFn(); }
+}
+async function askHelp(job) {
+  const b = $(job === "research" ? "researchCall" : "fixCall");
+  b.disabled = true;
+  try {
+    await api("/api/function-help", { method: "POST", body: { slug: S.slug, function: S.fn, job } });
+    toast(job === "research" ? "A researcher is on it: its note shows up below when it's done." : "The auto-fixer is on it: it leaves a note saying what it did.", "match");
+  } catch (e) { toast(esc(e.message), "err"); b.disabled = false; }
+  refreshHelp();
+}
+$("researchCall").onclick = () => askHelp("research");
+$("fixCall").onclick = () => askHelp("fix");
 
 async function refreshFn(first) {
   if (!S.fn) return;

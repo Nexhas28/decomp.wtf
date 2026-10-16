@@ -274,6 +274,8 @@ class RomNetwork(Network):
         # write notes on the same function. Never a claim: matchers ignore it.
         self._research_held: dict[int, tuple[int, float]] = {}
         self._research_lock = threading.Lock()
+        # researcher agent id -> the one function a person asked it to research (the function page's Research button)
+        self.research_pin: dict[int, str] = {}
 
     # ------------------------------------------------------------------ basics
 
@@ -2189,6 +2191,8 @@ class RomNetwork(Network):
         fn = self._function(function, project)
         with self._research_lock:
             self._research_held.pop(fn["id"], None)
+            if self.research_pin.get(agent.id) == fn["name"]:  # its one function is done
+                self.research_pin.pop(agent.id, None)
         link = self._link(project)
         if link is None:
             return super().add_research_note(agent, project, function, text)
@@ -2202,6 +2206,13 @@ class RomNetwork(Network):
         lands just ahead of them), leaving out those another researcher was handed in the last RESEARCH_HOLD
         seconds. `reserve`: hand these to agent_id for that long. Read-only otherwise: nothing is claimed."""
         proj = self.project_row(slug)
+        if (pinned := self.research_pin.get(agent_id)):  # a person asked for this one function: only it
+            row = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=? AND status!='matched'",
+                                 proj["id"], pinned)
+            if row is not None and reserve:
+                with self._research_lock:
+                    self._research_held[row["id"]] = (agent_id, time.time() + RESEARCH_HOLD)
+            return [row] if row is not None else []
         order = STRATEGIES.get("finish" if self.fork_slug(slug) else "easiest") or "f.n_insns ASC"
         now = time.time()
         with self._research_lock:
