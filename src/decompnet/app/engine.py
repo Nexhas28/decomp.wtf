@@ -2265,7 +2265,12 @@ class RomNetwork(Network):
     def _autopilot_run(self, slug: str, ids: list[int], state: dict, workers: int, try_one=None) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
-        agent, _ = self.local_agent("autopilot")
+        try:
+            agent, _ = self.local_agent("autopilot")
+        except NetworkError as e:  # the fleet lockdown refuses the identity: end the run with the reason
+            state.update(state="error", error=str(e), finished_at=time.time())
+            logging.getLogger("decomp.wtf").warning("autopilot on %s: %s", slug, e)
+            return
         proj = self._project(slug)
         try_one = try_one or self._autopilot_one
         try:  # identical code first: free, and it takes those functions off the drafts' list

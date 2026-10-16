@@ -26,6 +26,7 @@ from pathlib import Path
 
 import httpx
 
+from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
 
@@ -807,7 +808,14 @@ class Manager:
         return routing.model_for(config, s.task_class or DEFAULT_TASK_CLASS, explicit)
 
     def _run(self, s: Session) -> None:
-        agent, token = self.net.local_agent(s.agent_name)
+        try:
+            agent, token = self.net.local_agent(s.agent_name)
+        except NetworkError as e:  # the fleet lockdown refuses a new identity: say so, don't sit at "starting"
+            s.state, s.error = "error", str(e)
+            s.push("error", f"stopping: {e}")
+            s.stop.set()  # not resumed after a restart: it would be refused again
+            self.persist(self.running())
+            return
         self.assignments[agent.id] = s.slug
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
