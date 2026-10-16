@@ -77,7 +77,7 @@ BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"]}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
-_ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
+_ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{2,8})$")  # 2-4 digits on Game Boy, 8 elsewhere
 
 GP_NOTE = """
 /* This game keeps small globals (8 bytes or less) in $gp-relative small data. Declare those here WITHOUT
@@ -1123,6 +1123,8 @@ class RomNetwork(Network):
             raise NetworkError(f"`{new_name}` is not a free C identifier")
         if self.cfg(proj).get("platform") == "gba":
             return self._split_gba(agent, proj, fn, addr, new_name, syms)
+        if self.cfg(proj).get("platform") in ("gb", "gbc"):
+            return self._split_gb(agent, proj, fn, addr, new_name, syms)
         rf = self._parse_asm(fn["name"], fn["asm"], fn["unit"])
         try:
             head, tail = split.split_function(rf, addr, new_name)
@@ -1173,13 +1175,15 @@ class RomNetwork(Network):
                    (a[1] is not None and b[1] is not None and a[1] == b[1] + (b[2] or 0))
         if not adjacent:
             raise NetworkError(f"{frag['name']} and {cont['name']} are not adjacent: no boundary to merge")
-        if not _fragment_like(frag):
+        if not _fragment_like(frag, (self.cfg(proj).get("arch") or "")):
             raise NetworkError(f"{frag['name']} doesn't look like a fragment (no live-in saved register at entry)")
         if self._merge_proposal(frag["id"], cont["id"]) is None:
             raise NetworkError(f"no reviewed merge proposal for {frag['name']} continuing {cont['name']}; "
                                f"propose_merge first — merges are never applied without review evidence")
         if self.cfg(proj).get("platform") == "gba":
             return self._merge_gba(agent, proj, frag, cont)
+        if self.cfg(proj).get("platform") in ("gb", "gbc"):
+            return self._merge_gb(agent, proj, frag, cont)
         return self._merge_rom(agent, proj, frag, cont)
 
     def _merge_rom(self, agent: Agent, proj, frag, cont) -> str:
@@ -1239,6 +1243,33 @@ class RomNetwork(Network):
         return (f"✅ merged: {frag['name']} is now the continuation of {cont['name']} "
                 f"({n_insns} instructions, {size} bytes). Continue with {cont['name']}.")
 
+    def _merge_gb(self, agent: Agent, proj, frag, cont) -> str:
+        """Reassemble a Game Boy pair at the byte level (the reverse of `_split_gb`): concatenated bytes,
+        re-offset relocations, joined disassembly. The two ranges are contiguous in the ROM, so nothing
+        has to be re-parsed -- which is why the MIPS `_merge_rom` path could not serve this lane."""
+        off = len(cont["target"] or b"")
+        target = (cont["target"] or b"") + (frag["target"] or b"")
+        refs = (json.loads(cont["relocs"] or "[]")
+                + [[r[0] + off, r[1], r[2]] for r in json.loads(frag["relocs"] or "[]")])
+        asm = (cont["asm"] or "").rstrip() + "\n" + (frag["asm"] or "").strip()
+        size = len(target)
+        n_insns = (cont["n_insns"] or 0) + (frag["n_insns"] or 0)
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?",
+                       (size, max(1, n_insns), target, json.dumps(refs), asm, cont["id"]))
+            self._delete_function_rows(db, frag["id"])
+            db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
+            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (size, proj["id"], cont["name"]))
+            db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], frag["name"]))
+            self._consume_merge_proposals(db, frag["id"])
+            self._event(db, proj["id"], agent.id, "merge", f"{frag['name']} into {cont['name']}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        self._syms.pop(proj["id"], None)
+        return (f"✅ merged: {frag['name']} is now the continuation of {cont['name']} "
+                f"({n_insns} instructions, {size} bytes). Continue with {cont['name']}.")
+
     def _split_gba(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
         """Cut a GBA function's bytes and assembly in two at `addr` (Thumb: a halfword boundary)."""
         off = addr - fn["vram"]
@@ -1270,6 +1301,63 @@ class RomNetwork(Network):
         self._ops.pop(proj["id"], None)
         return (f"✅ split: {fn['name']} is now {len(head)} bytes; {new_name} at 0x{addr:08X} has {len(tail)}. "
                 f"Continue with {fn['name']} (get_function shows its new assembly).")
+
+    def _split_gb(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
+        """Cut a Game Boy function's bytes and disassembly in two at `addr` (an SM83 CPU address).
+
+        A third of this project's rows are several routines (or routines plus their data) joined into one
+        function by mgbdis' boundary guess. No C can match such a row, because a compiled candidate is one
+        function per label -- but the row itself is fine: split it and each piece matches on its own. The
+        stored disassembly is one instruction per line, so the split is exact: cut the bytes at the
+        offset, count the instructions in the head with the SM83 decoder and cut the text there.
+        """
+        from ..rom import sm83
+
+        off = addr - fn["vram"]
+        if off <= 0 or off >= fn["size"]:
+            raise NetworkError(f"0x{addr:04X} isn't inside {fn['name']} (0x{fn['vram']:04X}, {fn['size']} bytes)")
+        head, tail = fn["target"][:off], fn["target"][off:]
+        lines = fn["asm"].splitlines()
+
+        def render(code: bytes, base: int) -> str:
+            """mgbdis' text for the head when it is there, else a fresh disassembly of these bytes."""
+            out, at = [], 0
+            while at < len(code):
+                text, ln = sm83.decode(code[at:], base + at)
+                out.append("    " + text)
+                at += max(1, ln)
+            return "\n".join(out)
+
+        # mgbdis separates code from data, so a joined row often carries text for its first routine only.
+        # Keep the lines that belong to the head (one per instruction, capped by what is there) and render
+        # the tail from its own bytes -- it was data to mgbdis, so there is nothing to carry over.
+        n_head = max(1, len(list(sm83.disassemble(head, fn["vram"]))))
+        n_tail = max(1, len(list(sm83.disassemble(tail, addr))))
+        keep = min(n_head, len(lines))
+        asm_head = "\n".join(lines[:keep]) if keep else render(head, fn["vram"])
+        asm_tail = "\n".join(lines[keep:]) or render(tail, addr)
+        refs = json.loads(fn["relocs"] or "[]")
+        refs_head = [r for r in refs if r[0] < off]
+        refs_tail = [[r[0] - off, r[1], r[2]] for r in refs if r[0] >= off]
+        syms.add(Symbol(new_name, addr, len(tail), "func"))
+        old = syms.by_name.get(fn["name"])
+        if old is not None:
+            old.size = len(head)
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?", (len(head), n_head, head, json.dumps(refs_head), asm_head, fn["id"]))
+            db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (proj["id"], new_name, len(tail), n_tail, tail,
+                                                        json.dumps(refs_tail), asm_tail, None, fn["unit"], addr,
+                                                        fn["rom_offset"] + off))
+            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (len(head), proj["id"], fn["name"]))
+            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                       (proj["id"], new_name, addr, len(tail), "func"))
+            self._event(db, proj["id"], agent.id, "split", f"{fn['name']} / {new_name}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        return (f"✅ split: {fn['name']} is now {len(head)} bytes ({n_head} instructions); {new_name} at "
+                f"0x{addr:04X} has {len(tail)} bytes ({n_tail} instructions). Continue with {fn['name']}.")
 
     def _add_gba_function(self, agent: Agent, proj, prev, addr: int, new_name: str, syms: SymbolTable) -> str:
         from ..rom import gba, gba_candidates

@@ -261,7 +261,8 @@ function parseRom(buf) {
 
 /* What the user dropped, from its first bytes (nothing is uploaded until they confirm). */
 const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStation 2", playstation: "PlayStation 1 or 2",
-  gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", nds: "Nintendo DS" };
+  gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", gb: "Game Boy",
+  gbc: "Game Boy Color", nds: "Nintendo DS" };
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
@@ -283,6 +284,19 @@ function identifyHead(head, file) {
   const stem = file.name.replace(/\.[^.]*$/, "");
   const base = { title: stem, size: file.size };
   if (text(0, 8) === "PS-X EXE") return { ...base, platform: "psx", order: "PS-X EXE", entry: dv.getUint32(0x10, true) };
+  // Game Boy / Game Boy Color: Nintendo logo at 0x104, header checksum over 0x134-0x14C, and a size
+  // that is a power-of-two number of 16 KiB banks. The same three checks the server makes (rom/gb.py).
+  if (head.length > 0x14d && head[0x104] === 0xce && head[0x105] === 0xed && head[0x106] === 0x66 && head[0x107] === 0x66) {
+    let sum = 0x19;
+    for (let i = 0x134; i < 0x14d; i++) sum += head[i];
+    const size = file.size;
+    if (((-sum) & 0xff) === head[0x14d] && size >= 0x8000 && size <= 0x800000 && (size & (size - 1)) === 0) {
+      const flag = head[0x143];
+      const color = (flag & 0x80) !== 0;
+      const title = (color ? ascii(0x134, 0x143) : ascii(0x134, 0x144)) || stem;
+      return { ...base, platform: color ? "gbc" : "gb", order: "cartridge", code: "", title, cgb: flag };
+    }
+  }
   if (head.length > 0xc0 && head[0xb2] === 0x96 && head[3] === 0xea) {  // GBA: fixed byte, header checksum, ARM branch
     let sum = 0;
     for (let i = 0xa0; i < 0xbd; i++) sum += head[i];
@@ -349,6 +363,10 @@ async function pickFile(file) {
   const facts = p === "n64"
     ? [["Game code", info.code || "—"], ["Region", info.region], ["Size", MB(info.size)], ["Format", info.order],
        ["Entry", hex8(info.entry)], ["Looks like", info.compiler === "IDO" ? "IDO" : "GCC (KMC)"]]
+    : (p === "gb" || p === "gbc")
+    ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
+       ["Cartridge", (info.cgb & 0x80) ? (info.cgb === 0xc0 ? "Color only" : "Color enhanced") : "original Game Boy"],
+       ["Project", "mgbdis"]]
     : [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        info.code ? ["Game ID", info.code] : ["Entry", info.entry != null ? hex8(info.entry) : "from the disc"],
        ["Project", ["gc", "wii", "gcwii"].includes(p) ? "dtk-template" : p === "nds" ? "ds-decomp" : p === "gba" ? "luvdis" : "splat"]];
