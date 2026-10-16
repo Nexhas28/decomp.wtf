@@ -84,6 +84,91 @@ ALIASES = {"gemini": "antigravity", "agy": "antigravity"}
 # this rule in the user's agy settings allows decomp.wtf's tools (and nothing else).
 AGY_ALLOW = "mcp(decomp/*)"
 
+# Team Call: three Claude models on one function at once, until it matches (or the call's limits). Each has a role
+# that suits it; they share the function's attempt history and notes, so each builds on the best attempt so far.
+TEAM = (
+    ("haiku", "claude-haiku-5-5", "Haiku 5.5",
+     "the fast one: many quick, small variations of the current best attempt (types and signedness, statement order, "
+     "temporaries, operand order, loop shape). Compile often; keep each change small so the diff shows what it did."),
+    ("sonnet", "claude-sonnet-5-5", "Sonnet 5.5",
+     "the refiner: start from the current best attempt, read its diff line by line and fix one difference at a time, "
+     "registers last. When a teammate's note names a lead, follow it through."),
+    ("opus", "claude-opus-5-5", "Opus 5.5",
+     "the architect: get the structure right (control flow, calls, arguments, data types, struct layout, what the "
+     "original programmer most plausibly wrote). When the team plateaus, step back and try a different shape."),
+)
+TEAM_USD_CAP = 3.0  # per Team Call, all three together
+TEAM_MINUTES = 30
+
+TEAM_PROMPT = """\
+You are {name}, one of three agents on a decomp.wtf Team Call for {title}. The whole team works on ONE function:
+{function}. Your teammates: {mates}.
+
+The goal: C that compiles with the game's compiler to exactly the original machine code (score 0). The first exact
+match by anyone ends the call for everyone, so speed and shared progress matter more than who matches it.
+
+Your role: {role}
+
+How the team works:
+1. get_function("{function}") shows the assembly, the best attempt so far (from any teammate) and the notes. Start
+   from the best attempt and skip ideas the notes say were already tried.
+2. compile_and_diff(function="{function}", source=<the complete function>) judges your C. The function is already
+   the team's: never call claim_function or release_function, and work on no other function.
+3. After a compile that teaches something (a better score, or an idea that didn't help), leave one short, specific
+   note: add_note(function="{function}", text="[{short}] <what you changed> -> score N; <what the diff shows>;
+   next idea: <...>"). Call get_function again before each new idea, to pick up teammates' progress.
+4. Keep going until the score is 0. If several compiles in a row don't improve, change approach as your role says.
+
+Read the diff markers: '<' '>' missing/extra instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Write
+plausible original C (no inline asm). Be brief: work, don't narrate.
+"""
+
+# Function Nuke: waves of Haiku helpers on one function until it matches. Each helper has its own angle, so ten of
+# them try ten kinds of change; every session starts from the best attempt so far (anyone's), so whoever improves the
+# score becomes everyone's next starting point. One session of each helper is one wave.
+NUKE_SIZE = 10
+NUKE_WAVES = 8
+NUKE_MINUTES = 60
+NUKE_MODEL = "claude-haiku-5-5"
+NUKE_ANGLES = (
+    "types and signedness (s32/u32, s16/u16, u8, char vs int, pointer types): each picks different load, store and "
+    "compare instructions",
+    "statement order and where variables are assigned: the compiler often keeps the order you write",
+    "temporaries: introduce or remove a local for an intermediate value; that changes which register holds it and when",
+    "loop and branch shape: for vs while vs do-while, an early return vs if/else, a goto to a shared exit",
+    "expression form: one combined expression vs several steps, a ternary vs if/else, x*2 vs x<<1, comparisons flipped",
+    "memory access: array indexing vs pointer arithmetic, struct fields vs offsets, a pointer kept in a local vs re-read",
+    "declaration order and register pressure: reorder local declarations, merge or split variables",
+    "casts and promotions: add or remove casts at calls, returns and comparisons",
+    "function calls and arguments: argument order and types, a call's result kept in a variable vs used directly",
+    "constants and data: how numbers are written (hex/decimal, signed/unsigned), globals vs locals, static data",
+)
+
+NUKE_PROMPT = """\
+You are Haiku #{n}, one of {size} agents in a Function Nuke on {title}. Everyone works on ONE function: {function}.
+The goal: C that compiles with the game's compiler to exactly the original machine code (score 0). The first exact
+match by anyone ends the nuke, so shared progress matters more than who matches it.
+
+Your angle: {angle}.
+
+1. get_function("{function}") shows the assembly, the best attempt so far (from any agent) and the notes. Start from
+   that best attempt: it is the closest anyone has got. Skip ideas the notes say were already tried.
+2. Make ONE change, guided by the diff and your angle (one at a time, so the next diff shows what it did). Keep the
+   function's name and signature and any declarations the source needs; plausible original C, no inline asm.
+3. compile_and_diff(function="{function}", source=<the complete function>) judges it. The function is already the
+   nuke's: never call claim_function or release_function, and work on no other function.
+4. After a compile that teaches something, leave one short note: add_note(function="{function}", text="[haiku-{n}]
+   <what you changed> -> score N; <what the diff shows>"). Later agents read it.
+5. Call get_function again before each new idea: another agent may have found a better base meanwhile.
+6. Stop after 6 compiles, or as soon as the score is 0.
+
+Diff markers: '<' '>' missing/extra instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Fix structure
+before registers. Be brief: work, don't narrate.
+"""
+
+# Claude Code's --effort levels a helper may be started with.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 # Functions per helper session: a fresh session starts with a small, clean context (each function's assembly,
 # drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
 PER_SESSION = 2
@@ -182,6 +267,20 @@ def no_credit(said: str) -> str | None:
 
 _versions: dict[str, tuple[float, str | None]] = {}
 _models: dict[str, tuple[float, list[dict]]] = {}
+_log_levels: dict[str, str] = {}  # opencode path -> the --log-level spelling it accepts
+
+
+def _opencode_log_level(exe: str) -> str:
+    """OpenCode before 2 takes only "ERROR" and OpenCode 2 only "error": the wrong one prints its help and stops."""
+    if exe not in _log_levels:
+        try:
+            out = subprocess.run(argv([exe, "--version"]), capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                 timeout=15).stdout
+            m = re.search(r"(\d+)\.\d+", out)
+            _log_levels[exe] = "ERROR" if m and int(m.group(1)) < 2 else "error"
+        except (OSError, subprocess.TimeoutExpired):
+            _log_levels[exe] = "error"
+    return _log_levels[exe]
 
 # Claude Code's aliases always point at Anthropic's latest model of each kind.
 CLAUDE_MODELS = [("fable", "Fable", "Anthropic's most capable model"), ("opus", "Opus", "very capable"),
@@ -432,6 +531,32 @@ def clean_stderr(kind: str, line: str) -> str:
     return line
 
 
+# USD per million tokens (input, output) for Claude Code's live spend estimate; cache writes cost 1.25x input and
+# cache reads 0.1x. The session's own total replaces the estimate when it ends.
+CLAUDE_CODE_PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
+                      "claude-fable-5-1": (10.0, 50.0), "claude-opus-5": (5.0, 25.0), "claude-sonnet-5": (2.0, 10.0)}
+
+
+def _claude_spend(message: dict, state: dict) -> float:
+    """What this reply adds to the session's spend so far (Claude Code repeats a message as its parts arrive)."""
+    usage = message.get("usage") if isinstance(message.get("usage"), dict) else None
+    mid = message.get("id")
+    if not usage or not mid:
+        return 0.0
+    model = str(message.get("model") or "")
+    pin, pout = next((p for m, p in CLAUDE_CODE_PRICES.items() if model.startswith(m)), CLAUDE_CODE_PRICES["claude-opus-5-5"])
+    n = lambda k: float(usage.get(k) or 0)
+    usd = (n("input_tokens") * pin + n("cache_creation_input_tokens") * pin * 1.25
+           + n("cache_read_input_tokens") * pin * 0.1 + n("output_tokens") * pout) / 1e6
+    seen = state.setdefault("claude_msgs", {})
+    delta = usd - seen.get(mid, 0.0)
+    if delta <= 0:
+        return 0.0
+    seen[mid] = usd
+    state["claude_est"] = state.get("claude_est", 0.0) + delta
+    return delta
+
+
 def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[str, str]]:
     """(type, text) items for the live feed from one line of agent output: text, think, tool, info, error, usage.
     `state` carries what spans lines (Antigravity streams text in pieces) for one session."""
@@ -449,6 +574,8 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
     t = obj.get("type")
     out: list[tuple[str, str]] = []
     if t == "assistant" and isinstance(obj.get("message"), dict):  # Claude Code
+        if state is not None and (delta := _claude_spend(obj["message"], state)) > 0:
+            out.append(("usage", json.dumps({"usd": delta})))  # live, so limits see it before the session ends
         for c in obj["message"].get("content", []):
             if c.get("type") == "text" and c.get("text", "").strip():
                 out.append(("text", c["text"].strip()))
@@ -465,7 +592,10 @@ def parse_line(kind: str, line: str, state: dict | None = None) -> list[tuple[st
             bits = [f"{turns} turns" if turns else "", f"${cost:.2f}" if isinstance(cost, (int, float)) else ""]
             out.append(("info", "session finished" + (f" ({', '.join(b for b in bits if b)})" if any(bits) else "")))
             if isinstance(cost, (int, float)):
-                out.append(("usage", json.dumps({"usd": cost})))
+                # the real total: whatever the live estimates (above) already counted is taken off
+                counted = (state or {}).pop("claude_est", 0.0)
+                (state or {}).pop("claude_msgs", None)
+                out.append(("usage", json.dumps({"usd": cost - counted})))
             stats = obj.get("stats") if isinstance(obj.get("stats"), dict) else {}
             if stats.get("total_tokens"):
                 out.append(("usage", json.dumps({"tokens": stats["total_tokens"]})))
@@ -542,6 +672,7 @@ class Session:
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
                 "model": self.options.get("model") or "", "task_class": self.task_class,
                 "prompt_policy": PROMPT_POLICY_VERSION, "usd": round(self.usd, 4), "tokens": self.tokens,
+                "team": (self.options.get("team") or {}).get("function", ""),  # every member works on it, not only the claim holder
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
@@ -645,6 +776,9 @@ class Manager:
         self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
+        self.teams: dict[str, dict] = {}  # Team Calls: "slug/function" -> its members and state
+        # set by the server: the Anthropic API key (Settings) for Claude Code helpers billed to API credits
+        self.anthropic_key = lambda: ""
         # Model routing (P11.5): the server sets routing_config from settings ("model_routing");
         # without a config the default behaviour is unchanged. Measurements persist here.
         self.routing_config = lambda: {}
@@ -726,7 +860,110 @@ class Manager:
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
         return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
-                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
+                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()
+                and not s.options.get("team")]  # a Team Call ends with the app: it isn't resumed
+
+    # -- Team Call: three models on one function until it matches
+
+    def team_key(self, slug: str, function: str) -> str:
+        return f"{slug}/{function}"
+
+    def start_team(self, slug: str, function: str, billing: str = "api", kind: str = "call") -> dict:
+        """Opus, Sonnet and Haiku (Claude Code) on one function together, until it matches, the call's limits, or
+        stop_team. Billed to the Anthropic API key (API credits) unless billing is "plan".
+        kind "nuke" is a Function Nuke instead: NUKE_SIZE Haiku helpers, each with its own angle, for NUKE_WAVES
+        sessions each. Several functions can be nuked (or called) at once: each has its own helpers."""
+        key = self.team_key(slug, function)
+        if key in getattr(self, "teams", {}) and self.teams[key]["state"] == "working":
+            return self.team_status(slug, function)
+        if billing == "api" and not self.anthropic_key():
+            raise ValueError("add your Anthropic API key first (Settings)")
+        name = self.net.resolve_function(None, slug, function) if hasattr(self.net, "resolve_function") else function
+        if kind == "nuke":
+            roster = [(f"nuke{i}", NUKE_MODEL, f"Function Nuke · Haiku #{i}", None) for i in range(1, NUKE_SIZE + 1)]
+        else:
+            roster = [(short, model, f"Team Call · {label}", None) for short, model, label, _ in TEAM]
+        sessions, agent_ids = [], []
+        with self._lock:
+            for short, model, label, _ in roster:
+                n = 1
+                while f"team-{short}-{n}" in self.sessions:
+                    n += 1
+                sid = f"team-{short}-{n}"
+                options = {"model": model, "effort": "medium", "per_session": 1,
+                           "team": {"function": name, "role": short} | ({"nuke": True, "waves": NUKE_WAVES} if kind == "nuke" else {})
+                           } | ({"billing": "api"} if billing == "api" else {})
+                if kind == "nuke":
+                    options.pop("effort")  # Haiku's default effort: many quick tries
+                s = Session(sid, "claude", label, slug, sid, options)
+                agent, _ = self.net.local_agent(sid)
+                agent_ids.append(agent.id)
+                sessions.append(s)
+        self.net.start_team(name, slug, agent_ids)  # raises when another agent has it
+        self.teams = getattr(self, "teams", {})
+        team = {"slug": slug, "function": name, "members": [s.id for s in sessions], "started_at": time.time(),
+                "state": "working", "reason": "", "kind": kind, "billing": billing,
+                "usd_cap": TEAM_USD_CAP if billing == "api" else 0.0,
+                "minutes": NUKE_MINUTES if kind == "nuke" else TEAM_MINUTES,
+                "waves": NUKE_WAVES if kind == "nuke" else 0}
+        self.teams[key] = team
+        with self._lock:
+            for s in sessions:
+                self.sessions[s.id] = s
+                threading.Thread(target=self._run, args=(s,), daemon=True, name=f"agent-{s.id}").start()
+        threading.Thread(target=self._watch_team, args=(key,), daemon=True, name=f"team-{key}").start()
+        return self.team_status(slug, function)
+
+    def stop_team(self, slug: str, function: str, reason: str = "stopped") -> dict:
+        key = self.team_key(slug, function)
+        team = getattr(self, "teams", {}).get(key)
+        if team is None:
+            return {"active": False}
+        if team["state"] == "working":
+            team["state"], team["reason"] = "done", reason
+            for sid in team["members"]:
+                self.stop(sid)
+            try:
+                self.net.end_team(team["function"], slug)
+            except NetworkError:
+                pass
+        return self.team_status(slug, function)
+
+    def team_status(self, slug: str, function: str) -> dict:
+        team = getattr(self, "teams", {}).get(self.team_key(slug, function))
+        if team is None:
+            return {"active": False}
+        members = [self.sessions[sid] for sid in team["members"] if sid in self.sessions]
+        try:
+            fn = self.net._function(team["function"], slug)
+            best, matched = fn["best_score"], fn["status"] == "matched"
+        except NetworkError:
+            best, matched = None, False
+        return {"active": team["state"] == "working", "state": team["state"], "reason": team["reason"],
+                "kind": team.get("kind", "call"), "billing": team.get("billing", "api"),
+                "wave": min((s.runs for s in members), default=0), "waves": team.get("waves", 0),
+                "function": team["function"], "started_at": team["started_at"], "best": best, "matched": matched,
+                "usd": round(sum(s.usd for s in members), 4), "usd_cap": team["usd_cap"], "minutes": team["minutes"],
+                "members": [{"id": s.id, "label": s.label, "model": s.options.get("model"), "state": s.state,
+                             "usd": round(s.usd, 4)} for s in members]}
+
+    def _watch_team(self, key: str) -> None:
+        """Ends the call at the first match, at its spending or time limit, or when every member has stopped."""
+        team = self.teams[key]
+        while team["state"] == "working":
+            time.sleep(2)
+            st = self.team_status(team["slug"], team["function"])
+            if st["matched"]:
+                self.stop_team(team["slug"], team["function"], "matched")
+            elif team["usd_cap"] and st["usd"] >= team["usd_cap"]:
+                self.stop_team(team["slug"], team["function"], f"reached the ${team['usd_cap']:.0f} limit")
+            elif time.time() - team["started_at"] >= team["minutes"] * 60:
+                self.stop_team(team["slug"], team["function"], f"reached the {team['minutes']}-minute limit")
+            elif all(m["state"] in ("stopped", "error") for m in st["members"]):
+                waved = team.get("waves") and all(s.runs >= team["waves"] for s in (
+                    self.sessions.get(sid) for sid in team["members"]) if s is not None)
+                self.stop_team(team["slug"], team["function"], f"no match after {team['waves']} waves" if waved
+                               else "every helper stopped (see the Agents tab)")
 
     def stop(self, sid: str | None = None) -> None:
         """Stop one helper (for good) or all of them (the app is quitting: they resume next time)."""
@@ -822,6 +1059,9 @@ class Manager:
                            "(seconds; a minute the first time)")
             twins.ordered.wait(120)
         while not s.stop.is_set():
+            if (waves := (s.options.get("team") or {}).get("waves")) and s.runs >= waves:
+                s.push("info", f"done: {waves} waves")
+                break
             if self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
                 break
@@ -928,6 +1168,15 @@ class Manager:
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
+        if (team := s.options.get("team")) and team.get("nuke"):
+            n = int(team["role"].removeprefix("nuke"))
+            return NUKE_PROMPT.format(n=n, size=NUKE_SIZE, title=ov["title"], function=team["function"],
+                                      angle=NUKE_ANGLES[(n - 1) % len(NUKE_ANGLES)])
+        if team:
+            me = next(t for t in TEAM if t[0] == team["role"])
+            mates = ", ".join(f"{t[2]} ({t[3].split(':')[0]})" for t in TEAM if t[0] != me[0])
+            return TEAM_PROMPT.format(name=me[2], title=ov["title"], function=team["function"], mates=mates,
+                                      role=me[3], short=me[0])
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
@@ -962,6 +1211,19 @@ class Manager:
                    "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
             if model:
                 cmd += ["--model", model]
+            if s.options.get("effort") in EFFORTS:
+                cmd += ["--effort", s.options["effort"]]
+            if s.options.get("billing") == "api":
+                # Billed to the Anthropic API key (API credits) instead of the user's Claude login. Without the key
+                # the helper doesn't start: it must never quietly fall back to the subscription.
+                key = self.anthropic_key()
+                if key and not key.startswith("sk-ant-api"):
+                    raise RuntimeError("that key is tied to a Claude subscription: add an API key (sk-ant-api...)")
+                if not key:
+                    raise RuntimeError("no Anthropic API key: add it in decomp.wtf's Settings")
+                env["ANTHROPIC_API_KEY"] = key
+                for login in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"):
+                    env.pop(login, None)
         elif s.kind == "codex":
             env["DECOMP_TOKEN"] = token
             # The worker's own server, under a name of its own: `-c` settings merge into the user's config, and
@@ -1000,8 +1262,7 @@ class Manager:
             }), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
             # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag.)
-            # (--log-level lowercase: OpenCode 2 rejects "ERROR", every version takes "error".)
-            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", "error"]
+            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", _opencode_log_level(exe)]
             if model:
                 cmd += ["-m", model]
         else:
@@ -1041,7 +1302,16 @@ class Manager:
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
         last_error = refused = ""
+        on_credits = s.kind == "claude" and s.options.get("billing") == "api"
         for line in proc.stdout:
+            if on_credits and (source := claude_key_source(line)) is not None:
+                on_credits = False  # checked once, at Claude Code's first event, before it does any work
+                if source != "ANTHROPIC_API_KEY":
+                    _terminate(proc)
+                    proc.wait()
+                    s.proc = None
+                    raise Fatal(f"stopped: Claude Code would have billed {source or 'your Claude login'} instead of "
+                                "your Anthropic API key (API credits)")
             for kind, text in parse_line(s.kind, line, state):
                 if kind == "usage":
                     self._account(s, json.loads(text))
@@ -1148,6 +1418,19 @@ class Manager:
                 if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
                     return True
         return used_tool
+
+
+def claude_key_source(line: str) -> str | None:
+    """What Claude Code says it bills (its first `system/init` event's apiKeySource), or None for other lines."""
+    if '"init"' not in line:
+        return None
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return None
+    if event.get("type") == "system" and event.get("subtype") == "init":
+        return str(event.get("apiKeySource") or "")
+    return None
 
 
 def _tokens(obj) -> int:

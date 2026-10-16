@@ -293,6 +293,10 @@ def _render_investigation(investigation, budget) -> str:
     return "\n".join(lines)
 
 
+# Agents that may hold several functions at once: the function-nuke skill works on many functions concurrently,
+# each with its own wave of agents under this one name. Every other agent still holds one function at a time.
+MULTI_CLAIM_AGENTS = frozenset({"function-nuke"})
+
 class NetworkError(Exception):
     """An error meant to be shown to the agent as-is."""
 
@@ -346,6 +350,9 @@ class Network:
         self.claim_ttl = claim_ttl
         self._pool = ThreadPoolExecutor(max_workers=8)
         self._paused_acceptance: dict[str, tuple[str, float]] = {}  # slug -> (reason, paused_at)
+        # Team Calls: function id -> the agents working on it together. One of them holds the claim (other agents stay
+        # away as usual); every member may compile it and gets the credit for its own match.
+        self.teams: dict[int, set[int]] = {}
         self._pause_lock = threading.Lock()
 
     # ------------------------------------------------------------------ agents
@@ -698,6 +705,37 @@ class Network:
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
         return fn
 
+    def start_team(self, function: str, project: str, agent_ids: list[int]) -> None:
+        """A Team Call: these agents share one function. The first takes the claim (yours from the GUI is let go);
+        another agent's claim means it's taken."""
+        fn = self._function(function, project)
+        if fn["status"] == "matched":
+            raise NetworkError(f"{fn['name']} already matches")
+        if (yield_autopilot := getattr(self, "_yield_autopilot", None)) is not None:
+            yield_autopilot(fn["name"], project)  # the autopilot holds a function only while its draft compiles
+        with self.store.tx() as db:
+            self._expire_claims(db)
+            claim = db.execute("SELECT c.agent_id, a.name FROM claims c LEFT JOIN agents a ON a.id=c.agent_id "
+                               "WHERE c.function_id=?", (fn["id"],)).fetchone()
+            if claim is not None and claim["agent_id"] not in agent_ids and claim["name"] != "you":
+                raise NetworkError(f"{fn['name']} is being worked on by {claim['name']}: try again when it's free")
+            for aid in agent_ids:  # a member's own claim elsewhere would stop it compiling here
+                db.execute("DELETE FROM claims WHERE agent_id=? AND function_id<>?", (aid, fn["id"]))
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            now = time.time()
+            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent_ids[0], now, now + self.claim_ttl))
+            self._event(db, fn["project_id"], agent_ids[0], "claim", fn["name"])
+            self.teams[fn["id"]] = set(agent_ids)
+
+    def end_team(self, function: str, project: str) -> None:
+        """The Team Call is over: its claim goes (unless the function matched, when there's none to keep)."""
+        fn = self._function(function, project)
+        members = self.teams.pop(fn["id"], set())
+        with self.store.tx() as db:
+            claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+            if claim is not None and claim["agent_id"] in members:
+                db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+
     def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
         fn = self._function(function, project)
         with self.store.tx() as db:
@@ -829,13 +867,13 @@ class Network:
                 if not scratch:
                     if claim is None:
                         held = db.execute("SELECT 1 FROM claims WHERE agent_id=?", (agent.id,)).fetchone()
-                        if held:
+                        if held and agent.name not in MULTI_CLAIM_AGENTS:
                             raise NetworkError("you hold another claim; release it before working on a different function")
                         db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                         self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
-                    elif claim["agent_id"] != agent.id:
+                    elif claim["agent_id"] != agent.id and agent.id not in self.teams.get(fn["id"], ()):
                         raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
-                    else:
+                    else:  # yours, or your team's: the claim stays alive while anyone on it works
                         db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
@@ -1683,6 +1721,11 @@ class Network:
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fn["id"] if fn else None, agent.id, text.strip()[:4000], time.time()))
         return "Noted. Other agents will see it" + (f" when they open {fn['name']}." if fn else " in their briefings.")
+
+    def clear_function_notes(self) -> int:
+        """Delete every note left on a function, in every project (project-wide notes stay). Returns how many."""
+        with self.store.tx() as db:
+            return db.execute("DELETE FROM notes WHERE function_id IS NOT NULL").rowcount
 
     def search_notes(self, project: str | None, query: str) -> str:
         proj = self._project(project)

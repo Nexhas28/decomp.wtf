@@ -209,6 +209,7 @@ class Settings:
                 "autopilot": self.data.get("autopilot", True),
                 "autopilot_after_match": bool(self.data.get("autopilot_after_match")),
                 "budget_usd": self.data.get("budget_usd") or 0,
+                "anthropic_key": ("•" * 8 + self.data["anthropic_api_key"][-4:]) if self.data.get("anthropic_api_key") else "",
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
                 "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
 
@@ -271,6 +272,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     mcp_url = f"http://127.0.0.1:{port}/mcp"
     build_id = (updates.installed().get("commit") or "")[:12]  # a branch install: the commit it came from
     manager = agents.Manager(net, home, mcp_url)
+    manager.anthropic_key = lambda: str(settings.data.get("anthropic_api_key") or "")
     net.rescan_busy = lambda slug: slug in manager._prep or any(
         s.slug == slug and s.state in ("starting", "working", "waiting")
         for s in list(manager.sessions.values()))
@@ -753,14 +755,23 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 "json": json.dumps({"mcpServers": {"decomp": {"type": "http", "url": mcp_url,
                                                               "headers": {"Authorization": f"Bearer {token}"}}}}, indent=2)}
 
+    # Who an attempt from the GUI's API is credited to: you, or the function-nuke skill working for you.
+    GUI_RUNNERS = ("you", "function-nuke")
+
+    def runner(data) -> str:
+        name = str(data.get("agent") or "you")
+        if name not in GUI_RUNNERS:
+            raise ValueError(f"agent must be one of {', '.join(GUI_RUNNERS)}")
+        return name
+
     def p_try(slug, request, data):
-        """You, editing a function in the GUI: judged like an agent's attempt (and credited to "you")."""
-        agent, _ = net.local_agent("you")
+        """You (or the function-nuke skill), editing a function: judged like an agent's attempt."""
+        agent, _ = net.local_agent(runner(data))
         res = net.attempt(agent, str(data.get("name", "")), str(data.get("source", "")), slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
     def p_release(slug, request, data):
-        agent, _ = net.local_agent("you")
+        agent, _ = net.local_agent(runner(data))
         try:
             net.release(agent, str(data.get("name", "")), "", slug)
         except NetworkError:
@@ -1007,6 +1018,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if not isinstance(given, dict):
             return fail(ValueError("invalid options"))
         options = {k: v for k, v in given.items() if k in ("model", "per_session")}
+        if given.get("effort") in agents.EFFORTS:
+            options["effort"] = given["effort"]
+        if given.get("billing") == "api":  # Claude Code on the Anthropic API key (API credits), not the login
+            if kind != "claude":
+                return fail(ValueError("only Claude Code helpers can run on the Anthropic API key"))
+            if not settings.data.get("anthropic_api_key"):
+                return fail(ValueError("add your Anthropic API key first"))
+            options["billing"] = "api"
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
@@ -1086,6 +1105,33 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             manager.stop(data.get("id") or None)
         return JSONResponse({"ok": True})
 
+    @mcp.custom_route("/api/team", methods=["GET", "POST"])
+    async def api_team(request: Request) -> Response:
+        """Team Call or Function Nuke on one function: GET its state; POST {slug, function, on: true|false, kind:
+        "call"|"nuke"} starts or stops it. A Team Call is billed to the API key, a Function Nuke to the Claude login."""
+        if (bad := guard(request, write=request.method == "POST")):
+            return bad
+        if request.method == "GET":
+            q = request.query_params
+            return JSONResponse(manager.team_status(q.get("slug", ""), q.get("function", "")))
+        data = await body(request)
+        slug, function = str(data.get("slug", "")), str(data.get("function", ""))
+        try:
+            if data.get("on") is False:
+                return JSONResponse(await call(lambda: manager.stop_team(slug, function, "switched off")))
+            if data.get("kind") == "nuke":
+                return JSONResponse(await call(lambda: manager.start_team(slug, function, billing="plan", kind="nuke")))
+            return JSONResponse(await call(lambda: manager.start_team(slug, function)))
+        except (NetworkError, ValueError) as e:
+            return fail(e)
+
+    @mcp.custom_route("/api/notes/clear", methods=["POST"])
+    async def api_notes_clear(request: Request) -> Response:
+        """Settings: delete every note on a function, in every project (notes on a whole project stay)."""
+        if (bad := guard(request, write=True)):
+            return bad
+        return JSONResponse({"cleared": await call(net.clear_function_notes)})
+
     @mcp.custom_route("/api/settings", methods=["POST"])
     async def api_settings(request: Request) -> Response:
         if (bad := guard(request, write=True)):
@@ -1116,6 +1162,17 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             for sid, sess in list(manager.sessions.items()):  # its sessions stop with it
                 if sess.kind == "api" and sess.options.get("endpoint") == str(data["remove_endpoint"]):
                     manager.stop(sid)
+        if "anthropic_api_key" in data:  # "" removes it
+            key = str(data["anthropic_api_key"] or "").strip()
+            if key and not key.startswith("sk-ant-api"):
+                # sk-ant-usr / sk-ant-oat keys are tied to a Claude subscription: they'd use its limits, not credits
+                return fail(ValueError("that isn't an API key for API credits: make one at platform.claude.com > "
+                                       "API keys (it starts with sk-ant-api). Keys starting sk-ant-usr or sk-ant-oat "
+                                       "use your Claude plan's limits instead."))
+            if key:
+                settings.data["anthropic_api_key"] = key
+            else:
+                settings.data.pop("anthropic_api_key", None)
         if per_session is not None:
             settings.data["per_session"] = per_session
         if "autopilot" in data:

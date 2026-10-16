@@ -647,16 +647,23 @@ async function poll(first) {
       { verification: live.overview.verification || (S.ov && S.ov.verification) || null });
     let mapDirty = false;
     const rescanned = !first && live.events.some((ev) => ev.kind === "rescan");
+    // Only news gets a toast: rejoining a room catches up on everything it did meanwhile, with the events' own
+    // (old) times, and a catch-up is one summary, not a toast per match.
+    const fresh = (ev) => !first && (!ev.created_at || Date.now() / 1000 - ev.created_at < 120);
+    const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
       if (["match", "split", "rename", "rescan"].includes(ev.kind)) mapDirty = true;
-      if (ev.kind === "match" && !first) {
+      if (!fresh(ev)) continue;
+      if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
-        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
+        if (ev.agent !== AUTO && ev.agent !== "@" + AUTO) matches.push(ev);
       }
-      if (ev.kind === "autopilot" && !first) toast(`Autopilot: ${esc(ev.detail)}`, "match");
-      if (ev.kind === "link" && !first) toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
+      if (ev.kind === "autopilot") toast(`Autopilot: ${esc(ev.detail)}`, "match");
+      if (ev.kind === "link") toast(`🔗 <code>${esc(ev.detail)}</code>&nbsp;is linked into the game`, "match");
     }
+    if (matches.length > 3) toast(`${matches.length} functions matched`, "match");
+    else for (const ev of matches) toast(`<code>${esc(ev.detail)}</code>&nbsp;matched by ${esc(ev.agent || "an agent")}`, "match");
     if (rescanned) {
       S.scores.clear(); S.flash.clear(); S.stats = null;
       S.diffKey = null;
@@ -1733,7 +1740,7 @@ function renderSessions(sessions) {
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
       ${s.state === "error" ? `<span class="state err">${esc(s.error)}</span>` : ""}
-      ${claim ? `<span class="last">on ${fnLink(claim.name)}</span>` : ""}</div>`;
+      ${claim || (s.team && live) ? `<span class="last">on ${fnLink(claim ? claim.name : s.team)}</span>` : ""}</div>`;
   }).join("");
   const own = new Set(sessions.map((s) => s.agent));
   const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
@@ -2094,6 +2101,7 @@ async function openFn(name) {
   drawMap();
   document.querySelectorAll("#fnRows tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.fn === name));
   await refreshFn(!again);
+  refreshTeam();
 }
 
 function fnBadge(d = S.fnDetail) {
@@ -2121,6 +2129,64 @@ document.querySelectorAll("#diffWhich [data-which]").forEach((b) => {
 
 /* The latest request wins: a reply for a function you've since left is dropped, and the one you're on still loads. */
 let fnReq = 0, fnFirst = false;
+/* Team Call: Opus, Sonnet and Haiku on the open function together until it matches. Nuke: waves of 10 Haiku agents
+   on it, each starting from the best attempt so far. The server's manager runs both; one at a time per function. */
+const CALL_TIP = "Opus, Sonnet and Haiku work on this function together until it matches (stops at $3 or 30 minutes)";
+const NUKE_TIP = "Waves of 10 Haiku agents on this function until it matches; each starts from the best attempt so far (on your Claude plan; stops after 8 waves or 60 minutes)";
+let callTimer = null, callWas = null;
+function callButton(b, on, text, tip) {
+  b.classList.toggle("on", on);
+  b.classList.toggle("primary", on);
+  b.classList.toggle("ghost", !on);
+  b.textContent = text;
+  b.title = tip;
+}
+async function refreshTeam() {
+  const fn = S.fn, call = $("teamCall"), nuke = $("nukeCall");
+  if (!fn || $("drawer").hidden) { clearInterval(callTimer); callTimer = null; return; }
+  let t;
+  try { t = await api(`/api/team?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
+  if (fn !== S.fn) return;
+  const kind = t.kind === "nuke" ? "nuke" : "call", name = kind === "nuke" ? "Nuke" : "Team Call";
+  callButton(call, false, "Team Call", CALL_TIP);
+  callButton(nuke, false, "Nuke", NUKE_TIP);
+  call.hidden = nuke.hidden = false;
+  if (t.active) {
+    const best = t.best != null && S.fnDetail ? ` · best ${pctText(pctOf(t.best, S.fnDetail.insns))}` : "";
+    const cost = t.billing === "plan" ? "" : ` · $${t.usd.toFixed(2)}`;
+    if (kind === "nuke") {
+      const busy = t.members.filter((m) => !["stopped", "error"].includes(m.state)).length;
+      callButton(nuke, true, `Nuke on · wave ${Math.max(1, t.wave)}/${t.waves} · ${busy} agents${best}`, "Click to stop the Nuke");
+      call.hidden = true;
+    } else {
+      const who = t.members.filter((m) => !["stopped", "error"].includes(m.state)).map((m) => m.label.replace("Team Call · ", "").replace(/ 5\.5$/, ""));
+      callButton(call, true, `Team Call on · ${who.join(", ")}${best}${cost}`, "Click to stop the Team Call");
+      nuke.hidden = true;
+    }
+    if (!callTimer) callTimer = setInterval(refreshTeam, 3000);
+  } else {
+    clearInterval(callTimer); callTimer = null;
+    if (callWas === fn && t.state === "done") {
+      toast(t.matched ? `${name} matched <code>${esc(fn)}</code> 🎉` : `${name} ended: ${esc(t.reason)}.`, t.matched ? "match" : "");
+      refreshFn();
+    }
+  }
+  callWas = t.active ? fn : null;
+}
+async function toggleCall(kind) {
+  const b = $(kind === "nuke" ? "nukeCall" : "teamCall"), on = !b.classList.contains("on");
+  b.disabled = true;
+  try {
+    await api("/api/team", { method: "POST", body: { slug: S.slug, function: S.fn, on, kind } });
+    if (on) toast(kind === "nuke" ? "Nuke started: 10 Haiku agents are on it, in waves (on your Claude plan)."
+      : "Team Call started: Opus, Sonnet and Haiku are on it (on your API credits).");
+  } catch (e) { toast(esc(e.message), "err"); }
+  b.disabled = false;
+  refreshTeam();
+}
+$("teamCall").onclick = () => toggleCall("call");
+$("nukeCall").onclick = () => toggleCall("nuke");
+
 async function refreshFn(first) {
   if (!S.fn) return;
   const req = ++fnReq;
@@ -2505,10 +2571,15 @@ async function connectRows(box) {
   } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; }
 }
 const HOST_NAMES = { windows: "Windows", macos: "your Mac", linux: "this computer" };
+/* The example prompt: from a project, its own game file, so it can be copied and run as it is. */
+function askExample() {
+  const path = !$("project").hidden && S.ov && S.ov.rom && S.ov.rom.path;
+  return `decompile my game at ${path ? (/\s/.test(path) ? `"${path}"` : path) : "~/roms/game.z64"}`;
+}
 async function openConnect() {
   if (S.st && S.st.runtime && S.st.runtime !== "native") return openHostConnect();
   const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
-    ${cmdBox("decompile my game at ~/roms/game.z64")}
+    ${cmdBox(askExample())}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
     <div class="setup-group" id="connectRows"><p class="muted small">Looking for your agents…</p></div>
     <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre>
@@ -2847,6 +2918,12 @@ async function showSettingsPage() {
   $("setAgents").innerHTML = `
     <label class="field"><span>Functions per agent session (a fresh session keeps the agent's context small)</span><input id="perSession" type="number" min="1" max="20" value="${st.settings.per_session}"></label>
     <label class="field"><span>Budget: stop helper agents when a project's agents have spent this much (US dollars, as the agents report it; 0 = no limit)</span><input id="budgetSet" type="number" min="0" step="0.5" value="${st.settings.budget_usd || 0}"></label>
+    <div class="field"><span>Anthropic API key: Claude Opus helpers billed to your API credits, not your Claude plan. Paste it here (from platform.claude.com > API keys, starts with sk-ant-api).</span>
+      <div class="row"><input id="anthropicKeySet" type="password" class="mono grow" autocomplete="off" spellcheck="false" placeholder="${st.settings.anthropic_key ? esc(st.settings.anthropic_key) + " (saved)" : "sk-ant-api…"}">
+        <button class="primary small-btn" id="anthropicKeySave" type="button">Save</button>
+        ${st.settings.anthropic_key ? `<button class="ghost small-btn" id="anthropicKeyRemove" type="button">Remove</button>` : ""}</div></div>
+    <div class="field"><span>Notes on functions: what you and the agents wrote on each function, in every project (agents read them when they take one). Notes on a whole project are kept.</span>
+      <div class="row"><button class="ghost small-btn danger" id="clearNotes" type="button">Clear all function notes…</button></div></div>
     <label class="check"><input type="checkbox" id="autopilotSet" ${st.settings.autopilot !== false ? "checked" : ""}><span><b>Autopilot after each import</b>: try every function's machine draft first, so free matches cost no agent time.</span></label>
     <label class="check"><input type="checkbox" id="autopilotAfterMatchSet" ${st.settings.autopilot_after_match ? "checked" : ""}><span><b>Restart autopilot after a manual match</b>: when autopilot is idle, try remaining machine drafts again after you or an agent matches a function.</span></label>`;
   const theme = savedTheme();
@@ -2884,6 +2961,21 @@ async function showSettingsPage() {
   $("autopilotSet").onchange = () => save({ autopilot: $("autopilotSet").checked }, "Saved.");
   $("autopilotAfterMatchSet").onchange = () => save({ autopilot_after_match: $("autopilotAfterMatchSet").checked }, "Saved.");
   $("budgetSet").onchange = () => save({ budget_usd: Number($("budgetSet").value) || 0 }, "Budget saved.");
+  const saveKey = (key, msg) => save({ anthropic_api_key: key }, msg).then(() => showSettingsPage());
+  $("anthropicKeySave").onclick = () => {
+    const key = $("anthropicKeySet").value.trim();
+    if (!key) return toast("Paste your API key into the box first.", "err");
+    saveKey(key, "API key saved: Claude Opus helpers can now run on your API credits.");
+  };
+  $("anthropicKeySet").onkeydown = (e) => { if (e.key === "Enter") $("anthropicKeySave").click(); };
+  if ($("anthropicKeyRemove")) $("anthropicKeyRemove").onclick = () => saveKey("", "API key removed.");
+  $("clearNotes").onclick = async () => {
+    if (!confirm("Delete every note on every function, in all your projects? Notes on a whole project are kept. This can't be undone.")) return;
+    try {
+      const r = await api("/api/notes/clear", { method: "POST", body: {} });
+      toast(`Cleared ${r.cleared.toLocaleString()} function note${r.cleared === 1 ? "" : "s"}.`, "match");
+    } catch (e) { toast(esc(e.message), "err"); }
+  };
 }
 
 /* ------------------------------------------------------------------ updates (app/updates.py)
