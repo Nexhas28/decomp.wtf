@@ -1358,3 +1358,120 @@ def make_portfolio(function_key: str, *, best: DraftCandidate | None = None,
                    retrieved: DraftCandidate | None = None) -> DraftPortfolio:
     return DraftPortfolio(function_key=function_key,
                           candidates=[c for c in (best, m2c, ghidra, retrieved) if c is not None])
+
+
+# ------------------------------------------------------------------ ROM lane (PR-31)
+# The ROM-evidence workflow proven on slus-01363: wrap the project's segment images into one
+# little-endian MIPS ELF at their real vram, import headless with the pinned Ghidra, and decompile
+# ONE target function with an explicit body range. Read-only evidence: nothing here mutates
+# project state (analysis proposals still go through the protected edit path).
+
+def _rom_elf_segments(cfg: dict, data: bytes) -> list[tuple[int, int, int, bytes]]:
+    """(vaddr, filesz, memsz, payload) per config segment; duplicate vram ranges (overlays) keep
+    only the first copy — the loader cannot map two segments onto one address."""
+    out: list[tuple[int, int, int, bytes]] = []
+    seen: set[tuple[int, int]] = set()
+    for seg in cfg.get("segments", []):
+        start, end, vram = seg["rom_start"], seg["rom_end"], seg["vram"]
+        if (vram, vram + end - start) in seen:
+            continue
+        seen.add((vram, vram + end - start))
+        if end > len(data):
+            continue
+        out.append((vram, end - start, end - start, data[start:end]))
+    return out
+
+
+def rom_wrapper(proj: dict, out_dir: Path) -> Path:
+    """One ELF32 (little-endian) wrapper of the project's segment images at their real vram
+    addresses. Cached by the project's rom identity; overwriting is safe (content-addressed)."""
+    import hashlib
+    import struct
+
+    cfg = json.loads(proj["config"])
+    if cfg.get("big_endian"):
+        raise AdmissionError("the ROM wrapper lane is little-endian only; big-endian ROMs are not admitted")
+    rom = (Path(proj["root"]) / cfg["rom"]["file"]).read_bytes()
+    segs = _rom_elf_segments(cfg, rom)
+    digest = hashlib.sha256(rom + b"rom-wrapper-v2").hexdigest()[:16]
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"rom-{proj['slug']}-{digest}.elf"
+    if out.exists():
+        return out
+    off = 0x1000
+    e_ident = b"\x7fELF\x01\x01\x01" + b"\x00" * 9
+    hdr = e_ident + struct.pack("<HHIIIIIHHHHHH", 2, 8, 1, segs[0][0], 52, 0, 0, 52, 32, len(segs), 40, 0, 0)
+    body = b""
+    for vaddr, filesz, memsz, payload in segs:
+        body += struct.pack("<IIIIIIII", 1, off, vaddr, vaddr, filesz, memsz, 5, 0x1000)
+        off += filesz
+    tmp = out.with_suffix(".tmp")
+    pad = 0x1000 - len(hdr) - len(body)
+    tmp.write_bytes(hdr + body + b"\x00" * pad + b"".join(s[3] for s in segs))
+    tmp.rename(out)
+    return out
+
+
+def decompile_rom_function(proj: dict, addr: int, size: int, cache_dir: Path, *, timeout: int = 300) -> dict:
+    """Decompile one ROM function: wrap the project image, import headless with the pinned Ghidra
+    (no auto-analysis; the shipped script disassembles the body, defines referenced data and
+    decompiles), and return the evidence. Requires Ghidra + Java 21 (available())."""
+    if not available():
+        raise GhidraUnavailable("Ghidra (analyzeHeadless) and Java 21 are required for ROM evidence")
+    scripts = Path(cache_dir) / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "DecompOne.java").write_text(
+        importlib_resources().read_text("decompnet.forks.ghidra_scripts", "DecompOne.java"), encoding="utf-8")
+    wrapper = rom_wrapper(proj, Path(cache_dir) / "rom")
+    gh = ghidra_home()
+    user_home = os.environ.get("DECOMP_GHIDRA_USER_HOME", str(Path(cache_dir) / "ghidra-user"))
+    Path(user_home).mkdir(parents=True, exist_ok=True)
+    proj_dir = Path(cache_dir) / "proj"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    argv = [str(gh / "support" / "analyzeHeadless"), str(proj_dir), f"rom{addr:x}",
+            "-import", str(wrapper), "-processor", "MIPS:LE:32:default", "-noanalysis",
+            "-postScript", "DecompOne.java", f"0x{addr:x}", str(size),
+            "-scriptPath", str(scripts), "-deleteProject"]
+    env = dict(os.environ, JAVA_HOME=str(java_home()), JAVA_TOOL_OPTIONS=f"-Duser.home={user_home}")
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return {"status": "timeout", "c": None, "calls": [], "data_refs": [], "diagnostics": [f"exceeded {timeout}s"]}
+    out = proc.stdout or ""
+    if proc.returncode != 0:
+        return {"status": "failed", "c": None, "calls": [], "data_refs": [],
+                "diagnostics": (proc.stderr or "")[-800:].splitlines()}
+    c = _between(out, "=== DECOMPILED C ===", "=== CALLS ===")
+    calls = _lines_between(out, "=== CALLS ===", "=== DATA REFS")
+    refs = _lines_after(out, "=== DATA REFS")
+    status = "ok" if c and "halt_baddata" not in c else "partial"
+    return {"status": status, "c": c, "calls": calls, "data_refs": refs,
+            "diagnostics": ["halt_baddata: body contains undefined bytes — check the address/size"] if status == "partial" else []}
+
+
+def _between(text: str, a: str, b: str) -> str | None:
+    i = text.find(a)
+    if i < 0:
+        return None
+    j = text.find(b, i)
+    return text[i + len(a):j if j >= 0 else len(text)].strip()
+
+
+def _lines_between(text: str, a: str, b: str) -> list[str]:
+    seg = _between(text, a, b)
+    return [l.strip() for l in (seg or "").splitlines() if l.strip()]
+
+
+def _lines_after(text: str, marker: str) -> list[str]:
+    i = text.find(marker)
+    if i < 0:
+        return []
+    return [l.strip() for l in text[i + len(marker):].splitlines() if l.strip()]
+
+
+def importlib_resources():
+    from importlib import resources
+
+    return resources
