@@ -32,10 +32,15 @@ Report progress in terms of functions and % of code matched. The game's code is 
 """
 
 
-def agent_options(settings_data: dict, per_session: int = 0, task: str = "") -> dict:
+def agent_options(settings_data: dict, per_session: int = 0, task: str = "", role: str = "") -> dict:
     """The options start_agents hands to Manager.start: per_session and, when given, a validated
-    task class for model routing (P11.5). An empty task keeps the Manager's default (easy-edit)."""
+    task class for model routing (P11.5) and a validated job (role). An empty task keeps the Manager's default
+    (easy-edit); no role is a matching helper."""
     options = {"per_session": per_session or settings_data.get("per_session", agents.PER_SESSION)}
+    if role:
+        if role not in agents.ROLES:
+            raise ValueError(f"unknown job {role!r}: {', '.join(agents.ROLES)} (or none, to match functions)")
+        options["role"] = role
     if task:
         if task not in agents.TASK_CLASSES:
             raise ValueError(f"unknown task class {task!r}: {', '.join(agents.TASK_CLASSES)}")
@@ -180,11 +185,13 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
 
     @mcp.tool(meta=tools.ALWAYS_LOAD)
     async def start_agents(ctx: Context, count: int = 1, kind: str = "", per_session: int = 0,
-                           task: str = "") -> str:
+                           task: str = "", role: str = "") -> str:
         """Start helper agents that decompile the current project in parallel with you (headless, shown live in
         the app). `kind`: claude, codex, antigravity or opencode (default: the first one installed). `task`: the
         work class for model routing — "easy-edit" (small, well-supported edits) or "structural-investigation"
-        (larger reasoning/context work); default "easy-edit"."""
+        (larger reasoning/context work); default "easy-edit". `role`: "researcher" for helpers that match nothing and
+        instead leave open functions notes on how to match them (from the knowledge base and, for Claude Code, GitHub);
+        default: helpers that match."""
         agent = chat_agent(ctx)
         slug = current(agent)
         if not kind:
@@ -192,7 +199,7 @@ def register(mcp, net, manager, jobs, settings, port: int, secret: str) -> None:
             if not kind:
                 raise ToolError("no agent CLI is installed for helpers (Claude Code, Codex, Antigravity CLI or opencode)")
         try:
-            options = agent_options(settings.data, per_session=per_session, task=task)
+            options = agent_options(settings.data, per_session=per_session, task=task, role=role)
         except ValueError as e:
             raise ToolError(str(e)) from None
         try:

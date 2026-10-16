@@ -567,6 +567,8 @@ a.ghost, a.primary { text-decoration: none; }
 .xref .fn { font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; margin-right: 8px; overflow-wrap: anywhere; }
 .note { padding: 10px 12px; border-left: 2px solid var(--line); font-size: 13.5px; color: var(--ink-2); }
 .note small { display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
+.note.research { border-left-color: var(--move); background: var(--move-bg); border-radius: 0 8px 8px 0; white-space: pre-wrap; }
+.note.research small { color: var(--move); font-weight: 600; }
 .note-box { display: grid; gap: 8px; }
 .note-box textarea { width: 100%; border-radius: 9px; border: 1px solid var(--line); background: var(--raise); padding: 9px 11px; font: 13px/1.5 var(--sans); color: var(--ink); resize: vertical; }
 .pin.on { background: var(--work-bg); color: var(--work); border-color: transparent; }
