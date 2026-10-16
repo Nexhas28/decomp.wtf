@@ -2654,7 +2654,7 @@ class RomNetwork(Network):
     def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
         or base_2, base_3... when another session of the same agent is active right now (never base-2: that's the
-        name of a helper session, see local_agent). `client` is the bridge's stable id (its unix socket identity):
+        name of a helper session, see local_agent). `client` is the bridge process's own stable id (bridge.CLIENT_ID):
         a bridge daemon that restarts with the same client id gets its ORIGINAL row back instead of a suffixed one
         (the identity split-brain perf-test found), while two genuinely concurrent clients still get separate
         identities."""
