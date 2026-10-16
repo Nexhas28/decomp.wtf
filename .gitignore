@@ -31,3 +31,88 @@ scripts/
 .pip-cache/
 benchmark-results/
 benchmarks/results/
+
+# ---------------------------------------------------------------------------
+# Instance state, secrets and local configuration (never commit these)
+# ---------------------------------------------------------------------------
+# The app keeps everything an instance needs in <DECOMP_HOME>/.decomp: server.json (the instance
+# secret and every agent token's hash), settings.json (the operator's lockdown allowlist),
+# decomp.db and its WAL (every project, ROM path and submitted source), backups/ (sqlite snapshots),
+# agents/, ghidra/, app.log and the *.failed.json markers. A checkout can be used as the app home,
+# so none of it may be committed from here.
+.decomp/
+install-id
+*failed.json
+improvements-log.jsonl
+
+# Databases and their write-ahead/shared-memory files (no fixture of these is tracked)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# The per-instance server descriptor: the secret and the bound port live in this file
+server.json
+
+# Agent scratch spaces, run logs and harness state
+work/
+logs/
+*.log
+.dsh/
+.codex/
+.gemini/
+.opencode/
+.claude/settings.local.json
+.mcp.json
+
+# Credentials, and per-user config that can carry them
+.env
+.env.*
+!.env.example
+.netrc
+*credential*
+*.token
+*.secret
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Config backups and patch/merge leftovers
+*.bak
+*.bak-*
+*.orig
+*.rej
+
+# ---------------------------------------------------------------------------
+# Game ROM images and console dumps (copyrighted dumps must never be committed)
+# ---------------------------------------------------------------------------
+# The single exception is the demo the app ships so a new user can try it without owning a ROM.
+*.z64
+*.n64
+*.v64
+*.iso
+*.gcm
+*.rvz
+*.wbfs
+*.gb
+*.gbc
+*.bin
+*.rom
+*.gba
+*.nds
+*.3ds
+*.cia
+*.sfc
+*.smc
+*.nes
+*.sms
+*.gg
+*.pce
+*.sav
+*.srm
+*.state
+!src/decompnet/app/static/demo/*.z64
