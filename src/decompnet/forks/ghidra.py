@@ -80,11 +80,94 @@ class ProposalError(GhidraError):
     """An analysis proposal tried to mutate project state directly (only the protected edit path may)."""
 
 
+# Workspace-local runtimes (Workstream C): Java/Ghidra discovery never touches system directories.
+# Order: DECOMP_JAVA_HOME / DECOMP_GHIDRA_HOME, then the workspace provisioning, then PATH/registry.
+_WORKSPACE_JAVA_DIR = Path.home() / "Decomp" / "java"
+_WORKSPACE_GHIDRA_DIRS = (
+    Path.home() / "Documents" / "Codex" / "2026-10-14" / "i-want" / "work" / "ghidra-displaylink"
+    / "ghidra_12.1.4_PUBLIC",
+)
+
+
+def _java_bin(home: Path) -> Path | None:
+    exe = home / "bin" / ("java.exe" if os.name == "nt" else "java")
+    if exe.is_file():
+        return exe
+    mac = home / "Contents" / "Home" / "bin" / "java"  # macOS JRE layout
+    return mac if mac.is_file() else None
+
+
+def java_home() -> Path | None:
+    """A Java runtime root (the directory containing bin/java): DECOMP_JAVA_HOME, the workspace
+    ~/Decomp/java/*/Contents/Home layout, then PATH. Returns the normalised home; never installs or
+    touches system directories."""
+    candidates: list[Path] = []
+    env = os.environ.get("DECOMP_JAVA_HOME")
+    if env:
+        candidates.append(Path(env))
+    if _WORKSPACE_JAVA_DIR.is_dir():
+        for entry in sorted(_WORKSPACE_JAVA_DIR.iterdir()):
+            if entry.is_dir():
+                candidates.append(entry)
+    exe = shutil.which("java")
+    if exe:
+        p = Path(exe).resolve()
+        parent = p.parent
+        candidates.append(parent if parent.name == "bin" else parent.parent)
+    for candidate in candidates:
+        exe = candidate / "bin" / ("java.exe" if os.name == "nt" else "java")
+        if exe.is_file():
+            return candidate
+        mac = candidate / "Contents" / "Home"  # macOS JRE layout
+        if (mac / "bin" / "java").is_file():
+            return mac
+    return None
+
+
+def java_version() -> int:
+    """Major version of the discovered java (java_home() first, then PATH), 0 if none."""
+    exe = None
+    home = java_home()
+    if home is not None:
+        exe = _java_bin(home)
+    if exe is None:
+        found = shutil.which("java")
+        exe = Path(found) if found else None
+    if exe is None:
+        return 0
+    try:
+        out = subprocess.run([str(exe), "-version"], capture_output=True, text=True, timeout=20,
+                             encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    m = re.search(r'version "(\d+)', out.stderr + out.stdout)
+    return int(m.group(1)) if m else 0
+
+
+def ghidra_home() -> Path | None:
+    """The Ghidra install whose support/analyzeHeadless exists: DECOMP_GHIDRA_HOME, the decompnet
+    toolchain registry, or the pinned workspace install (read-only)."""
+    launcher = "analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless"
+    candidates: list[Path] = []
+    env = os.environ.get("DECOMP_GHIDRA_HOME")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(toolchains.path("ghidra"))
+    candidates.extend(_WORKSPACE_GHIDRA_DIRS)
+    for candidate in candidates:
+        if (candidate / "support" / launcher).is_file():
+            return candidate
+    return None
+
+
 def available() -> bool:
-    return toolchains.installed("ghidra") is not None and toolchains.java_version() >= 21
+    return ghidra_home() is not None and java_home() is not None and java_version() >= 21
 
 
 def _headless() -> Path:
+    home = ghidra_home()
+    if home is not None:
+        return home / "support" / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
     base = toolchains.path("ghidra") / "support"
     return base / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
 
@@ -197,6 +280,15 @@ _LANGUAGES = {
     ("sh", 32, "little"): "SuperH4:LE:32:default",
 }
 _LOADERS = ("Elf", "Pe", "COFF", "Mach-O", "Raw Binary")
+#: Internal loader ids -> the loader CLASS names analyzeHeadless -loader accepts (HeadlessOptions
+#: resolves via LoaderService.getLoaderClassByName; verified against the pinned 12.1.4 loaders).
+_LOADER_NAMES = {
+    "Elf": "ElfLoader",
+    "Pe": "PeLoader",
+    "COFF": "CoffLoader",
+    "Mach-O": "MachoLoader",
+    "Raw Binary": "BinaryLoader",
+}
 
 
 def elf_info(data: bytes) -> dict | None:
@@ -259,7 +351,7 @@ def resolve_language(profile: TargetProfile) -> tuple[str | None, str | None, st
             f"unsupported Ghidra language for {profile.processor or '?'}/{profile.bits}-bit/"
             f"{profile.endian or '?'}{(' in ' + profile.mode + ' mode') if profile.mode else ''}; supported "
             f"combinations: {supported}")
-    return language, "default", None
+    return language, None, None  # compiler spec None = the language's own default (never guessed per language)
 
 
 def admit(profile: TargetProfile | dict | None, data: bytes):
@@ -381,10 +473,10 @@ class AdmittedProfile:
         args = []
         if self.language_id:
             args += ["-processor", self.language_id]
-        if self.compiler_spec:
-            args += ["-cspec", self.compiler_spec]
+        if self.compiler_spec:  # only pass a compiler spec when the caller pinned one: -cspec ids are
+            args += ["-cspec", self.compiler_spec]  # per-language (e.g. x86:LE:64:default has no "default")
         if self.loader:
-            args += ["-loader", self.loader]
+            args += ["-loader", _LOADER_NAMES.get(self.loader, self.loader)]
         return args
 
 
@@ -758,8 +850,23 @@ def _run_headless(admitted: AdmittedProfile, obj: Path, scripts_src: Path, facet
                 "-analysisTimeoutPerFile", "600", *admitted.script_args(), "-postScript",
                 "DecompWtfExport.java", str(out), *_facet_args(admitted, facets, want_bytes), "-deleteProject"]
         try:
+            env = dict(os.environ)
+            jh = java_home()
+            if jh is not None:  # the launcher bootstraps from JAVA_HOME when PATH lacks a real java
+                env["JAVA_HOME"] = str(jh)
+            # DECOMP_GHIDRA_USER_HOME relocates Ghidra's user state (logs/preferences/caches, which
+            # default to ~/Library/ghidra on macOS) — needed by sandboxed/CI runs that may only write
+            # inside the workspace; unset keeps Ghidra's normal layout. JAVA_TOOL_OPTIONS reaches
+            # every JVM the launcher spawns, including the LaunchSupport step that persists
+            # java_home.save BEFORE GHIDRA_JAVA_OPTIONS is applied.
+            if os.environ.get("DECOMP_GHIDRA_USER_HOME"):
+                extra = os.environ.get("GHIDRA_JAVA_OPTIONS", "")
+                env["GHIDRA_JAVA_OPTIONS"] = (extra + f" -Duser.home={os.environ['DECOMP_GHIDRA_USER_HOME']}").strip()
+                tool_opts = os.environ.get("JAVA_TOOL_OPTIONS", "")
+                env["JAVA_TOOL_OPTIONS"] = (tool_opts + f" -Duser.home={os.environ['DECOMP_GHIDRA_USER_HOME']}").strip()
             proc = subprocess.Popen(capped(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                    encoding="utf-8", errors="replace", start_new_session=(os.name != "nt"))
+                                    encoding="utf-8", errors="replace", start_new_session=(os.name != "nt"),
+                                    env=env)
         except OSError as e:
             return _RunResult(status="failed", diagnostics=[f"analyzeHeadless failed to start: {e}"])
         try:

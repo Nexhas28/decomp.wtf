@@ -21,7 +21,7 @@ import pytest
 
 from decompnet.analysis import rea
 from decompnet.analysis.broker import Broker, DirectGhidraProvider, ProviderError
-from decompnet.analysis.contracts import ProviderRequest
+from decompnet.analysis.contracts import Budget, ProviderRequest
 from decompnet.analysis.rea import (DOS_COM_MAX_BYTES, PINNED_TOOLS, ReaMCPClient, ReaProvider,
                                     elf_header_info, mips_lane_admission, parse_tool_result,
                                     raw_matrix_admission, validate_evidence_envelope,
@@ -1060,3 +1060,52 @@ def test_real_lane_schema_discovery(tmp_path):
         assert set(PINNED_TOOLS) <= set(catalog)
     finally:
         client.close()
+
+
+def test_real_lane_open_binary_and_analyze_function(tmp_path):
+    """Workstream C real lane: the actual REA sidecar imports a host-built Mach-O executable through
+    its Ghidra bridge and returns real dossiers (open_binary + analyze_function +
+    read_function_instructions). Read-only: the artifact is only ever read. Skips only when
+    rea-agents/node are absent or when neither the workspace Java (~/Decomp/java) nor a system Java
+    exists (REA's Ghidra bridge requires a full JDK 21+ — a runtime-only JRE is explicitly rejected
+    by its doctor check)."""
+    import shutil
+    import subprocess
+
+    if not rea.available():
+        pytest.skip("rea-agents 6.4.0 is not installed on this host (no node + scripts/rea.mjs)")
+    from decompnet.forks import ghidra
+
+    java = ghidra.java_home()
+    if java is None or ghidra.java_version() < 21 or ghidra.ghidra_home() is None:
+        pytest.skip("the REA Ghidra bridge needs a Java 21+ runtime (DECOMP_JAVA_HOME, ~/Decomp/java "
+                    "or PATH) and a Ghidra install: none found on this host")
+    cc = shutil.which("clang")
+    if cc is None:
+        pytest.skip("clang is needed to build the Mach-O fixture")
+    src = tmp_path / "fixture.c"
+    src.write_text('#include <stdio.h>\nstatic int twice(int x) { return x * 2; }\n'
+                   'int main(void) { printf("%d\\n", twice(21)); return 0; }\n')
+    exe = tmp_path / "fixture"
+    subprocess.run([cc, str(src), "-o", str(exe)], check=True, capture_output=True)
+    digest = hashlib.sha256(exe.read_bytes()).hexdigest()
+    provider = rea.ReaProvider()
+    side = provider.open_session("s1", {"artifact": str(exe), "digest": digest,
+                                        "rea_home": str(tmp_path / "home"),
+                                        "rea_tmp": str(tmp_path / "tmp")})
+    try:
+        request = ProviderRequest(request_id="r1", kind="function", function_key="x::_twice",
+                                  functions=("_twice", "_main"), facets=("pseudocode", "instructions"),
+                                  snapshot="current", budget=Budget(wall_seconds=600), limits={},
+                                  profile={}, inputs={"module": "x"}, requester="real-lane")
+        result = provider.fetch("s1", side, request, None)
+        assert result.status == "ok", result.diagnostics
+        twice = result.functions.get("x::_twice")
+        assert twice is not None and twice.status == "ok" and twice.entry is not None
+        pseudocode = (twice.views.get("pseudocode") or {}).get("text", "")
+        assert "<<" in pseudocode  # x * 2 decompiles to a shift through the real Ghidra bridge
+        instructions = (twice.views.get("instructions") or {}).get("items") or []
+        assert instructions  # real ARM64 instructions with addresses
+        assert result.functions["x::_main"].status == "ok"
+    finally:
+        provider.close_session("s1", side)

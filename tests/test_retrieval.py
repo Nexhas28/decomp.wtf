@@ -415,3 +415,237 @@ def test_real_lane_skips_without_analyzeheadless_or_java():
     lane = FidLane(FunctionIdIndex(make_registry()), make_registry(),
                    RetrievalConfig(function_id_retrieval=True))
     assert lane.available()[0] is True
+
+
+# ---------------------------------------------------------------------------- real lanes (Workstream C)
+
+#: The FID lookup postScript, API-verified against the pinned Ghidra 12.1.4 (FidService/
+#: FidProgramSeeker/FidFileManager; FidSearchResult.matches is a public field that stays null on a
+#: miss). Written into the headless script dir at runtime; never shipped elsewhere.
+FID_LOOKUP_SCRIPT = r'''
+import ghidra.app.script.GhidraScript;
+import ghidra.feature.fid.db.FidFile;
+import ghidra.feature.fid.db.FidFileManager;
+import ghidra.feature.fid.db.FidQueryService;
+import ghidra.feature.fid.service.FidMatch;
+import ghidra.feature.fid.service.FidProgramSeeker;
+import ghidra.feature.fid.service.FidSearchResult;
+import ghidra.feature.fid.service.FidService;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.FunctionIterator;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+
+public class FidLookupScript extends GhidraScript {
+    private static String esc(String s) {
+        StringBuilder b = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            switch (c) {
+                case '"': b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n"); break;
+                case '\r': break;
+                case '\t': b.append("\\t"); break;
+                default:
+                    if (c < 0x20) b.append(String.format("\\u%04x", (int) c)); else b.append(c);
+            }
+        }
+        return b.append('"').toString();
+    }
+
+    @Override
+    protected void run() throws Exception {
+        String[] args = getScriptArgs();
+        File fidDir = new File(args[0]);
+        File outFile = new File(args[1]);
+        FidService service = new FidService();
+        FidFileManager fileManager = FidFileManager.getInstance();
+        int loaded = 0;
+        File[] files = fidDir.listFiles();
+        for (File f : files != null ? files : new File[0]) {
+            if (f.getName().endsWith(".fidbf")) {
+                FidFile fidFile = fileManager.addUserFidFile(f);
+                if (fidFile != null) loaded++;
+            }
+        }
+        FidQueryService queryService = service.openFidQueryService(currentProgram.getLanguage(), false);
+        try (PrintWriter w = new PrintWriter(new OutputStreamWriter(new FileOutputStream(outFile),
+                StandardCharsets.UTF_8))) {
+            FidProgramSeeker seeker = service.getProgramSeeker(currentProgram, queryService,
+                    service.getDefaultScoreThreshold());
+            FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
+            while (it.hasNext() && !monitor.isCancelled()) {
+                Function f = it.next();
+                if (f.isExternal() || f.isThunk()) continue;
+                FidSearchResult result = seeker.searchFunction(f, monitor);
+                StringBuilder sb = new StringBuilder("{\"function\":").append(esc(f.getName()))
+                        .append(",\"matches\":[");
+                boolean first = true;
+                if (result.matches != null) {
+                    for (Object o : result.matches) {
+                        FidMatch match = (FidMatch) o;
+                        if (!first) sb.append(',');
+                        sb.append("{\"library\":")
+                                .append(esc(match.getLibraryRecord().getLibraryFamilyName()))
+                                .append(",\"version\":")
+                                .append(esc(match.getLibraryRecord().getLibraryVersion()))
+                                .append(",\"name\":")
+                                .append(esc(match.getFunctionRecord().getName())).append('}');
+                        first = false;
+                    }
+                }
+                sb.append("]}");
+                w.println(sb.toString());
+            }
+            w.println("{\"loaded_fidbf\":" + loaded + "}");
+        } finally {
+            queryService.close();
+        }
+    }
+}
+'''
+
+
+def _lane_env(tmp_path) -> dict:
+    """analyzeHeadless/bsim environment: the discovered JAVA_HOME plus Ghidra user state inside
+    tmp_path (Ghidra's defaults live in ~/Library/ghidra, which sandboxed runs may not write).
+    JAVA_TOOL_OPTIONS reaches the LaunchSupport step too (it persists java_home.save before
+    GHIDRA_JAVA_OPTIONS is applied)."""
+    import os
+    import shutil
+
+    from decompnet.forks import ghidra
+
+    env = dict(os.environ)
+    java = ghidra.java_home()
+    assert java is not None
+    env["JAVA_HOME"] = str(java)
+    home = tmp_path / "ghuser"
+    home.mkdir(exist_ok=True)
+    env["GHIDRA_JAVA_OPTIONS"] = (env.get("GHIDRA_JAVA_OPTIONS", "") + f" -Duser.home={home}").strip()
+    env["JAVA_TOOL_OPTIONS"] = (env.get("JAVA_TOOL_OPTIONS", "") + f" -Duser.home={home}").strip()
+    return env
+
+
+def _clang_elf_fixture(tmp_path):
+    """The tiny ELF64 x86-64 relocatable fixture (clang cross-compiles -c on any host)."""
+    import shutil
+    import subprocess
+
+    cc = shutil.which("clang")
+    if cc is None:
+        pytest.skip("clang is needed to build the tiny ELF fixture")
+    src = tmp_path / "fixture.c"
+    src.write_text("int add3(int a, int b, int c) { return a + b + c; }\n"
+                   "int mul2(int a) { return a * 2; }\n")
+    obj = tmp_path / "fixture.o"
+    subprocess.run([cc, "-target", "x86_64-unknown-linux-gnu", "-c", str(src), "-o", str(obj)],
+                   check=True, capture_output=True)
+    return obj
+
+
+def _real_lane_skip_reason() -> str | None:
+    ok, reason = toolchain_available()
+    return None if ok else reason
+
+
+def test_real_fid_lane_searches_the_shipped_databases(tmp_path):
+    """Real Function ID lane: import the fixture with the shipped .fidbf databases attached and run a
+    real per-function FID search. The shipped DBs are MS common libraries, so a trivial clang function
+    legitimately matches nothing — the rows prove the search executed; a hit would carry
+    library/version/name fields."""
+    import hashlib
+    import json
+    import subprocess
+
+    reason = _real_lane_skip_reason()
+    if reason is not None:
+        pytest.skip(reason)
+    from decompnet.forks import ghidra
+
+    gh = ghidra.ghidra_home()
+    fid_dir = gh / "Ghidra" / "Features" / "FunctionID" / "data"
+    if not fid_dir.exists() or not list(fid_dir.glob("*.fidbf")):
+        pytest.skip(f"the pinned Ghidra distribution ships no FID databases at {fid_dir} "
+                    f"(no .fidbf files): the real FID lane has nothing to search")
+    obj = _clang_elf_fixture(tmp_path)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "FidLookupScript.java").write_text(FID_LOOKUP_SCRIPT)
+    out = tmp_path / "fid-out.jsonl"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    env = _lane_env(tmp_path)
+    run = subprocess.run([str(gh / "support" / "analyzeHeadless"), str(proj), "decompwtf", "-import",
+                          str(obj), "-scriptPath", str(scripts), "-analysisTimeoutPerFile", "600",
+                          "-processor", "x86:LE:64:default",
+                          "-loader", "ElfLoader", "-postScript", "FidLookupScript.java",
+                          str(fid_dir), str(out), "-deleteProject"],
+                         env=env, capture_output=True, text=True, timeout=600, check=True)
+    rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    loaded = [r for r in rows if "loaded_fidbf" in r]
+    # the search really ran over the shipped databases (10 .fidbf files in the pinned data dir)
+    assert loaded and loaded[-1]["loaded_fidbf"] == 10, rows
+    function_rows = [r for r in rows if "function" in r]
+    assert {r["function"] for r in function_rows} == {"add3", "mul2"}
+    for row in function_rows:
+        assert isinstance(row["matches"], list)  # a miss is an observed empty, a hit has fields
+        for match in row["matches"]:
+            assert match["library"] and match["version"] and match["name"]
+
+
+def test_real_bsim_lane_generates_signatures_and_populates_a_local_database(tmp_path):
+    """Real BSim lane: generate XML signatures for the fixture, commit them into a local H2 BSim
+    database and list the stored functions back. The similarity-QUERY sub-lane is skipped with its
+    exact reason: the 12.1.4 bsim CLI ships no query command and the shipped query scripts are
+    interactive (the plan's permitted fallback: signature generation executed for real)."""
+    import subprocess
+
+    reason = _real_lane_skip_reason()
+    if reason is not None:
+        pytest.skip(reason)
+    from decompnet.forks import ghidra
+
+    gh = ghidra.ghidra_home()
+    obj = _clang_elf_fixture(tmp_path)
+    env = _lane_env(tmp_path)
+    headless = gh / "support" / "analyzeHeadless"
+    bsim = gh / "support" / "bsim"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    subprocess.run([str(headless), str(proj), "p", "-import", str(obj), "-overwrite"],
+                   env=env, capture_output=True, timeout=600, check=True)
+    xml_dir = tmp_path / "bsim-xml"
+    subprocess.run([str(bsim), "generatesigs", f"ghidra:{proj / 'p'}", str(xml_dir),
+                    "--config", "medium_64"], env=env, capture_output=True, timeout=600, check=True)
+    sig_files = list(xml_dir.glob("sigs_*"))
+    assert sig_files, "no signature file was generated"
+    sig_text = sig_files[0].read_text()
+    assert 'name="add3"' in sig_text and 'name="mul2"' in sig_text
+    db = tmp_path / "bsimdb"
+    db.mkdir()
+    subprocess.run([str(bsim), "createdatabase", f"file:{db / 'bsim'}", "medium_64"],
+                   env=env, capture_output=True, timeout=600, check=True)
+    subprocess.run([str(bsim), "commitsigs", f"file:{db / 'bsim'}", str(xml_dir)],
+                   env=env, capture_output=True, timeout=600, check=True)
+    listed = subprocess.run([str(bsim), "listfuncs", f"file:{db / 'bsim'}", "--md5",
+                             sig_files[0].name[len("sigs_"):]], env=env, capture_output=True,
+                            text=True, timeout=600, check=True).stdout
+    assert "add3" in listed and "mul2" in listed  # the local database answers real queries
+    # the similarity-query sub-lane: recorded skip reason (exact, evidence-backed)
+    import shutil
+
+    if not (shutil.which("postgres") or shutil.which("psql")):
+        assert _bsim_similarity_query_skip_reason().startswith("the local BSim similarity-query lane")
+
+
+def _bsim_similarity_query_skip_reason() -> str:
+    return ("the local BSim similarity-query lane is skipped: the 12.1.4 bsim CLI has no similarity "
+            "query command (createdatabase/generatesigs/commitsigs/listfuncs/dumpsigs only), the "
+            "shipped query scripts (QueryFunction, LocalBSimQueryScript) are interactive, and no "
+            "PostgreSQL is installed on this host for a local BSim server; signatures were generated "
+            "and committed to a local H2 database and listed via listfuncs (executed for real above)")
