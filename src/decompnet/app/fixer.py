@@ -22,6 +22,10 @@ import time
 log = logging.getLogger("decomp.wtf")
 
 SONNET = "claude-sonnet-5-5"
+# the models the app offers for it (any other Claude Code model name works through the settings too)
+MODELS = [{"id": SONNET, "name": "Sonnet 5.5", "note": "the default: careful and quick"},
+          {"id": "claude-opus-5-5", "name": "Opus 5.5", "note": "the strongest, costs more"},
+          {"id": "claude-haiku-5-5", "name": "Haiku 5.5", "note": "cheapest, for simple lists"}]
 DEFAULTS = {"enabled": True, "model": SONNET, "effort": "medium"}
 DEBOUNCE = 60.0  # seconds a flagged note waits for others, so one session gets them together
 BATCH = 12  # functions per fixer session
@@ -114,6 +118,7 @@ class Fixer:
         self.sessions: dict[str, str] = {}  # slug -> the running fixer session's id
         self._timers: dict[str, threading.Timer] = {}
         self.batches: dict[str, list[dict]] = {}  # slug -> the running session's list
+        self.last_error: dict[str, str] = {}  # slug -> why the last start failed
         self._lock = threading.Lock()
 
     def mips(self, slug: str) -> bool:
@@ -146,9 +151,19 @@ class Fixer:
         if (kinds := wanted(fn, kinds)):
             self._add(slug, fn, kinds, text, fresh=True)
 
-    def scan(self, slug: str) -> int:
-        """The latest note on every unmatched function (helpers are starting): returns how many were flagged."""
-        if not self.settings()["enabled"] or not self.mips(slug):
+    def why_not(self, slug: str) -> str:
+        """Why the auto-fixer can't work on this project, or ""."""
+        if slug in getattr(self.net, "links", {}):
+            return "In a team room only the host's app runs the auto-fixer: its repairs change the room's copy."
+        if not self.mips(slug):
+            return "The auto-fixer works on N64, PlayStation and PlayStation 2 projects."
+        return ""
+
+    def scan(self, slug: str, manual: bool = False) -> int:
+        """The latest note on every unmatched function (helpers are starting, or `manual`: a person asked; then
+        it runs even when switched off, and functions looked at more than ten minutes ago count again).
+        Returns how many were flagged."""
+        if not (manual or self.settings()["enabled"]) or not self.mips(slug):
             return 0
         proj = self.net.project_row(slug)
         fixers = {r["id"] for r in self.net.store.all("SELECT id FROM agents WHERE name LIKE 'fixer-%'")}
@@ -160,9 +175,25 @@ class Fixer:
         for r in rows:
             if r["note_agent"] in fixers:
                 continue
-            if (kinds := wanted(r, flags(r["note_text"]))) and self._add(slug, r, kinds, r["note_text"], fresh=False):
+            if (kinds := wanted(r, flags(r["note_text"]))) and self._add(slug, r, kinds, r["note_text"], fresh=manual):
                 n += 1
         return n
+
+    def run_now(self, slug: str) -> dict:
+        """A person's "Run it now": flag what the notes ask for and start the session straight away."""
+        if (why := self.why_not(slug)):
+            raise ValueError(why)
+        flagged = self.scan(slug, manual=True)
+        with self._lock:
+            if (t := self._timers.pop(slug, None)) is not None:
+                t.cancel()
+            running = slug in self.sessions
+        if not running and self.pending.get(slug):
+            self._start(slug)
+            with self._lock:
+                if slug not in self.sessions and self.pending.get(slug):
+                    raise ValueError(self.last_error.get(slug) or "the auto-fixer didn't start")
+        return self.status(slug) | {"flagged": flagged}
 
     def _add(self, slug: str, fn, kinds: set[str], note: str, fresh: bool) -> bool:
         meta = json.loads(fn["meta"] or "{}") if fn["meta"] else {}
@@ -197,6 +228,7 @@ class Fixer:
             sid = self.manager.start_fixer(slug, todo, st["model"], st["effort"], on_done=self._done)
         except Exception as e:  # (Claude Code missing, a rescan...) put them back for the next note or start
             log.info("auto-fixer on %s didn't start: %s", slug, e)
+            self.last_error[slug] = f"the auto-fixer didn't start: {e}"
             with self._lock:
                 for it in todo:
                     self.pending.setdefault(slug, {}).setdefault(it["function"], it)
@@ -233,4 +265,5 @@ class Fixer:
 
     def status(self, slug: str) -> dict:
         with self._lock:
-            return {"running": self.sessions.get(slug, ""), "waiting": sorted(self.pending.get(slug, {}))}
+            return {"running": self.sessions.get(slug, ""), "waiting": sorted(self.pending.get(slug, {})),
+                    "working_on": [it["function"] for it in self.batches.get(slug, [])]}
