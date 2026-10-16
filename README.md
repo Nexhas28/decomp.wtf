@@ -1,14 +1,13 @@
-## This project is discontinued
+## decomp.wtf for Mac
 
-I've decided to stop working on decomp.wtf and archive it.
+This is a continuation of [decomp.wtf](https://github.com/i12bp8/decomp.wtf) by Sam Wolfs, who archived the original,
+as a native **macOS app**. The Mac app is where development happens from here on: the Linux and
+Windows versions, their installers and the run-it-all-in-Docker setup are gone, and everything below is about
+running decomp.wtf on a Mac.
 
-Over the last few days I noticed that a lot of the decompilation community, the people who made the tools and projects all of this is built on, is against AI decompiling like this. I didn't make decomp.wtf to do any harm, but I respect their opinion, and that's why I'm stopping it here.
-
-The code stays up as it is, under the MIT license. If you want to fork it and keep going with it, you can. I won't fix issues, review pull requests or make new releases anymore. If you already have it installed it keeps working, it just won't get any updates. You can still install the last version (0.10.6) with the commands under [Install](#install).
-
-If you do use it or build on it, please only use it on games you own, don't share the game code it produces, and respect the rules of the projects you work with, because many of them don't want AI-made contributions.
-
-Thanks to everyone who tried it, reported bugs and sent fixes.
+The original author's request still stands, and this project shares it: only use it on games you own, don't share
+the game code it produces, and respect the rules of the projects you work with, because many of them don't want
+AI-made contributions.
 
 ---
 
@@ -25,6 +24,8 @@ Thanks to everyone who tried it, reported bugs and sent fixes.
   <a href="https://decomp.wtf"><b>Website</b></a>
   &nbsp;·&nbsp;
   <a href="#install"><b>Install</b></a>
+  &nbsp;·&nbsp;
+  <a href="#the-mac-app"><b>The Mac app</b></a>
   &nbsp;·&nbsp;
   <a href="#how-it-works"><b>How it works</b></a>
   &nbsp;·&nbsp;
@@ -131,6 +132,26 @@ part up to date.
 > [!TIP]
 > No ROM at hand? The app ships with **Demo Quest 64**, a real N64 ROM built from public-domain code and zlib.
 > Open it from the home screen (or **File ▸ Open the Demo Game**) and watch your agent go.
+
+## The Mac app
+
+Everything decomp.wtf does is in one window:
+
+- **A sidebar** with your projects and how far each one is, plus public decomps, joining a team, agents, compilers
+  and settings.
+- **Each project's overview** shows matched functions, code and compiles, the autopilot, and the ROM map (every
+  function as a square, live as agents work). The bar with Functions, Agents, Activity, Team, Source and Settings
+  stays pinned at the top while you scroll.
+- **Mac menus and shortcuts.** **File ▸ Open Game…** (⌘O) picks a game with the Mac's own file window and reads it
+  where it is, so big disc images aren't copied; **New Project** (⌘N), **Open the Demo Game**, **Continue a Public
+  Decomp…** and **Join a Team…** are there too. **Tools** has Agents & Models, Compilers & Tools, Settings (⌘,), the
+  projects folder in Finder, the log and **Restart decomp.wtf**. **View** has Back, Forward, Reload and the
+  appearance (System, Light or Dark).
+- **Local tools.** **Compilers & Tools** also lists the reverse-engineering tools in `local-tools/` (disassemblers,
+  decompilers, decompressors, symbol finders, extractors) with a **Check** button for each, and agents can run them
+  on the project's files through `local_tools` and `run_tool`.
+- **It looks after itself.** It starts decomp.wtf when it opens and stops it when you quit, says plainly when uv or
+  Docker Desktop is missing, and updates itself from GitHub Releases.
 
 ## Or just ask your agent
 
@@ -266,6 +287,7 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **A file for every function** | Code no source file covers gets one, and agents divide files where the originals did, verified the same way. |
 | **Look-alikes** | `find_similar` spots copy-pasted and inlined code across the whole game and starts agents from what already matches. |
 | **Drafts** | m2c for MIPS, PowerPC and ARM; optional Ghidra for x86, AArch64 and everything else. |
+| **Local tools** | Disassemblers, decompilers (rz-ghidra, RetDec), decompressors, symbol finders and extractors from `local-tools/`, listed and checked in the app and available to agents through `run_tool`. |
 | **Agent toolkit** | A data inspector, a call graph, splitting merged functions, and guides for MIPS, PowerPC, ARM, x86, AArch64, IDO, GCC, Metrowerks, agbcc, PSY-Q, C++ and objdiff. |
 | **Decompile together** | A team of any size, each with their own copy and agents: one host, public or private rooms, hosted by you (your Mac or an always-on Mac, `decomp host`). Only the work is shared, never the game. |
 | **Rebuildable export** | A decomp project that rebuilds your game byte for byte, ready for ports and mods and for any other tool or agent. |
@@ -439,7 +461,7 @@ Docker Desktop on Apple Silicon.
 
 **When something goes wrong.** A failed import stays on screen with the reason and what happened, and **Copy for a
 bug report** puts the version, the error and the log on your clipboard. The full log is `.decomp/logs/decomp.log` in
-your projects folder (`~/Decomp`), also at **The full log** in that panel and at **decomp.wtf ▸ Show Log** in the
+your projects folder (`~/Decomp`), also at **The full log** in that panel and at **Tools ▸ Show Log** in the
 app.
 
 ## Development
