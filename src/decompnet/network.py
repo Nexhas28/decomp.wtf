@@ -69,6 +69,17 @@ def wall_signature(text: str) -> str | None:
     return None
 
 
+def _adjacent(tail, head, arch: str = "") -> bool:
+    """Does `tail` start where `head` ends? On Game Boy (sm83) every switched bank is mapped at 0x4000, so
+    CPU addresses alone can line up across banks: there both ROM offsets must be adjacent within one bank."""
+    a = (tail["vram"], tail["rom_offset"], tail["size"])
+    b = (head["vram"], head["rom_offset"], head["size"])
+    rom = b[1] is not None and a[1] is not None and a[1] == b[1] + (b[2] or 0)
+    if (arch or "").lower() == "sm83":
+        return rom and tail["unit"] == head["unit"]
+    return (b[0] is not None and a[0] is not None and a[0] == b[0] + (b[2] or 0)) or rom
+
+
 def _fragment_like(fn, arch: str = "") -> bool:
     """The boundary-fragment shape perf-test observed: the entry instruction already uses a saved
     register (live-in) with no stack-frame prologue — a function split in two by the disassembler.
@@ -156,12 +167,16 @@ _ARCH_PROCESSORS = {"mips": ("mips", 32), "ppc": ("powerpc", 32), "x86": ("x86",
 def _counts_from_rows(rows) -> dict:
     """Structured mismatch counts (P3.4 schema keys) derived from the rendered diff rows — the same
     classification the agent sees ('r' register, 's' stack offset, 'i' operand, 'o' reorder,
-    '<' deletion, '>' insertion). For duplicated identical instructions the reorder count may
+    '<' deletion, '>' insertion, '|' a different instruction: one of each). For duplicated identical instructions the reorder count may
     over-count by the multiplicity: a policy input, never a score."""
     counts = {k: 0 for k in ("register", "stack_offset", "operand", "insertion", "deletion", "reorder")}
     kinds = {"r": "register", "s": "stack_offset", "i": "operand", "o": "reorder",
              "<": "deletion", ">": "insertion"}
     for mark, _, _ in rows:
+        if mark == "|":  # the target's instruction is missing and ours is extra, as the scorer counts it
+            counts["deletion"] += 1
+            counts["insertion"] += 1
+            continue
         kind = kinds.get(mark)
         if kind is not None:
             counts[kind] += 1
@@ -487,7 +502,7 @@ class Network:
             alt = self._variant_attempt(fn, proj, source, ctx, None)
             if alt is None:
                 return result, None, None, [], None
-            result = alt[0]
+            return alt  # already evaluated under the variant: no second round of variant compiles
         cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None or self._hash_only(fn):
             return result, cand, verdict, problems, None
@@ -645,6 +660,23 @@ class Network:
         proj = self._project(project) if (project or function is None) else None
         cap = STRATEGY_INSNS_CAP.get(strategy, -1)
         now = time.time()
+        ranked: list = []
+        if strategy == "priority" and proj is not None and function is None:
+            # The bounded window is admitted by a cheap proxy of the policy (twins, closeness, little effort
+            # spent), never by id, and scored outside the transaction: scheduler.choose reads the store per
+            # row, which must not hold the write lock (Store.tx).
+            window = self.store.all(
+                f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                    AND f.id NOT IN (SELECT function_id FROM claims)
+                    AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
+                    AND (? = -1 OR f.n_insns <= ?)
+                    AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                    ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                        AND created_at > ?), {_TWINS} f.best_score IS NULL,
+                             CAST(f.best_score AS REAL) / (MAX(f.n_insns, 1) * 100) ASC, f.attempts ASC, f.id
+                    LIMIT 200""",
+                proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN)
+            ranked = scheduler.choose(self, proj, list(window), len(window))
         with self.store.tx() as db:
             self._expire_claims(db)
             held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
@@ -667,20 +699,11 @@ class Network:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
-                if strategy == "priority":  # P11.2: the explainable adaptive policy picks from a bounded window
-                    rows = db.execute(
-                        """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
-                           AND f.id NOT IN (SELECT function_id FROM claims)
-                           AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
-                           AND (? = -1 OR f.n_insns <= ?)
-                           AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
-                           ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
-                                               AND created_at > ?), f.id LIMIT 200""",
-                        (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
-                    ).fetchall()
-                    if not rows:
+                if strategy == "priority":  # P11.2: ranked before the transaction (scoring reads the store)
+                    claimed = {r[0] for r in db.execute("SELECT function_id FROM claims").fetchall()}
+                    fn = next((r for r in ranked if r["id"] not in claimed), None)
+                    if fn is None:
                         return None
-                    fn = scheduler.choose(self, proj, list(rows), 1)[0]
                 else:
                     fn = db.execute(
                         f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
@@ -718,7 +741,7 @@ class Network:
                         "INSERT INTO search_budgets(function_id, epoch, policy_version, turns_used, max_turns, "
                         "cooldown_until, reset_reason, last_at) VALUES(?,'wall',1,4,4,?,'wall:'||?,?) "
                         "ON CONFLICT(function_id) DO UPDATE SET cooldown_until=excluded.cooldown_until, "
-                        "reset_reason='wall:'||excluded.reset_reason, epoch='wall', turns_used=4, last_at=excluded.last_at",
+                        "reset_reason=excluded.reset_reason, epoch='wall', turns_used=4, last_at=excluded.last_at",
                         (fn["id"], time.time() + WALL_COOLDOWN, sig, time.time()))
             self._event(db, fn["project_id"], agent.id, "release", fn["name"])
         self._report_escalation(fn["id"], False)  # released without a verified improvement
@@ -876,7 +899,7 @@ class Network:
                 d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            if self._worth_variant(verdict, d):
+            if variants and self._worth_variant(verdict, d):
                 # near miss: one attempt-scoped assembler-variant compile, kept only when strictly better
                 alt = self._variant_attempt(fn, proj, source, ctx, d)
                 if alt is not None:
@@ -1206,6 +1229,14 @@ class Network:
             matched = False
             stale_reason = "no snapshot captured before compile"
         improved = False
+        # The undefined-behaviour guard compiles, so it runs before the transaction (Store.tx: never
+        # compile while holding it). Only matches and near-miss improvements are checked.
+        guard = None
+        if stale_reason is None and (matched or (score is not None and score <= 500)):
+            row = self.store.one("SELECT best_score, status FROM functions WHERE id=?", fn["id"])
+            if matched or (row is not None and row["status"] == "open"
+                           and (row["best_score"] is None or row["best_score"] > score)):
+                guard = self._validity(fn, source)
         with telemetry.span("attempt.persist"), self.store.tx() as db:
             # A rescan can archive the highest attempt rows. Keep live-feed IDs above that watermark
             # instead of reusing SQLite rowids.
@@ -1265,12 +1296,11 @@ class Network:
                 # A near-miss improvement is exactly where undefined behaviour hides (an
                 # uninitialised pointer that lands in a plausible register scores well by
                 # shape). Flag it without blocking: the match guard below is the hard gate.
-                if cur.rowcount and score <= 500:
-                    verdict = self._validity(fn, source)
-                    if not verdict.ok:
-                        self._flag_validity(db, fn, source, f"score {score}", verdict)
+                if cur.rowcount and score <= 500 and guard is not None and not matched:
+                    if not guard.ok:
+                        self._flag_validity(db, fn, source, f"score {score}", guard)
             if matched:
-                verdict = self._validity(fn, source)
+                verdict = guard
                 if verdict.ok and verdict.detail:
                     # The guard could not run (context/toolchain unavailable). Accepting the
                     # match is the only non-blocking option, but never silently.
@@ -1477,16 +1507,12 @@ class Network:
             raise NetworkError("both functions must be in the same project")
         if fn["status"] == "matched" or cont["status"] == "matched":
             raise NetworkError("matched functions can't be merged")
-        a = (fn["vram"], fn["rom_offset"], fn["size"])
-        b = (cont["vram"], cont["rom_offset"], cont["size"])
-        # `function` is the tail: it starts where `continues` ends (same direction as merge_function,
-        # and the reverse of split_function, which cuts the tail off the head).
-        adjacent = (b[0] is not None and a[0] is not None and a[0] == b[0] + (b[2] or 0)) or \
-                   (b[1] is not None and a[1] is not None and a[1] == b[1] + (b[2] or 0))
-        if not adjacent:
-            raise NetworkError(f"{fn['name']} and {cont['name']} are not adjacent: no boundary to merge")
         proj_row = self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])
         arch = (json.loads(proj_row["config"] or "{}").get("arch") or "") if proj_row else ""
+        # `function` is the tail: it starts where `continues` ends (same direction as merge_function,
+        # and the reverse of split_function, which cuts the tail off the head).
+        if not _adjacent(fn, cont, arch):
+            raise NetworkError(f"{fn['name']} and {cont['name']} are not adjacent: no boundary to merge")
         if not _fragment_like(fn, arch):
             raise NetworkError(f"{fn['name']} doesn't look like a fragment (no live-in saved register at entry)")
         with self.store.tx() as db:

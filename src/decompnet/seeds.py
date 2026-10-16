@@ -748,10 +748,12 @@ def _draft_uncached(asm_text: str, name: str, target: str, prep: PreparedContext
                                  result.fallback or (context_attempted and prep is None),
                                  warnings, valid, deps, prep)
         if rc == -2:
-            result.outcome = "error"
+            # infrastructure, not a verdict on this function: "unavailable" is never cached
+            result.outcome = "unavailable"
             result.diagnostics.append(_diag("error", f"could not start m2c ({m2c})"))
             return result
-        result.outcome = "error"
+        # killed by a signal (OOM, crash) is transient too; only m2c's own rejection is deterministic
+        result.outcome = "unavailable" if rc < 0 else "error"
         result.diagnostics.append(_m2c_failure_diag(out, err, "m2c failed"))
         return result
 

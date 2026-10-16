@@ -100,9 +100,17 @@ def toolchain_root() -> Path | None:
 
 
 def _run(argv: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
+    """Run one SDCC/sdasgb step on agent-supplied source under the same per-compile resource caps
+    (prlimit) and the same global compiler budget as every other lane (compiler._slot)."""
+    from ..compiler import LIMITS, _slot
+
+    argv = [str(a) for a in argv]
+    if shutil.which("prlimit"):
+        argv = ["prlimit", *LIMITS, "--", *argv]
     try:
-        res = subprocess.run([str(a) for a in argv], cwd=str(cwd), capture_output=True, text=True,
-                             timeout=timeout, encoding="utf-8", errors="replace")
+        with _slot():
+            res = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True,
+                                 timeout=timeout, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout:.0f}s: {' '.join(str(a) for a in argv)}"
     return res.returncode, (res.stdout or "") + (res.stderr or "")
