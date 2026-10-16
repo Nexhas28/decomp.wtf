@@ -903,6 +903,7 @@ class Manager:
         # without a config the default behaviour is unchanged. Measurements persist here.
         self.routing_config = lambda: {}
         self.routing = Routing(home / "agents" / "model-routing.json")
+        self.on_prepare = lambda slug: None  # set by the server: helpers are starting on this project (auto-fixer scan)
 
     # -- control
 
@@ -965,6 +966,10 @@ class Manager:
             self.net.permuter.start(slug)  # near misses agents leave, on spare CPU
         except Exception:  # agents work without them
             pass
+        try:
+            self.on_prepare(slug)
+        except Exception as e:
+            log.info("on prepare %s: %s", slug, e)
         with self._lock:
             if slug in self._prep:
                 return
@@ -996,7 +1001,7 @@ class Manager:
         Helpers are never resumed: a person starts new ones."""
         return [{"kind": s.kind, "slug": s.slug, "agent": s.agent_name,
                  "pid": s.proc.pid if s.proc is not None and s.proc.poll() is None else None,
-                 "options": {k: v for k, v in s.options.items() if k != "api_key"}}
+                 "options": {k: v for k, v in s.options.items() if k not in ("api_key", "fixer")}}
                 for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
 
     def disown(self, left: list[dict]) -> int:
@@ -1018,6 +1023,26 @@ class Manager:
                 except Exception as e:  # best-effort: never keep the app from starting
                     log.info("disown %s: %s", name, e)
         return stopped
+
+    # -- the auto-fixer (fixer.py): one Claude Code session with the repairs no decompiling agent may make
+
+    def start_fixer(self, slug: str, items: list[dict], model: str, effort: str, on_done=lambda slug: None) -> str:
+        """One session over `items` (fixer.py's flagged functions), then it stops. Billed like the helpers (the
+        Claude Code login). on_done(slug) runs when it has stopped."""
+        if not _which(KINDS["claude"].command):
+            raise RuntimeError("the auto-fixer needs Claude Code installed")
+        with self._lock:
+            n = 1
+            while f"fixer-{n}" in self.sessions:
+                n += 1
+            sid = f"fixer-{n}"
+            options = {"model": model, "per_session": 1, "fixer": {"items": items, "on_done": on_done}}
+            if effort in EFFORTS:
+                options["effort"] = effort
+            s = Session(sid, "claude", f"Auto-fixer #{n}", slug, sid, options)
+            self.sessions[sid] = s
+            threading.Thread(target=self._run, args=(s,), daemon=True, name=f"agent-{sid}").start()
+        return sid
 
     # -- Team Call: three models on one function until it matches
 
@@ -1227,6 +1252,9 @@ class Manager:
             return
         self.assignments[agent.id] = s.slug
         s.agent_id = agent.id
+        fixer = s.options.get("fixer")
+        if fixer:
+            self.net.fixer_ids.add(agent.id)
         role = s.options.get("role") or ""
         focus = None if role else FOCUSES.get(s.options.get("focus") or "")
         if focus and hasattr(self.net, "focus"):
@@ -1248,10 +1276,13 @@ class Manager:
                            "(seconds; a minute the first time)")
             twins.ordered.wait(120)
         while not s.stop.is_set():
+            if fixer and s.runs >= 1:
+                s.push("info", "done: the auto-fixer went through its list")
+                break
             if (waves := (s.options.get("team") or {}).get("waves")) and s.runs >= waves:
                 s.push("info", f"done: {waves} waves")
                 break
-            if self._left(s.slug) == 0:
+            if not fixer and self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
                 break
             if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
@@ -1310,7 +1341,7 @@ class Manager:
                     routing.record(task, s.routed_model, int(matched["n"] or 0))
                 except Exception:
                     pass  # measurement is best-effort: never fail the loop for it
-            if ok and not s.stop.is_set() and self._progress(agent.id) == before:
+            if ok and not fixer and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = ("the session ended without writing a research note" if role == RESEARCHER else
                            "the session ended without compiling anything") + " (check the agent's output)"
                 s.push("error", s.error)
@@ -1339,6 +1370,12 @@ class Manager:
         if s.state != "error":
             s.state = "stopped"
         getattr(self.net, "focus", {}).pop(agent.id, None)
+        if fixer:
+            getattr(self.net, "fixer_ids", set()).discard(agent.id)
+            try:
+                fixer["on_done"](s.slug, s.state != "error" and s.runs >= 1)
+            except Exception as e:
+                log.info("auto-fixer done hook: %s", e)
         if role:
             getattr(self.net, "role", {}).pop(agent.id, None)
             getattr(self.net, "role_model", {}).pop(agent.id, None)
@@ -1358,6 +1395,12 @@ class Manager:
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
 
     def prompt(self, s: Session) -> str:
+        if (fixer := s.options.get("fixer")):  # its own job: no decompiling know-how
+            from . import fixer as fixmod
+
+            ov = self.net.overview(s.slug)
+            return fixmod.FIXER_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or ov.get("platform") or "",
+                                              items=fixmod.describe(fixer["items"]))
         text = self._prompt(s)
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)

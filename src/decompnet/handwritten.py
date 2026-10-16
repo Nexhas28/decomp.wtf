@@ -212,6 +212,9 @@ def mips_reason(code: bytes, big_endian: bool, platform: str = "") -> str | None
             unit = "the GTE (coprocessor 2)" if platform != "ps2" else "VU0 (coprocessor 2)"
             return (f"uses {unit}: no C compiler emits it (PSY-Q's libgte is written in assembly; C does it with "
                     "inline asm)" if platform != "ps2" else f"uses {unit}: C reaches it only through inline asm")
+        if op in (0x2B, 0x3F) and (w >> 16) & 31 == 31 and (w >> 21) & 31 != 29:  # sw/sd $ra, x(not $sp)
+            return ("keeps its return address somewhere other than the stack (sw $ra to a global): compiled "
+                    "functions save $ra only in their own stack frame")
     body = list(words)
     while len(body) > 1 and body[-1] == 0:  # alignment padding
         body.pop()
