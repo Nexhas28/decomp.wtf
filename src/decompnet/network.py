@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
+from . import linkblock, policy, retrieval, scheduler, scoring, snapshots, telemetry, validity
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .compiler_profiles import effective_compiler
@@ -137,6 +137,8 @@ def _fragment_like(fn, arch: str = "") -> bool:
 # free once it does.
 _TWINS = ("(f.boost > 0 AND f.n_insns <= 400 AND f.abandons < 2) DESC, "
           "CASE WHEN f.boost > 0 THEN (f.boost + 1) * 64 / (f.n_insns + 16) ELSE 0 END DESC, f.boost < 0, ")
+# Keeps functions blocked at the link step (linkblock.py) out of the priority window while anything else is open.
+_UNBLOCKED = """AND (f.meta IS NULL OR f.meta NOT LIKE '%"link_blocked": true%')"""
 STRATEGY_INSNS_CAP = {"closest": 400}  # near-miss search has no business with giants (perf-test run 2)
 STRATEGIES = {
     "easiest": _TWINS + "f.abandons > 0, f.n_insns ASC",
@@ -467,6 +469,18 @@ class Network:
     def _hash_only(fn) -> bool:
         return fn["target"] is None
 
+    def _note_link(self, fn, agent: Agent, problems: list[str]) -> None:
+        """Remember link problems on the function (linkblock.py): several attempts by different agents that all
+        end at the link step flag it as blocked on its symbols, and a compile that links clears the flag."""
+        row = self.store.one("SELECT meta FROM functions WHERE id=?", fn["id"])
+        if row is None:
+            return
+        meta = json.loads(row["meta"] or "{}")
+        new = linkblock.update(meta, list(problems or []), agent.id)
+        if new != meta:
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(new), fn["id"]))
+
     def _target_obj(self, fn, proj) -> FunctionObj:
         return FunctionObj(
             name=fn["name"], arch=proj["arch"], big_endian=bool(proj["big_endian"]), code=fn["target"],
@@ -678,17 +692,22 @@ class Network:
             # The bounded window is admitted by a cheap proxy of the policy (twins, closeness, little effort
             # spent), never by id, and scored outside the transaction: scheduler.choose reads the store per
             # row, which must not hold the write lock (Store.tx).
-            window = self.store.all(
-                f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+            # Functions whose attempts keep failing at the link step (linkblock) wait until nothing else is
+            # left: their C isn't the problem, their symbols are.
+            query = """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                     AND f.id NOT IN (SELECT function_id FROM claims)
                     AND f.id NOT IN (SELECT function_id FROM search_budgets WHERE cooldown_until > ?)
                     AND (? = -1 OR f.n_insns <= ?)
                     AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                    {unblocked}
                     ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
-                                        AND created_at > ?), {_TWINS} f.best_score IS NULL,
+                                        AND created_at > ?), %s f.best_score IS NULL,
                              CAST(f.best_score AS REAL) / (MAX(f.n_insns, 1) * 100) ASC, f.attempts ASC, f.id
-                    LIMIT 200""",
-                proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN)
+                    LIMIT 200""" % _TWINS
+            args = (proj["id"], now, cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN)
+            window = self.store.all(query.format(unblocked=_UNBLOCKED), *args)
+            if not window:
+                window = self.store.all(query.format(unblocked=""), *args)
             ranked = scheduler.choose(self, proj, list(window), len(window))
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -848,6 +867,7 @@ class Network:
                 lines += ["", "### Machine-generated starting point (m2c: expect wrong types and names; "
                               "the context header helps)", "```c",
                           fn["seed"].strip(), "```"]
+            lines += linkblock.brief_lines(json.loads(fn["meta"] or "{}") if "meta" in fn.keys() else {})
         walls = self.store.all(
             "SELECT signature, reason, at FROM function_walls WHERE function_id=? ORDER BY at DESC LIMIT 3",
             fn["id"])
@@ -993,6 +1013,7 @@ class Network:
             return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
                             f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
                             "against your own lawful copy.", "score": None, "matched": False}
+        self._note_link(fn, agent, problems)
         refused = self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap,
                                object_digest=cand.fingerprint() if matched_now else None,
                                link_verdict=verdict is True or d.bytes_match)
