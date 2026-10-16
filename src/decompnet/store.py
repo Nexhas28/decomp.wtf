@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS candidates(
   source TEXT NOT NULL, source_digest TEXT NOT NULL, parent_id INTEGER,
   evidence TEXT, score_version INTEGER, created_at REAL);
 CREATE INDEX IF NOT EXISTS idx_candidates_fn ON candidates(function_id);
+CREATE TABLE IF NOT EXISTS reference_sources(
+  entry_id TEXT NOT NULL, project_id INTEGER,
+  repository TEXT NOT NULL, revision TEXT NOT NULL, source_location TEXT NOT NULL,
+  toolchain TEXT NOT NULL, profile TEXT NOT NULL, target_digest TEXT NOT NULL,
+  processor TEXT NOT NULL DEFAULT 'mips', mode TEXT NOT NULL DEFAULT '',
+  provenance TEXT NOT NULL DEFAULT '', usage_restrictions TEXT NOT NULL DEFAULT '[]',
+  source_available INTEGER NOT NULL DEFAULT 1, source_digest TEXT NOT NULL DEFAULT '',
+  holdout INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+  PRIMARY KEY(project_id, entry_id));
+CREATE INDEX IF NOT EXISTS idx_reference_sources_project ON reference_sources(project_id);
 """
 
 # Columns added after the first release; applied in place to existing databases.
