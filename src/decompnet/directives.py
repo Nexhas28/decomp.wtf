@@ -17,7 +17,7 @@ from dataclasses import dataclass
 _COMMENT = re.compile(r"/\*\s*decomp-(compiler|assembler|cflags)\s*:\s*(.*?)\s*\*/", re.S)
 
 #: Assembler profiles. "gnu-old": the toolchain's own (period) assembler, the default pipeline. "gnu-modern": the
-#: modern MIPS binutils with the PSY-Q passes. "maspsx-…": gcc -S, then maspsx emulating that ASPSX version, then
+#: modern MIPS binutils with the PSY-Q `move` pass and the project's -G setting. "maspsx-…": gcc -S, then maspsx emulating that ASPSX version, then
 #: the modern binutils (the recipe the PlayStation decomps use).
 ASSEMBLERS: dict[str, tuple[str, ...] | None] = {
     "gnu-old": None,

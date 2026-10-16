@@ -692,7 +692,10 @@ class Network:
             cc = variant_compiler_config(root, full)
             if cc is None:
                 raise toolchains.ToolchainError("the modern MIPS binutils aren't installed")
-            return cc
+            # unlike the fallback variant, with the project's own small-data setting ($gp-relative globals):
+            # measured on slus-01363, stored gnu-modern bests reproduce only this way
+            g_flag = [f for f in compiler.get("flags", []) if f.startswith("-G")][-1:]
+            return replace(cc, asm_cmd=tuple(x for a in cc.asm_cmd for x in (g_flag if a == "-G0" else [a])))
         if d.assembler and directives.ASSEMBLERS[d.assembler] is not None:
             return maspsx_config(root, full, directives.ASSEMBLERS[d.assembler])
         return compiler_config(root, full)
@@ -1200,6 +1203,13 @@ class Network:
             # A jump-table (or other assembly-level) rejection: the PSY-Q pipeline could assemble it, so
             # try the variants before reporting a compile error.
             alt = self._variant_attempt(fn, proj, source, ctx, None)
+            judged = None
+            if alt is None and not scratch and self._directives(proj, source, fn).applied:
+                # decomp-* comments this copy knows but couldn't build here (a tool missing or not runnable on this
+                # computer): the judge that counts may build them
+                judged = self._second_judge(agent, fn, source, False, failed_here=True)
+            if judged is not None:
+                return self._host_verdict(agent, fn, ctx, snap, source, judged, result.log.strip())
             if alt is None:
                 self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
                 return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}",
@@ -1208,10 +1218,26 @@ class Network:
 
         return self._judge(agent, fn, proj, ctx, snap, source, result, scratch)
 
-    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool, failed_here: bool = False) -> dict | None:
         """The judge whose say counts over this copy's, asked before a result is recorded (RomNetwork: a room's
-        host). None: there is none for this result. Otherwise {"matched", "score", "text"}; "text" explains a no."""
+        host). None: there is none for this result. Otherwise {"matched", "score", "text"}; "text" explains a no.
+        `failed_here`: this copy couldn't build the source at all."""
         return None
+
+    def _host_verdict(self, agent: Agent, fn, ctx, snap: dict, source: str, judged: dict, log: str) -> dict:
+        """Record a source this copy couldn't build, as the judge that counts scored it."""
+        if judged["matched"]:
+            refused = self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, snapshot=snap,
+                                   via="room")
+            if refused:
+                return {"text": _refused_text(fn, "matches on the room's host", refused), "score": 0, "matched": False}
+            return {"text": f"✅ MATCH! The room's host matched {fn['name']} (this copy can't build this source's "
+                            f"compiler comments). Credited to {agent.name}; your claim is released.",
+                    "score": 0, "matched": True}
+        self._record(fn, agent, judged["score"] or None, source, ctx["version"], matched=False,
+                     compiled=judged["score"] is not None, snapshot=snap)
+        return {"text": f"{judged['text']}\n\nThis copy couldn't build it:\n{log}", "score": judged["score"],
+                "matched": False}
 
     def _judge(self, agent: Agent, fn, proj, ctx, snap: dict, source: str, result, scratch: bool,
                variants: bool = True) -> dict:

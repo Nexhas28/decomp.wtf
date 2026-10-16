@@ -182,6 +182,15 @@ def test_comments_choose_the_compiler_flags_and_assembler(tmp_path, built):
     assert args == (("--aspsx-version=2.79", "--expand-div"),)
 
 
+def test_gnu_modern_keeps_the_projects_small_data_setting(tmp_path, monkeypatch):
+    monkeypatch.setattr(network, "variant_compiler_config", lambda root, cfg: CompilerConfig(
+        cmd=["cc"], asm_cmd=("as", "-EL", "-G0", "-o", "{obj}", "{src}"), asm_pass="psyq-move-addu"))
+    net = object.__new__(Network)
+    cc = net._compiler_for(_proj(tmp_path), "/* decomp-assembler: gnu-modern */ int f(void);",
+                           {"name": "f", "vram": VRAM, "unit": ""})
+    assert cc.asm_cmd == ("as", "-EL", "-G8", "-o", "{obj}", "{src}") and cc.asm_pass == "psyq-move-addu"
+
+
 def test_without_comments_the_project_compiler_is_used(tmp_path, built):
     net, seen = built
     net._compiler_for(_proj(tmp_path), "int f(void);", {"name": "f", "vram": VRAM, "unit": ""})

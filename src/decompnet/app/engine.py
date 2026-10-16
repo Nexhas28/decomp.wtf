@@ -1851,7 +1851,15 @@ class RomNetwork(Network):
             telemetry.count("batch.compiler_invocations")
             compiles += 1
             if not result.ok:  # a shared compile error: report once per function, keep per-function records
+                host = not items[0][4] and self._directives(proj0, source, fn0).applied
                 for fn, proj, ctx, snap, scratch in items:
+                    # comments this copy couldn't build: the room's host may (see Network.attempt)
+                    judged = self._second_judge(agent, fn, source, False, failed_here=True) if host else None
+                    if judged is not None:
+                        res = self._host_verdict(agent, fn, ctx, snap, source, judged, result.log.strip())
+                        matched += bool(res.get("matched"))
+                        out.append(f"### {fn['name']}\n{res['text']}")
+                        continue
                     self._record(fn, agent, None, source, ctx["version"], snapshot=snap)
                     out.append(f"### {fn['name']}\n❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}")
                 continue
@@ -1907,12 +1915,12 @@ class RomNetwork(Network):
                              daemon=True).start()
         return res
 
-    def _second_judge(self, agent: Agent, fn, source: str, exact: bool) -> dict | None:
+    def _second_judge(self, agent: Agent, fn, source: str, exact: bool, failed_here: bool = False) -> dict | None:
         """A room's host has the last word: asked about every exact result here, and about every source with
         decomp-* comments this copy can't apply (see directives), whose score here means little (the host's
         per-member rate limit bounds how often). A host match of a function the host cuts differently (its size
         isn't this copy's: it merged a false split, say) is no match here: this copy's function is other code."""
-        directives = self._unknown_directives(fn, source)
+        directives = self._unknown_directives(fn, source) or failed_here
         if not exact and not directives:
             return None
         slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
@@ -1944,8 +1952,10 @@ class RomNetwork(Network):
             return {"matched": False, "score": host, "text": _host_refused(host)}
         return {"matched": False, "score": host,
                 "text": (f"score {host} on the room's host" if host is not None else "❌ doesn't compile on the room's host")
-                        + " (this source has decomp-* compiler comments only the host defines, so this copy's "
-                          "score doesn't count; the host's does). Keep iterating."}
+                        + (" (this copy can't build this source's decomp-* compiler comments: the host's score is "
+                           "the one that counts)" if failed_here else
+                           " (this source has decomp-* compiler comments only the host defines, so this copy's "
+                           "score doesn't count; the host's does)") + ". Keep iterating."}
 
     def _unknown_directives(self, fn, source: str) -> bool:
         """Whether `source` has decomp-* comments this copy can't apply (only a host that defines them can judge it)."""
@@ -1967,13 +1977,12 @@ class RomNetwork(Network):
         proj = self._project(slug)
         here = {r["vram"]: r["n"] for r in self.store.all(
             "SELECT vram, COUNT(*) AS n FROM functions WHERE project_id=? GROUP BY vram", proj["id"])}
-        rows = self.store.all("SELECT f.id, f.name, f.vram, f.size, f.meta, EXISTS(SELECT 1 FROM verification_receipts v "
-                              "WHERE v.function_id=f.id) AS verified FROM functions f WHERE f.project_id=? AND "
-                              "f.status='matched'", proj["id"])
+        rows = self.store.all("SELECT f.*, EXISTS(SELECT 1 FROM verification_receipts v WHERE v.function_id=f.id) AS "
+                              "verified FROM functions f WHERE f.project_id=? AND f.status='matched'", proj["id"])
         # ...and a host match taken by name without being verified here, whose function the host cuts to another
         # size (it merged a false split): this copy's function is other code, so the match isn't this copy's
         rows = [r for r in rows if (r["name"] not in names and not (host_at.get(r["vram"]) == 1 and here.get(r["vram"]) == 1))
-                or (not r["verified"] and host_size.get(r["name"], r["size"]) != r["size"])]
+                or (r["name"] in names and not r["verified"] and self._other_cut(r, proj, host_size.get(r["name"])))]
         if not rows:
             return []
         with self.store.tx() as db:
@@ -1992,6 +2001,33 @@ class RomNetwork(Network):
                         f"(their code is kept as the best so far): " + ", ".join(r["name"] for r in rows[:10])
                         + (", ..." if len(rows) > 10 else ""))
         return [r["name"] for r in rows]
+
+    def _other_cut(self, fn, proj, host_size: int | None, source: str | None = None) -> int | None:
+        """The size of the host's function when it isn't this copy's `fn` (the host cut that code differently: it
+        merged a false split, say), else None. From the host's word (`host_size`) when it sends it; otherwise
+        measured: the host's source (`source`, default fn's matched source), built here with every decomp-*
+        comment it has, comes out another length. Measured once per cut: remembered in meta.cut_checked."""
+        if host_size is not None:
+            return host_size if host_size != fn["size"] else None
+        source = source if source is not None else fn["matched_source"]
+        meta = json.loads(fn["meta"] or "{}")
+        if not source or meta.get("cut_checked") == [fn["size"], hashlib.sha256(source.encode()).hexdigest()[:16]]:
+            return None
+        if self._directives(proj, source, fn).unknown:
+            return None  # built here without some of its comments: its length says nothing
+        try:
+            result, cand, _, _, _ = self._compile_and_evaluate(fn, proj, source, self._context(proj["id"], fn["unit"]))
+        except Exception:
+            return None
+        built = len(getattr(cand, "code", None) or b"") if result is not None and result.ok and cand is not None else 0
+        if not built:
+            return None
+        if built != fn["size"]:
+            return built
+        meta["cut_checked"] = [fn["size"], hashlib.sha256(source.encode()).hexdigest()[:16]]
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+        return None
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
@@ -2165,8 +2201,9 @@ class RomNetwork(Network):
         path (_record: receipt, matched_epoch). When this copy can't reproduce it (the host compiled with
         decomp-* comments or a compiler this copy lacks) the attempt is kept as historical evidence, and in a
         linked room, where the host is the judge, the function is still marked matched as the host's (no
-        receipt: nothing was verified here) - unless the host's function has another size (`size`): then the two
-        copies cut this code differently and the host's match is of other code. Found by name (overlays reuse
+        receipt: nothing was verified here) - unless the host's function has another size (`size`, or the length
+        the source builds to here when it has no comments this copy can't apply): then the two copies cut this
+        code differently and the host's match is of other code. Found by name (overlays reuse
         addresses), else by a unique address."""
         proj = self._project(slug)
         fn = self.store.one("SELECT * FROM functions WHERE project_id=? AND name=?", proj["id"], name) if name else None
@@ -2200,6 +2237,9 @@ class RomNetwork(Network):
         if matched_now and ok and self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True,
                                                via="room", snapshot=snap, object_digest=cand.fingerprint()) is None:
             return
+        built = len(getattr(cand, "code", None) or b"") if compiled else 0
+        if size is None and built and built != fn["size"] and not self._directives(proj, source, fn).unknown:
+            size = built  # built here the host's way, it is another length: the host's cut is another
         other_cut = size is not None and size != fn["size"]
         self._record(fn, agent, score, source, ctx["version"], matched=False, compiled=compiled, via="room",
                      snapshot=snap, stale_reason=why or (f"the host's function is {size} bytes, this copy's {fn['size']}"

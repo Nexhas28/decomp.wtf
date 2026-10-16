@@ -198,6 +198,7 @@ class _Linker:
         self._data_relocs: dict[int, list] = {}
         self.words: list[int] = []
         self.fn_shndx = None
+        self.own_at: set[tuple[int, int]] = set()  # (offset, type) of every relocation in the candidate's code
 
     def problem(self, text: str) -> None:
         if text not in self.problems:
@@ -221,9 +222,10 @@ class _Linker:
 
     def nearby(self, off: int, rtype: int) -> int | None:
         """The address of the ROM's closest reference of the same kind within NEAR bytes of `off` (the earlier one
-        on a tie), for a candidate whose code reaches its own data a few instructions earlier or later."""
+        on a tie), for a candidate whose code reaches its own data a few instructions earlier or later. A ROM
+        reference the candidate has its own reference for, at the same place, belongs to that one instead."""
         hits = sorted((abs(o - off), o, addr) for o, (t, addr) in self.target_at.items()
-                      if t == rtype and o != off and abs(o - off) <= self.NEAR)
+                      if t == rtype and abs(o - off) <= self.NEAR and (o, t) not in self.own_at)
         return hits[0][2] if hits else None
 
     def address(self, raw: list[dict], k: int, fn_shndx: int, fn_start: int) -> int | None:
@@ -391,6 +393,7 @@ class _Linker:
         self.fn_shndx = shndx
         code = self.elf.get_section(shndx).data()[start:start + size]
         raw = _raw_relocs(self.elf, shndx, start, size, code)
+        self.own_at = {(r["off"], r["type"]) for r in raw}
         if self.elf.little_endian == self.target.big_endian:
             return LinkResult(None, False, ["the compiler produced code in the wrong byte order for this game"])
         fmt = (">" if self.target.big_endian else "<") + f"{len(code) // 4}I"
