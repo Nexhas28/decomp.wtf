@@ -100,13 +100,11 @@ def toolchain_root() -> Path | None:
 
 
 def _run(argv: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
-    """Run one SDCC/sdasgb step on agent-supplied source under the same per-compile resource caps
-    (prlimit) and the same global compiler budget as every other lane (compiler._slot)."""
-    from ..compiler import LIMITS, _slot
+    """Run one SDCC/sdasgb step on agent-supplied source under the same global compiler budget as every
+    other lane (compiler._slot)."""
+    from ..compiler import _slot
 
     argv = [str(a) for a in argv]
-    if shutil.which("prlimit"):
-        argv = ["prlimit", *LIMITS, "--", *argv]
     try:
         with _slot():
             res = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True,

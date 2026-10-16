@@ -24,7 +24,7 @@ sources:
 
 1. The workspace is `DECOMP_HOME` (default `~/Decomp`). Internal state lives in `<home>/.decomp/`[^appcli]. See [configuration and state](/project/configuration-and-state.md).
 2. If `.decomp/server.json` points at a running app of the same or a newer version, that app is reused. An older one is asked to quit (`POST /api/quit`)[^appcli].
-3. A socket is bound to the first free port from 6464. `DECOMP_BIND` overrides 127.0.0.1, and inside Docker the bind is 0.0.0.0. A per-launch secret is reused from the previous `server.json` so that open tabs survive restarts[^appcli].
+3. A socket is bound to the first free port from 6464. The bind address is 127.0.0.1 unless `DECOMP_BIND` sets another. A per-launch secret is reused from the previous `server.json` so that open tabs survive restarts[^appcli].
 4. `RomNetwork(<home>/.decomp/decomp.db, home)` is created. `server.build()` returns the MCP server, the agent manager and the transport security settings. The MCP app is served by uvicorn, with an 80 MiB request body limit[^appcli].
 
 ## What it serves (`app/server.py`)

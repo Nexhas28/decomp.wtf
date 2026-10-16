@@ -26,8 +26,7 @@ from decompnet.analysis.contracts import (Budget, CapabilityResult, FunctionEvid
                                           ProviderRequest, ProviderResult)
 from decompnet.analysis.rea import (DOS_COM_MAX_BYTES, PINNED_TOOLS, ReaMCPClient, ReaProvider,
                                     elf_header_info, mips_lane_admission, parse_tool_result,
-                                    raw_matrix_admission, validate_evidence_envelope,
-                                    windows_p0_admission)
+                                    raw_matrix_admission, validate_evidence_envelope)
 from decompnet.forks.ghidra import TargetProfile
 
 # ---------------------------------------------------------------- shared helpers
@@ -715,53 +714,17 @@ def test_e04_oversized_dossier_retained_ref_no_silent_truncation(fake, elf_artif
         provider.close_session("s1", handle)
 
 
-# ---------------------------------------------------------------- E-05: Windows P0 gate
+# ---------------------------------------------------------------- E-05: PE targets
 
-def test_e05_windows_p0_boundary():
-    ok, reasons, warnings = windows_p0_admission("win32", "pe", 0x14C, False,
-                                                 ntfs=True, addon_present=True)
-    assert ok and not reasons
-    cases = [
-        (dict(host="win32", fmt="pe", machine=0x14C, managed=True,
-              ntfs=True, addon_present=True), "managed"),
-        (dict(host="win32", fmt="pe", machine=0xAA64, managed=False,
-              ntfs=True, addon_present=True), "native x86 and x86-64"),
-        (dict(host="win32", fmt="mach-o", machine=0x01000007, managed=False,
-              ntfs=True, addon_present=True), "PE targets only"),
-        (dict(host="win32", fmt="pe", machine=0x14C, managed=False,
-              ntfs=True, addon_present=False), "native addon"),
-        (dict(host="win32", fmt="pe", machine=0x14C, managed=False,
-              ntfs=False, addon_present=True), "NTFS"),
-        (dict(host="win32", fmt="pe", machine=0x14C, managed=False,
-              ntfs=True, addon_present=True, windows_10_plus=False), "Windows 10"),
-    ]
-    for kw, why in cases:
-        ok, reasons, _ = windows_p0_admission(
-            kw["host"], kw["fmt"], kw["machine"], kw["managed"],
-            ntfs=kw.get("ntfs", False), addon_present=kw.get("addon_present", False),
-            windows_10_plus=kw.get("windows_10_plus", True))
-        assert not ok and any(why in r for r in reasons), (kw, reasons)
-    # non-Windows hosts: the boundary does not apply; PE goes through the headless bridge
-    ok, reasons, warnings = windows_p0_admission("linux", "pe", 0x8664, False)
-    assert ok and warnings and any("does not apply" in w for w in warnings)
-
-
-def test_e05_pe_admission_on_windows_host(tmp_path):
+def test_e05_pe_admission(tmp_path):
+    """PE targets go through the headless Ghidra bridge, with a warning, not an error."""
     pe = tmp_path / "app.exe"
     pe.write_bytes(pe_image(machine=0x8664))
-    provider = ReaProvider(host_os="win32",
-                           windows_facts={"ntfs": True, "addon_present": True,
-                                          "windows_10_plus": True})
-    result = provider.capabilities(make_profile(), pe)
-    assert result.supported, result.reasons
-    managed = tmp_path / "managed.exe"
-    managed.write_bytes(pe_image(machine=0x8664, managed=True))
-    rejected = provider.capabilities(make_profile(), managed)
-    assert not rejected.supported and any("managed" in r for r in rejected.reasons)
-    # Linux host: same PE artifact admits with the boundary warning, not an error
-    linux = ReaProvider(host_os="linux")
-    result = linux.capabilities(make_profile(), pe)
-    assert result.supported and any("does not apply" in w for w in result.profile["warnings"])
+    result = ReaProvider(host_os="darwin").capabilities(make_profile(), pe)
+    assert result.supported and any("cross-platform" in w for w in result.profile["warnings"])
+    arm = tmp_path / "arm.exe"
+    arm.write_bytes(pe_image(machine=0xAA64))
+    assert not ReaProvider(host_os="darwin").capabilities(make_profile(), arm).supported
 
 
 def test_e05_macho_admission(tmp_path):

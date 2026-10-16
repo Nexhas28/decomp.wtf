@@ -25,13 +25,14 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
-from . import linuxbox, wsl
+from . import linuxbox
 from .cache import canonical, sha
 
 MANIFEST = ".decompnet-toolchain.json"
 LINUX = "linux-x86_64"
-# Parts for WSL: Linux programs packed in a format Windows can unpack (a .deb, not a .zst)
-WSL_PLATFORM = "wsl-x86_64"
+# Parts preferred for the compiler container: Debian's build of a Linux program (a .deb, not Arch's .zst). The tag's
+# old name stays: the registry is part of every profile's identity
+DEB_PLATFORM = "wsl-x86_64"
 
 
 class ToolchainError(RuntimeError):
@@ -55,7 +56,7 @@ class Toolchain:
     parts: list[dict] = field(default_factory=list)
     git: str = ""
     commit: str = ""
-    binary_name: str = ""  # main executable of a tool, without .exe
+    binary_name: str = ""  # main executable of a tool
     pip_extra: list[str] = field(default_factory=list)  # extra requirements for a git tool's environment
     requires_java: int = 0  # minimum Java version (Ghidra)
 
@@ -69,28 +70,22 @@ class Toolchain:
 
     @property
     def via_linux(self) -> bool:
-        """A Linux-only toolchain where only a Linux side can run it: installed from its Linux build and run
-        inside WSL 2 on Windows (wsl.py) or in the compiler container on macOS (linuxbox.py)."""
-        return ((wsl.wanted() or linuxbox.wanted()) and not self.git and not self.parts_for()
+        """A Linux-only toolchain: installed from its Linux build and run in the compiler container (linuxbox.py)."""
+        return (linuxbox.wanted() and not self.git and not self.parts_for()
                 and bool(self.parts_for(LINUX)))
 
-    @property
-    def via_wsl(self) -> bool:
-        """`via_linux` under its older name (configs and callers written before the rename)."""
-        return self.via_linux
-
     def linux_parts(self) -> list[dict]:
-        return [p for p in self.parts if WSL_PLATFORM in p.get("platforms", [])] or self.parts_for(LINUX)
+        return [p for p in self.parts if DEB_PLATFORM in p.get("platforms", [])] or self.parts_for(LINUX)
 
     @property
     def supported(self) -> bool:
-        """Whether this toolchain can be installed on this computer (on Windows, Linux ones through WSL 2)."""
+        """Whether this toolchain can be installed on this computer (Linux ones through the compiler container)."""
         return bool(self.git) or bool(self.parts_for()) or self.via_linux
 
 
 def current_platform() -> str:
-    """linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64 or windows-x86_64."""
-    os_name = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux" if sys.platform.startswith("linux") else sys.platform)
+    """macos-x86_64 or macos-arm64 (registry parts also name linux-* and windows-* platforms)."""
+    os_name = {"darwin": "macos"}.get(sys.platform, "linux" if sys.platform.startswith("linux") else sys.platform)
     machine = _platform.machine().lower()
     machine = {"amd64": "x86_64", "x64": "x86_64", "arm64": "arm64" if os_name == "macos" else "aarch64",
                "aarch64": "aarch64" if os_name != "macos" else "arm64"}.get(machine, machine)
@@ -98,10 +93,10 @@ def current_platform() -> str:
 
 
 def unsupported_cpu() -> str | None:
-    """Why this computer can't run the games' compilers, or None: they're x86 programs, which an ARM computer
-    (a Raspberry Pi, an ARM laptop or server) doesn't run."""
-    machine = current_platform().split("-", 1)[1]
-    if machine == "x86_64":
+    """Why this computer can't run the games' compilers, or None: they're x86 programs. A Mac runs them on any
+    processor (natively, through Rosetta 2, or emulated in the compiler container)."""
+    os_name, machine = current_platform().split("-", 1)
+    if os_name == "macos" or machine == "x86_64":
         return None
     return (f"decomp.wtf needs a 64-bit Intel or AMD PC for now (the games' compilers are x86 programs; this "
             f"computer's processor is {machine})")
@@ -126,13 +121,9 @@ def get(tid: str) -> Toolchain:
 def data_dir() -> Path:
     """Per-user data directory for decompnet (toolchains, caches)."""
     env = os.environ.get("XDG_DATA_HOME")
-    if env:  # set explicitly: it wins on every platform
+    if env:  # set explicitly: it wins
         return Path(env) / "decompnet"
-    if sys.platform == "win32":
-        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "decompnet"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "decompnet"
-    return Path.home() / ".local" / "share" / "decompnet"
+    return Path.home() / "Library" / "Application Support" / "decompnet"
 
 
 def root() -> Path:
@@ -141,10 +132,11 @@ def root() -> Path:
 
 
 def path(tid: str, linux: bool | None = None) -> Path:
-    """Where a toolchain is installed. `linux`: its Linux build for WSL (default: when that's how it runs here)."""
+    """Where a toolchain is installed. `linux`: its Linux build for the compiler container (default: when that's how
+    it runs here)."""
     if linux is None:
         linux = tid in _registry_data() and get(tid).via_linux
-    return root() / ("wsl" if wsl.wanted() else "linux") / tid if linux else root() / tid
+    return root() / "linux" / tid if linux else root() / tid
 
 
 def installed(tid: str, linux: bool | None = None) -> dict | None:
@@ -160,7 +152,7 @@ def require(tid: str, linux: bool | None = None) -> Path:
 
 
 def runtime_dirs(tid: str) -> tuple[Path, ...]:
-    """The toolchain plus everything it requires, for mounting into the sandbox (all Linux builds for WSL)."""
+    """The toolchain plus everything it requires (all Linux builds for the compiler container)."""
     tc = get(tid)
     linux = tc.via_linux
     return (require(tid, linux), *(require(dep, linux) for dep in tc.requires))
@@ -231,7 +223,7 @@ def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
             finally:
                 plain.unlink(missing_ok=True)
         else:
-            # gz/xz in pure Python, so this works on Windows and macOS too. The "data" filter refuses
+            # gz/xz in pure Python, so no tar program is needed. The "data" filter refuses
             # absolute paths, links out of the tree and device files, and drops setuid bits.
             with tarfile.open(archive) as t:
                 t.extractall(tmp, filter="data")
@@ -246,19 +238,14 @@ def _extract(archive: Path, dest: Path, subdir: str | None) -> None:
 
 
 def install(tid: str, *, accept_license: bool = False, force: bool = False, log=print, linux: bool | None = None) -> Path:
-    """Install a toolchain (and what it requires). `linux`: its Linux build, to run inside WSL (default: when
-    that's how it runs on this computer)."""
+    """Install a toolchain (and what it requires). `linux`: its Linux build, to run in the compiler container
+    (default: when that's how it runs on this computer)."""
     tc = get(tid)
     linux = tc.via_linux if linux is None else linux
     if linux:
-        if wsl.wanted():
-            ok, why = wsl.status()
-            if not ok:
-                raise ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {why}")
-        else:
-            ok, why = linuxbox.status()
-            if not ok:
-                raise ToolchainError(f"{tc.name} is a Linux program: on a Mac it runs in a Docker container. {why}")
+        ok, why = linuxbox.status()
+        if not ok:
+            raise ToolchainError(f"{tc.name} is a Linux program: on a Mac it runs in a Docker container. {why}")
     for dep in tc.requires:
         if installed(dep, linux) is None or force:
             install(dep, accept_license=accept_license, force=force, log=log, linux=linux)
@@ -281,7 +268,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    log(f"{tid}: installing {tc.name} [{tc.license}]" + (f" (Linux build, runs {_where()})" if linux else ""))
+    log(f"{tid}: installing {tc.name} [{tc.license}]" + (" (Linux build, runs in the compiler container (Docker))"
+                                                          if linux else ""))
     pinned = []
     try:
         if tc.git:
@@ -308,9 +296,6 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
                         if f.is_file():
                             os.chmod(f, 0o755)
             pinned.append({"url": part["url"], "sha256": digest})
-        if linux and wsl.wanted() and "runtime-i386" in tc.requires:  # WSL systems rarely have a 32-bit loader
-            n = wsl.wrap_i386(dest, wsl.path(path("runtime-i386", linux=True)))
-            log(f"  {n} 32-bit programs start through the pinned 32-bit runtime")
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
         raise
@@ -324,8 +309,8 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
 
 
 def venv_bin(venv: Path, name: str) -> Path:
-    """Path of an executable inside a virtual environment, on any OS."""
-    return venv / "Scripts" / f"{name}.exe" if sys.platform == "win32" else venv / "bin" / name
+    """Path of an executable inside a virtual environment."""
+    return venv / "bin" / name
 
 
 def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
@@ -344,11 +329,11 @@ def _install_git_tool(tc: Toolchain, dest: Path, log) -> None:
 
 
 def binary(tid: str) -> Path:
-    """The main executable of an installed tool (objdiff-cli, dtk, coddog, ...), on any OS."""
+    """The main executable of an installed tool (objdiff-cli, dtk, coddog, ...)."""
     tc = get(tid)
     base = require(tid)
     name = tc.binary_name or tid
-    for candidate in (base / f"{name}.exe", base / name, base / "bin" / name):
+    for candidate in (base / name, base / "bin" / name):
         if candidate.exists():
             return candidate
     raise ToolchainError(f"{tid} is installed but {name} wasn't found in {base}")
@@ -380,21 +365,9 @@ def java_version() -> int:
     return int(m.group(1)) if m else 0
 
 
-def side_name() -> str:
-    """Which Linux side runs Linux-only toolchains here: wsl or docker."""
-    return "wsl" if wsl.wanted() else "docker"
-
-
-def _where() -> str:
-    return "inside WSL 2" if side_name() == "wsl" else "in the compiler container (Docker)"
-
-
 def side_status(prepare: bool = False, log=print) -> tuple[bool, str]:
-    """Whether the Linux side for Linux-only toolchains works here: (usable, why not). `prepare` builds what's
-    missing (the compiler image on a Mac)."""
-    if wsl.wanted():
-        ok, why = wsl.status()
-        return ok, "" if ok else f"on Windows it runs in WSL 2. {why}"
+    """Whether the compiler container for Linux-only toolchains works here: (usable, why not). `prepare` builds
+    the compiler image if it's missing."""
     if prepare:
         try:
             linuxbox.prepare(log)
@@ -410,7 +383,7 @@ def status() -> list[dict]:
         m = installed(tc.id)
         rows.append({"id": tc.id, "name": tc.name, "kind": tc.kind, "platform": tc.platform, "license": tc.license,
                      "installed": m is not None, "supported": tc.supported, "description": tc.description,
-                     "linux": tc.via_linux, "linux_side": side_name() if tc.via_linux else "",
+                     "linux": tc.via_linux,
                      "pinned": all(p.get("sha256") for p in tc.parts) or bool(tc.commit)})
     return rows
 
@@ -647,6 +620,7 @@ def _installed_manifest_identity(tid: str) -> dict | None:
         return None
     if not isinstance(m, dict):
         return None
+    # "wsl" is always False now; the key stays so existing profile identities don't change
     return {"parts": m.get("parts") or [], "commit": m.get("commit"), "wsl": bool(m.get("wsl"))}
 
 

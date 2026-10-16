@@ -1,8 +1,10 @@
 """Updates: decomp.wtf finds out when there's a newer version of itself and, once the user says yes, installs it
 and restarts in place (same port, same browser session; helper agents carry on afterwards).
 
-Where updates come from depends on how decomp.wtf was installed (install.json, written by the installer):
-- "release": the version on decomp.wtf (its install.sh says which one), installed from the wheel there
+Where updates come from depends on how decomp.wtf was installed (install.json, written by `decomp install-info`;
+none means a release install):
+- "release": the version in pyproject.toml on the repository's main branch on GitHub, installed from GitHub's
+             archive of that branch
 - "branch":  the newest commit of a branch on GitHub (for testing a branch before it's released), installed from
              GitHub's archive of that commit
 Installing is `uv tool install --force` of the new version, then its `decomp setup` (new pinned tools), then the
@@ -24,10 +26,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .. import __version__, hostenv, toolchains
+from .. import __version__, toolchains
 
-REPO = "i12bp8/decomp.wtf"
-SITE = "https://decomp.wtf"
+REPO = "Nexhas28/decomp.wtf"
+RELEASE_BRANCH = "main"
 RECHECK = {"release": 3 * 3600, "branch": 15 * 60}  # GitHub allows 60 unauthenticated API calls an hour
 
 
@@ -78,20 +80,16 @@ def _first_line(message: str) -> str:
 
 
 def _check_release(cur: dict) -> dict:
-    try:
-        text, site = _get(f"{SITE}/install.sh").decode("utf-8", "replace"), True
-    except OSError:  # decomp.wtf can't be reached from here (a filter, an outage): the release on GitHub
-        text, site = _get(f"https://raw.githubusercontent.com/{cur['repo']}/main/site/public/install.sh").decode(
-            "utf-8", "replace"), False
-    m = re.search(r'^VERSION="([^"]+)"', text, re.M)
+    repo = cur["repo"]
+    text = _get(f"https://raw.githubusercontent.com/{repo}/{RELEASE_BRANCH}/pyproject.toml").decode("utf-8", "replace")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
     if not m:
-        raise ValueError("decomp.wtf didn't say which version is current")
+        raise ValueError("GitHub didn't say which version is current")
     latest = m.group(1)
     newer = version_key(latest) > version_key(cur["version"])
-    spec = (f"decompnet @ {SITE}/dl/decompnet-{latest}-py3-none-any.whl" if site else
-            f"decompnet @ https://github.com/{cur['repo']}/archive/refs/tags/v{latest}.tar.gz")
     return {"available": newer, "latest": {"version": latest, "commit": "", "date": None},
-            "notes": [], "link": f"https://github.com/{cur['repo']}/commits/main", "spec": spec}
+            "notes": [], "link": f"https://github.com/{repo}/commits/{RELEASE_BRANCH}",
+            "spec": f"decompnet @ https://github.com/{repo}/archive/refs/heads/{RELEASE_BRANCH}.tar.gz"}
 
 
 def _branch_version(repo: str, sha: str) -> str:
@@ -127,7 +125,7 @@ def _check_branch(cur: dict) -> dict:
 
 
 def check() -> dict:
-    """What's installed, what's newest, and whether that's an update (network: GitHub or decomp.wtf)."""
+    """What's installed, what's newest, and whether that's an update (network: GitHub)."""
     cur = installed()
     out = {"current": cur, "available": False, "latest": None, "notes": [], "link": None, "error": None,
            "checked": time.time(), "can_apply": can_apply()[0], "why_not": can_apply()[1]}
@@ -149,11 +147,8 @@ def uv() -> str | None:
 
 
 def can_apply() -> tuple[bool, str]:
-    if sys.platform == "win32":
-        return False, ("decomp.wtf now runs in WSL 2 on Windows: run the installer again in PowerShell "
-                       "(irm https://decomp.wtf/install.ps1 | iex) to switch to it")
     if not uv():
-        return False, "uv isn't installed here, so decomp.wtf can't update itself: run the installer again"
+        return False, "uv isn't installed here, so decomp.wtf can't update itself: install uv (https://docs.astral.sh/uv/) first"
     return True, ""
 
 
@@ -223,8 +218,7 @@ class Updater:
         channel = installed()["channel"]
         if refresh or cur is None or time.time() - cur.get("checked", 0) > RECHECK[channel]:
             self.last = cur = check()
-        return {**cur, "job": {k: (v[-200:] if k == "log" else v) for k, v in self.job.items()},
-                "runtime": hostenv.runtime()}
+        return {**cur, "job": {k: (v[-200:] if k == "log" else v) for k, v in self.job.items()}}
 
     def apply(self) -> None:
         """Install the update in the background, then restart into it."""

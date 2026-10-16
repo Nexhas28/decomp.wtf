@@ -64,8 +64,8 @@ only headerless lane in the pinned schema is ``format="dos-com"`` (1..65280 byte
 x86:LE:16:Real Mode import: BinaryLoader, load segment 0x1000, entry offset 0x100) and it is
 admitted only when the caller explicitly declares it. Headered artifacts are admitted through
 header-based detection: little-endian ELF (x86/x86-64/ARM/AArch64/SuperH), the pinned MIPS lane
-(ELF32 ET_EXEC MIPS32r2 o32, :func:`mips_lane_admission`), PE via the Windows P0 boundary
-(:func:`windows_p0_admission`), and Mach-O x86_64/arm64 little-endian. Everything else is a typed
+(ELF32 ET_EXEC MIPS32r2 o32, :func:`mips_lane_admission`), native x86/x86-64 PE (through the
+headless Ghidra bridge, with a warning), and Mach-O x86_64/arm64 little-endian. Everything else is a typed
 unsupported result — the direct Ghidra adapter remains separately available through the broker.
 
 Facet mapping (P9.4) — only operations present in the pinned catalog are used
@@ -104,8 +104,7 @@ Gap list a human must approve before enabling the real route
 * GAP-5: big-endian headered ELF outside the pinned MIPS lane is not admitted (no verified lane).
 * GAP-6: the adapter pins the package version exactly (``6.4.0``); upgrading REA requires
   re-pinning the schemas here (E-01 fails first, which is the intended behaviour).
-* GAP-7: Windows P0 runtime facts (NTFS path, native addon, Windows 10+) are detected from the
-  pinned package layout where possible and must otherwise be supplied explicitly — never assumed.
+* GAP-7: retired (it was the Windows host boundary; decomp.wtf runs on macOS only).
 * GAP-8: the broker's correlation payload includes the provider-specific profile dictionary; the
   engine identity is identical across both routes, but exact group *equality* additionally needs
   broker-side normalisation (profile dicts carry route-specific bindings) — a broker follow-up.
@@ -227,7 +226,7 @@ MIPS_LANE = "elf32-exec-o32-arch32r2-standard-v3"
 ELF_LE_MACHINES = {3: "x86", 62: "x86_64", 40: "arm", 183: "aarch64", 42: "sh"}
 ELF_MIPS_MACHINE = 8
 ELF_PPC_MACHINES = (20, 21)
-#: PE machine ids admitted by the Windows P0 boundary (native x86/x86-64 only).
+#: PE machine ids admitted (native x86/x86-64 only).
 PE_MACHINES = {0x14C: "x86", 0x8664: "x86_64"}
 MACHO_CPUTYPES = {0x01000007: "x86_64", 0x0100000C: "arm64"}
 PROCESSOR_ALIASES = {"x86": "x86", "i386": "x86", "x86_64": "x86_64", "amd64": "x86_64",
@@ -426,46 +425,10 @@ def mips_lane_admission(hdr: dict | None, declared_lane: str | None) -> tuple[bo
     return (not reasons), tuple(reasons)
 
 
-def windows_p0_admission(host_os: str, target_format: str, machine: int, managed: bool, *,
-                         ntfs: bool = False, addon_present: bool = False,
-                         windows_10_plus: bool = True) -> tuple[bool, tuple, tuple]:
-    """The pinned Windows P0 boundary (E-05), unit-testable and host-independent.
-
-    Windows sessions accept native x86/x86-64 PE only, need the packaged Windows x64 native addon,
-    local NTFS targets and Windows 10+. Managed (CLR) images are unsupported. On non-Windows hosts
-    the boundary does not apply: PE targets go through the headless Ghidra bridge with warnings.
-    """
-    if host_os not in ("win32", "windows"):
-        if target_format == "pe":
-            return True, (), ("PE target on a non-Windows host: the Windows P0 boundary does not "
-                              "apply; the headless Ghidra bridge imports PE headers "
-                              "cross-platform",)
-        return True, (), ()
-    reasons = []
-    if target_format != "pe":
-        reasons.append(f"the Windows REA boundary admits PE targets only, not {target_format!r}")
-    if machine not in PE_MACHINES:
-        reasons.append("Windows REA P0 accepts native x86 and x86-64 PE only "
-                       "(managed/hostile/sensitive targets unsupported)")
-    if managed:
-        reasons.append("managed PE/CLI images are unsupported on the Windows P0 boundary "
-                       "(managed_target_unsupported)")
-    if not addon_present:
-        reasons.append("Windows sessions require the matching packaged Windows x64 native addon "
-                       "(runtime_missing)")
-    if not ntfs:
-        reasons.append("Windows sessions require local NTFS targets")
-    if not windows_10_plus:
-        reasons.append("Windows sessions require Windows 10 or later")
-    return (not reasons), tuple(reasons), ()
-
-
 def host_admission(host_os: str) -> tuple[bool, tuple, tuple]:
-    """Host matrix: macOS/Linux run the pinned Ghidra bridge; Windows is the PE-only P0 boundary."""
+    """Host matrix: macOS/Linux run the pinned Ghidra bridge."""
     if host_os in ("darwin", "macos", "linux"):
         return True, (), ()
-    if host_os in ("win32", "windows"):
-        return True, (), ("Windows host: the PE-only P0 boundary is enforced per target")
     return False, (f"unsupported_host: REA 6.4.0 has no verified lane for host {host_os!r}"), ()
 
 
@@ -880,14 +843,12 @@ class ReaProvider(Provider):
     name = "rea-ghidra"
 
     def __init__(self, *, command: list[str] | None = None, cwd: Path | None = None,
-                 env: dict | None = None, host_os: str | None = None,
-                 windows_facts: dict | None = None):
+                 env: dict | None = None, host_os: str | None = None):
         default_cmd, default_cwd = default_command()
         self.command = list(command) if command is not None else default_cmd
         self.cwd = cwd if cwd is not None else default_cwd
         self.env = env if env is not None else allowed_env()
         self.host_os = (host_os or platform.system()).lower()
-        self.windows_facts = dict(windows_facts or {})
         # A-04: the SAME engine identity as DirectGhidraProvider (same call) so the broker's
         # correlation groups are shared between the direct and REA routes.
         self.engine = ghidra.provider_version()
@@ -1007,10 +968,6 @@ class ReaProvider(Provider):
                                     (f"the artifact is {hdr['encoding']}-endian ELF but the "
                                      f"profile says {profile.endian}",))
         if hdr["machine"] == ELF_MIPS_MACHINE:
-            if self.host_os in ("win32", "windows"):
-                return CapabilityResult(False, self.name,
-                                        ("the pinned MIPS lane runs on the macOS/Linux Ghidra "
-                                         "bridge; the Windows boundary admits PE targets only",))
             ok, reasons = mips_lane_admission(hdr, (profile.metadata or {}).get("rea_mips_lane"))
             if not ok:
                 return CapabilityResult(False, self.name, tuple(reasons))
@@ -1053,32 +1010,13 @@ class ReaProvider(Provider):
         if arch is None:
             return CapabilityResult(False, self.name,
                                     (f"PE machine {hdr['machine']:#x} is outside the native "
-                                     f"x86/x86-64 Windows boundary",))
-        win_facts = self._windows_facts()
-        ok, reasons, warnings = windows_p0_admission(
-            self.host_os, "pe", hdr["machine"], hdr["managed"],
-            ntfs=bool(win_facts.get("ntfs")),
-            addon_present=bool(win_facts.get("addon_present")),
-            windows_10_plus=bool(win_facts.get("windows_10_plus", True)))
-        if not ok:
-            return CapabilityResult(False, self.name, tuple(reasons))
+                                     f"x86/x86-64 PE lane",))
         return self._admitted_result(path, digest, "pe", "executable", arch, "little", {
             "provider_id": REA_GHIDRA_PROVIDER_ID,
             "windows_boundary": {"host": self.host_os, "managed": hdr["managed"],
                                  "bits": hdr["bits"]},
-            "warnings": list(warnings),
+            "warnings": ["PE target: the headless Ghidra bridge imports PE headers cross-platform"],
             "language": "auto-from-header (pinned provider policy)"})
-
-    def _windows_facts(self) -> dict:
-        """Detect the P0 runtime facts from the pinned package layout; explicit facts win."""
-        facts = dict(self.windows_facts)
-        if self.host_os in ("win32", "windows"):
-            facts.setdefault("addon_present",
-                             (REA_ROOT / "native" / "windows" / "build" /
-                              "rea-windows-x64.node").exists())
-            facts.setdefault("ntfs", bool(os.environ.get("SystemDrive")))
-            facts.setdefault("windows_10_plus", True)
-        return facts
 
     def _macho_admission(self, path, data, digest) -> CapabilityResult:
         hdr = macho_header_info(data)

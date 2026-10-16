@@ -1,89 +1,87 @@
 ---
 type: Platform Support
-title: Host environments (Linux, Windows/WSL, macOS, Docker)
-description: How decomp.wtf runs on Linux, Windows through its own WSL 2 distribution, macOS with a compiler-only Docker container, and fully in Docker.
-tags: [windows, wsl, macos, docker, linux, hostenv]
+title: Host environment (macOS app, compiler container)
+description: decomp.wtf is a macOS app. The native Mac app runs the Python backend on the Mac, and only the Linux-only period compilers run in a small Docker container.
+tags: [macos, docker, linuxbox, mac-app, updates]
 generated:
   by: claude-code/claude-opus-5-5
   at: '2026-10-16T11:51:12Z'
 sources:
-  - id: hostenv
-    resource: src/decompnet/hostenv.py
-    title: Runtime detection
-  - id: wsl
-    resource: src/decompnet/wsl.py
-    title: WSL 2 compiler lane
+  - id: macreadme
+    resource: macos/README.md
+    title: Mac app developer guide
+  - id: backend
+    resource: macos/DecompWTF/Backend.swift
+    title: How the Mac app finds and starts decomp.wtf
+  - id: updater
+    resource: macos/DecompWTF/Updater.swift
+    title: Mac app updates from GitHub Releases
+  - id: release
+    resource: macos/release.sh
+    title: Building and publishing a Mac release
   - id: linuxbox
     resource: src/decompnet/linuxbox.py
     title: macOS compiler container
   - id: dockerfile
     resource: src/decompnet/linuxbox.Dockerfile
     title: Compiler container image
-  - id: limits
-    resource: src/decompnet/limits.py
-    title: Memory caps
   - id: toolchains
     resource: src/decompnet/toolchains.py
     title: via_linux
   - id: readme
     resource: README.md
-    title: Install, Windows, macOS, Docker sections
+    title: Install and Linux-only compilers sections
 ---
 
-# Host environments (Linux, Windows/WSL, macOS, Docker)
+# Host environment (macOS app, compiler container)
 
-## Runtime detection (`hostenv.py`)
+decomp.wtf runs on macOS 14 or newer. Linux and Windows builds, their installers, WSL and the whole-app Docker image were removed[^readme].
 
-decomp.wtf is "a Linux program everywhere"[^hostenv]. `hostenv.runtime()` returns one of:
+## The Mac app (`macos/`)
 
-- `native`: Linux itself
-- `wsl`: its own WSL 2 distribution on Windows
-- `docker`: a container
+The Mac app is a native Swift/SwiftUI app that shows decomp.wtf in its own window. Its sidebar and project overview are native screens; the other pages are decomp.wtf's own web pages shown in the window[^macreadme]. It starts decomp.wtf with `--no-browser` and stops it on quit, unless decomp.wtf was already running[^backend].
 
-Detection order[^hostenv]:
+It finds decomp.wtf in this order[^backend]:
 
-1. `DECOMP_RUNTIME`
-2. `/etc/decomp-wtf-runtime`, written by `site/public/linux-base.sh`
-3. `WSL_DISTRO_NAME` or WSLInterop
-4. `/.dockerenv`
+1. the folder chosen on its setup screen (remembered)
+2. the checkout it was built from (`macos/build/...` inside a checkout), run with `uv run --project <checkout> decomp`
+3. an installed `decomp` command on its search path (`~/.local/bin`, Homebrew)
 
-Only a few things cross to the user's computer: opening the browser or a folder, and file paths the user types[^hostenv].
+A setup screen appears when uv or decomp.wtf is missing. A bar appears when Docker Desktop is missing or not running[^backend]. Projects live in `~/Decomp`, or `DECOMP_HOME`[^backend].
 
-## Windows: WSL 2
+**Build.** XcodeGen generates the project from `project.yml`, and `xcodebuild` builds it. The app is not sandboxed, is signed ad hoc, and isn't notarized. A downloaded copy therefore needs **Open Anyway** in Privacy & Security once[^macreadme].
 
-The installer (`install.ps1`) enables WSL 2 and builds a `decomp-wtf` distribution from Debian's WSL image. Projects are at `\\wsl.localhost\decomp-wtf\home\decomp\Decomp`[^readme].
+**Updates.** The app checks GitHub Releases of `Nexhas28/decomp.wtf` on launch (at most every 6 hours) and on request. It looks for a published release tagged `mac-v<version>` with a `decomp.wtf-mac-<version>.zip` asset, then swaps itself in place[^updater]. `macos/release.sh <version> [--publish]` builds that zip and publishes the release with `gh`[^release]. `DECOMP_MAC_UPDATE_FEED` points the check at another feed[^updater]. This updates the app only. The Python backend is the checkout it runs, updated with `git pull`[^readme].
 
-Separately, `wsl.py` runs the Linux-only period compilers when `sys.platform == "win32"` (or when `DECOMP_WSL` names a stand-in). It runs them inside WSL 2, reading the toolchain folder through `/mnt/<drive>`[^wsl]:
+## The compiler container (`linuxbox.py`)
 
-- KMC GCC
+The backend runs natively on the Mac. Toolchains with a macOS build run natively, and so do the Metrowerks compilers (Windows programs) through the macOS build of `wibo`. On Apple Silicon the Intel programs need Rosetta 2[^readme].
+
+Linux-only compilers run in one long-lived container, `decomp-wtf-compiler`[^linuxbox]:
+
+- KMC GCC (N64)
 - the PlayStation GCCs
-- EE-GCC
-- agbcc
+- EE-GCC (PS2)
+- agbcc (GBA)
 
-WSL 1 can't run them, because they are 32-bit. Commands are sent as a small shell script in the compile folder[^wsl]. A registry part for `wsl-x86_64` (for example the Debian `libc6-i386` runtime) replaces the Linux part there[^toolchains].
+`toolchains.via_linux` routes a toolchain there when it has a Linux build and no build for the Mac[^toolchains].
 
-## macOS (experimental): compiler container
+- **Image.** Bare Debian (`linux/amd64`) with the 32-bit C library and nothing of decomp.wtf, built from `linuxbox.Dockerfile` the first time a Linux-only compiler is installed[^dockerfile].
+- **Mounts.** The toolchain folder is mounted read-only and the compile folders read-write, both at the same absolute paths as on the Mac[^linuxbox].
+- **Limits.** No network, limited memory and processes[^linuxbox].
+- **Needs Docker Desktop running.** Without it, installing or compiling with a Linux-only compiler says what to start[^linuxbox].
 
-The app runs natively (`uv run decomp`). Linux-only compilers run in one long-lived container, `decomp-wtf-compiler`[^linuxbox][^readme]:
+`DECOMP_LINUXBOX` points tests at a stand-in for `docker`[^linuxbox].
 
-- **Image.** Bare Debian with 32-bit libc, built from `linuxbox.Dockerfile`[^dockerfile].
-- **Mounts.** The toolchain folder is mounted read-only and the compile folders read-write, both at the same absolute paths[^linuxbox].
-- **Limits.** No network and limited resources[^linuxbox].
+## Hosting a room
 
-`DECOMP_LINUXBOX` points tests at a stand-in for `docker`[^linuxbox]. Metrowerks compilers run natively through the macOS build of `wibo`. The one-line installer doesn't support macOS[^readme].
+`decomp host ... --service` runs decomp.wtf in the background as a launchd agent on the Mac, so a team room can be hosted from an always-on Mac[^readme]. See [collaboration rooms](/project/collaboration-rooms.md).
 
-## The whole app in Docker
-
-`docker compose up -d` builds `site/public/Dockerfile`. The app then listens on `127.0.0.1:6464`, with state in the `decomp-wtf-home` volume at `/home/decomp`[^readme]. Inside Docker the app binds 0.0.0.0 and, when `DECOMP_PORT` is set, keeps that exact port[^readme]. `toolchains.via_linux` decides per toolchain whether it goes through WSL or the container[^toolchains].
-
-## Resource caps
-
-On Linux, `limits.py` runs heavy commands in their own systemd scope, with a memory cap and no swap. Only that command is killed if it runs away[^limits]. Compiles also go through `prlimit`. See [matching and scoring](/project/matching-and-scoring.md).
-
-[^hostenv]: src/decompnet/hostenv.py
-[^wsl]: src/decompnet/wsl.py
+[^macreadme]: macos/README.md
+[^backend]: macos/DecompWTF/Backend.swift
+[^updater]: macos/DecompWTF/Updater.swift
+[^release]: macos/release.sh
 [^linuxbox]: src/decompnet/linuxbox.py
 [^dockerfile]: src/decompnet/linuxbox.Dockerfile
-[^limits]: src/decompnet/limits.py
 [^toolchains]: src/decompnet/toolchains.py
 [^readme]: README.md

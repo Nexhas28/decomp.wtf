@@ -17,7 +17,6 @@ import os
 import secrets
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -60,10 +59,8 @@ def file_log(path: Path) -> logging.Logger:
 
 
 def _tool_of(cmd) -> str:
-    """The program a command ran (past a systemd-run wrapper), by name."""
+    """The program a command ran, by name."""
     argv = [str(a) for a in cmd] if isinstance(cmd, (list, tuple)) else str(cmd).split()
-    if "--" in argv and Path(argv[0]).name.startswith("systemd-run"):
-        argv = argv[argv.index("--") + 1:]
     return Path(argv[0]).name if argv else "a tool"
 
 
@@ -986,25 +983,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         kind = agents.KINDS.get(agents.kind_id(str((await body(request)).get("kind", ""))))
         if kind is None or not kind.install:
             return fail(ValueError("nothing to install"))
-        cmd = kind.install["windows" if sys.platform == "win32" else "unix"]
-        env = None
-        if sys.platform == "win32":
-            env = dict(os.environ, PATH=agents.search_path())  # Node.js installed since the app started counts
-            if cmd.startswith("npm ") and not shutil.which("npm", path=env["PATH"]):
-                return fail(ValueError(f"{kind.name} is installed with npm: install Node.js from https://nodejs.org "
-                                       "first (the LTS version), then try again"))
+        cmd = kind.install
 
         def work(log):
             log(f"$ {cmd}")
-            if sys.platform == "win32":
-                # Node.js's npm is a PowerShell script (npm.ps1) that Windows' default execution policy won't run;
-                # output as UTF-8 so it reads right here; never wait at a prompt nobody sees
-                argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-                        f"[Console]::OutputEncoding = [Text.Encoding]::UTF8; {cmd}"]
-            else:
-                argv = ["bash", "-lc", cmd]
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                    errors="replace", env=env)
+            proc = subprocess.Popen(["bash", "-lc", cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    encoding="utf-8", errors="replace")
             for line in proc.stdout:
                 log(line.rstrip())
             if proc.wait() != 0:
@@ -1071,8 +1055,6 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 linked = list(pool.map(lambda a: a["installed"] and connect.status(a["id"]), found))
             return [{"id": a["id"], "name": a["name"], "installed": a["installed"], "connected": ok,
                      "command": connect.shown(a["id"])} for a, ok in zip(found, linked)]
-        if (host := hostenv.host_bridge()) is not None:  # the user's agents live outside decomp.wtf's Linux
-            return JSONResponse({"agents": [], "bridge": host, "host_bridge": host, **hostenv.info()})
         return JSONResponse({"agents": await anyio.to_thread.run_sync(rows), "bridge": connect.bridge_command()})
 
     @mcp.custom_route("/api/agents/token", methods=["POST"])
@@ -1163,7 +1145,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         refresh = request.query_params.get("refresh") == "1"
         if not refresh and not checking():  # the user turned checks off: only "Check now" asks
             return JSONResponse({"disabled": True, "available": False, "current": updates.installed(),
-                                 "job": updater.job, "runtime": hostenv.runtime()})
+                                 "job": updater.job})
         return JSONResponse(await call(lambda: updater.status(refresh)))
 
     def checking() -> bool:

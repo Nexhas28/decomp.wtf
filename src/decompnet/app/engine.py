@@ -239,8 +239,8 @@ class RomNetwork(Network):
     # ------------------------------------------------------------------ basics
 
     def _rebase_roots(self) -> None:
-        """A workspace can be opened from another place than the one that made it (a Mac folder shared with Docker,
-        the same folder in WSL): a project whose stored folder is gone, but whose slug folder sits in this workspace,
+        """A workspace can be opened from another place than the one that made it (another Mac, or a folder that was
+        moved or renamed): a project whose stored folder is gone, but whose slug folder sits in this workspace,
         moves there. Opening it where it was made moves it back the same way."""
         for p in self.store.all("SELECT id, slug, root FROM projects"):
             here = self.workspace / p["slug"]
@@ -2085,7 +2085,6 @@ class RomNetwork(Network):
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "linux": tc.via_linux,
-                         "linux_side": toolchains.side_name() if tc.via_linux else "",
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
             "compiler_profiles": cfg.get("compiler_profiles", {}), "compiler_ranges": cfg.get("compiler_ranges", []),
             "compiler_functions": cfg.get("compiler_functions", {}),

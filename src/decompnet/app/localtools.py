@@ -18,7 +18,6 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -423,15 +422,14 @@ def _execute(argv: list[str], cwd: Path, timeout: int) -> tuple[int | None, str]
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "USER",
                                                        "JAVA_HOME_21", "GHIDRA_INSTALL_DIR")}
     env["PATH"] = os.pathsep.join([env.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"])
-    kw = {"start_new_session": True} if os.name != "nt" else {}
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, **kw)
+                            stderr=subprocess.STDOUT, start_new_session=True)
     try:
         out, _ = proc.communicate(timeout=timeout)
         return proc.returncode, out.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(proc.pid, signal.SIGKILL) if os.name != "nt" else proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
             pass
         out, _ = proc.communicate()
@@ -579,7 +577,7 @@ def test(tool: str) -> tuple[bool, str]:
     """Runs a tool's own smoke test (test.sh), for the GUI's Check button."""
     t = _tool(tool)
     script = folder() / t["folder"] / "test.sh"
-    if not script.is_file() or sys.platform == "win32":
+    if not script.is_file():
         return False, "no test for this tool here"
     code, text = _execute(["bash", str(script)], script.parent, 300)
     return code == 0, _cap(text.strip(), 3000)

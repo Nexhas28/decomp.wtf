@@ -8,11 +8,12 @@ Design boundaries, all deliberate:
   per-directory include digests *in order* (later directories shadow earlier ones on a
   name clash, matching the legacy copytree), the ordered argv after placeholder
   substitution, the resolved compiler executable and its digest, wrapper identity
-  (sandbox mode, prlimit/bwrap binaries), read-only path digests, a fixed set of
+  (sandbox mode, image), read-only path digests, a fixed set of
   toolchain-relevant environment variables, and the path semantics the compiler sees.
   When any of these cannot be fully described, `build_key` returns None and the caller
-  bypasses the cache (P2.4). WSL and docker modes always bypass: WSL stages into a fresh
-  per-attempt directory and a docker image's contents cannot be described from here.
+  bypasses the cache (P2.4). Only sandbox "none" is ever keyed: the compiler container
+  stages into a fresh per-attempt directory and a docker image's contents cannot be
+  described from here.
 * Only "success" and deterministic "error" outcomes are stored. Killed processes,
   missing tools, timeouts, cancellations and IO failures are transient: they are never
   published and get a short in-process retry backoff (P2.5). A negative result is an
@@ -28,8 +29,7 @@ Design boundaries, all deliberate:
 * Include snapshots are content-addressed directories built once per dependency revision
   (header + include dirs, in order), verified against the key's digests before
   publication, staged read-only, and reused by every attempt. Attempts never hard-link
-  writable shared inputs: sandboxed modes mount the snapshot read-only and unsandboxed
-  modes copy it per attempt, so one attempt cannot mutate another's inputs (P2.7).
+  writable shared inputs: each attempt copies the snapshot, so one attempt cannot mutate another's inputs (P2.7).
 """
 
 from __future__ import annotations
@@ -258,18 +258,9 @@ def request_identity(manifest: dict) -> str:
 
 def _mini_mode(cfg) -> str:
     """Mirror of compiler._sandbox_mode, so build_key works without importing compiler."""
-    if cfg.wsl:
-        return "wsl"
-    if cfg.sandbox != "auto":
-        return cfg.sandbox
-    return "bwrap" if shutil.which("bwrap") else "none"
-
-
-def _bin_component(path: str | None) -> dict | None:
-    if path is None:
-        return None
-    digest = file_sha(Path(path))
-    return None if digest is None else {"path": path, "sha": digest}
+    if getattr(cfg, "linux", False) or getattr(cfg, "wsl", False):
+        return "linux"
+    return "none" if cfg.sandbox == "auto" else cfg.sandbox
 
 
 def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
@@ -278,8 +269,8 @@ def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
     inputs (the caller then bypasses the cache, plan P2.4)."""
     if mode is None:
         mode = _mini_mode(cfg)
-    if mode in ("wsl", "docker", "linux"):
-        # wsl/linux: a fresh random stage dir per attempt on the Linux side (path semantics not
+    if mode != "none":
+        # linux: a fresh random stage dir per attempt in the compiler container (path semantics not
         # describable); docker: image contents cannot be described from here.
         return None
 
@@ -326,11 +317,6 @@ def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
         if runtime32 is None:
             return None
 
-    prlimit = shutil.which("prlimit") if mode in ("none", "bwrap") else None
-    bwrap = shutil.which("bwrap") if mode == "bwrap" else None
-    pr, bw = _bin_component(prlimit), _bin_component(bwrap)
-    if mode == "bwrap" and bw is None:
-        return None  # wrapper identity not describable
 
     def make_manifest(root_str: str) -> dict:
         subst = {"{src}": f"{root_str}/func.c", "{obj}": f"{root_str}/func.o",
@@ -345,29 +331,26 @@ def build_key(cfg, context_header: str, source: str, *, mode: str | None = None,
                 "argv": argv,
                 "exe": exe_path, "exe_sha": exe_sha,
                 "mode": mode, "sandbox": cfg.sandbox, "timeout": cfg.timeout,
-                "prlimit": pr, "bwrap": bw, "image": cfg.image,
+                # no wrapper binaries any more; the keys stay so existing cache entries keep their digests
+                "prlimit": None, "bwrap": None, "image": cfg.image,
                 "ro_paths": ro_paths, "runtime32": runtime32,
                 "env": {k: os.environ.get(k) for k in KEY_ENV},
             },
             "path_semantics": {"root": root_str, "work_name": None, "staging": "virtual"},
         }
 
-    work_name = None
-    if mode == "none":
-        # Sandbox "none" exposes the physical work path to the compiler (__FILE__,
-        # .file directives), so it must be identical for identical keys: stage at a
-        # key-derived path under the cache root.
-        if work_base is None:
-            return None
-        work_base = Path(work_base).resolve()  # the runtime stage path is resolved
-        pre = sha(canonical(make_manifest("WORK")))
-        work_name = f"decompnet-work-{pre[:24]}"
-        root = str(Path(work_base) / work_name)
-        manifest = make_manifest(root)
-        manifest["path_semantics"] = {"root": root, "work_name": work_name,
-                                      "staging": "deterministic"}
-    else:  # bwrap: the compiler only ever sees /work
-        manifest = make_manifest("/work")
+    # Sandbox "none" exposes the physical work path to the compiler (__FILE__,
+    # .file directives), so it must be identical for identical keys: stage at a
+    # key-derived path under the cache root.
+    if work_base is None:
+        return None
+    work_base = Path(work_base).resolve()  # the runtime stage path is resolved
+    pre = sha(canonical(make_manifest("WORK")))
+    work_name = f"decompnet-work-{pre[:24]}"
+    root = str(Path(work_base) / work_name)
+    manifest = make_manifest(root)
+    manifest["path_semantics"] = {"root": root, "work_name": work_name,
+                                  "staging": "deterministic"}
 
     digest = sha(canonical(manifest))
     return CompilationKey(digest, manifest, dep_digest, work_name)

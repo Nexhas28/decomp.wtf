@@ -51,7 +51,6 @@ from importlib import resources
 from pathlib import Path
 
 from .. import scheduler, toolchains
-from ..limits import capped
 
 #: Exporter/schema version: the reviewed exporter (schema 1) emitted only {"name", "c"} rows. Schema 2 adds
 #: per-function status/coverage fields and a separate <out>.summary.json with import-level completion metadata.
@@ -90,7 +89,7 @@ _WORKSPACE_GHIDRA_DIRS = (
 
 
 def _java_bin(home: Path) -> Path | None:
-    exe = home / "bin" / ("java.exe" if os.name == "nt" else "java")
+    exe = home / "bin" / "java"
     if exe.is_file():
         return exe
     mac = home / "Contents" / "Home" / "bin" / "java"  # macOS JRE layout
@@ -115,7 +114,7 @@ def java_home() -> Path | None:
         parent = p.parent
         candidates.append(parent if parent.name == "bin" else parent.parent)
     for candidate in candidates:
-        exe = candidate / "bin" / ("java.exe" if os.name == "nt" else "java")
+        exe = candidate / "bin" / "java"
         if exe.is_file():
             return candidate
         mac = candidate / "Contents" / "Home"  # macOS JRE layout
@@ -147,7 +146,7 @@ def java_version() -> int:
 def ghidra_home() -> Path | None:
     """The Ghidra install whose support/analyzeHeadless exists: DECOMP_GHIDRA_HOME, the decompnet
     toolchain registry, or the pinned workspace install (read-only)."""
-    launcher = "analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless"
+    launcher = "analyzeHeadless"
     candidates: list[Path] = []
     env = os.environ.get("DECOMP_GHIDRA_HOME")
     if env:
@@ -167,9 +166,8 @@ def available() -> bool:
 def _headless() -> Path:
     home = ghidra_home()
     if home is not None:
-        return home / "support" / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
-    base = toolchains.path("ghidra") / "support"
-    return base / ("analyzeHeadless.bat" if os.name == "nt" else "analyzeHeadless")
+        return home / "support" / "analyzeHeadless"
+    return toolchains.path("ghidra") / "support" / "analyzeHeadless"
 
 
 def provider_version() -> str:
@@ -778,7 +776,7 @@ def _facet_args(admitted: AdmittedProfile, facets: tuple, want_bytes: bool) -> l
 def _kill(proc: subprocess.Popen) -> None:
     """Process-group cleanup: the headless JVM plus anything it spawned (the plan's forced cleanup)."""
     try:
-        if os.name != "nt" and proc.pid:
+        if proc.pid:
             os.killpg(proc.pid, signal.SIGKILL)
         else:
             proc.kill()
@@ -879,8 +877,8 @@ def _run_headless(admitted: AdmittedProfile, obj: Path, scripts_src: Path, facet
                 env["GHIDRA_JAVA_OPTIONS"] = (extra + f" -Duser.home={os.environ['DECOMP_GHIDRA_USER_HOME']}").strip()
                 tool_opts = os.environ.get("JAVA_TOOL_OPTIONS", "")
                 env["JAVA_TOOL_OPTIONS"] = (tool_opts + f" -Duser.home={os.environ['DECOMP_GHIDRA_USER_HOME']}").strip()
-            proc = subprocess.Popen(capped(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                    encoding="utf-8", errors="replace", start_new_session=(os.name != "nt"),
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    encoding="utf-8", errors="replace", start_new_session=True,
                                     env=env)
         except OSError as e:
             return _RunResult(status="failed", diagnostics=[f"analyzeHeadless failed to start: {e}"])

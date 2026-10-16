@@ -34,9 +34,9 @@ def make_profile(**kw) -> toolchains.Profile:
 def write_manifest(tc_root, tid, sha):
     """A recorded installation manifest with different pinned binaries (no actual install).
 
-    The folder is where `toolchains.path` resolves the id: a Linux-only toolchain lives under the Linux
-    side's directory (`linux/` on a Mac with the compiler container, `wsl/` on Windows), so writing to a
-    flat path would leave the identity computation reading a manifest that isn't there."""
+    The folder is where `toolchains.path` resolves the id: a Linux-only toolchain lives under `linux/`
+    (it runs in the compiler container), so writing to a flat path would leave the identity computation
+    reading a manifest that isn't there. "wsl" is the manifest key older installs wrote."""
     d = toolchains.path(tid)  # exactly where the identity computation reads the manifest
     d.mkdir(parents=True, exist_ok=True)
     (d / toolchains.MANIFEST).write_text(json.dumps({

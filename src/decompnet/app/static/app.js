@@ -382,7 +382,7 @@ async function pickFile(file) {
   $("romStatus").className = `plat-status ${level || ""}`;
   $("romStatus").innerHTML = level === "recommended"
     ? `<b>★ Recommended platform.</b> The most tested path to a full decomp you can port and mod.`
-    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/i12bp8/decomp.wtf/issues" target="_blank" rel="noopener">reporting</a>.`;
+    : `<b>Beta.</b> ${esc(PLATFORM_NAME[p] || "This platform")} works and is tested on homemade games, less so on real ones yet. Problems are worth <a href="https://github.com/Nexhas28/decomp.wtf" target="_blank" rel="noopener">reporting</a>.`;
   setupCompilers(info);
   $("dropIdle").hidden = true;
   $("dropPicked").hidden = false;
@@ -478,7 +478,7 @@ function importFailed(name, e, logText) {
   $("errLog").textContent = [log, job.trace].filter(Boolean).join("\n\n") || "(nothing was logged)";
   $("errCopy").onclick = async () => {
     const st = S.st || {};
-    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.runtime || st.platform || navigator.platform}`,
+    const report = [`decomp.wtf ${st.version || "?"}${st.build ? ` (${st.build})` : ""} · ${st.platform || navigator.platform}`,
       `Importing: ${name}`, `Error: ${e.message}`, "", "Log:", "```", log.split("\n").slice(-80).join("\n"), job.trace || "", "```"].join("\n");
     try { await navigator.clipboard.writeText(report); toast("Copied: paste it into a GitHub issue"); }
     catch { toast("Couldn't reach the clipboard: select the text under What happened instead", "err"); }
@@ -904,11 +904,9 @@ function renderStats(ov) {
   renderNext(ov);
 }
 
-/* Linux-only compilers need a Linux side: WSL 2 on Windows, the compiler container (Docker Desktop) on a Mac. */
-function linuxHint(side) {
-  return side === "wsl"
-    ? " It's a Linux program: on Windows it runs inside WSL 2 (one-time setup: <code>wsl --install</code> in an administrator PowerShell, then restart)."
-    : " It's a Linux program: on a Mac it runs in a small compiler-only container (needs Docker Desktop running; installing builds the container's image once).";
+/* Linux-only compilers run in the compiler container (Docker Desktop). */
+function linuxHint() {
+  return " It's a Linux program: on a Mac it runs in a small compiler-only container (needs Docker Desktop running; installing builds the container's image once).";
 }
 
 function renderCompilerNotice(ov) {
@@ -943,7 +941,7 @@ function renderCompilerNotice(ov) {
   n.className = "notice";
   n.innerHTML = ov.compiler.proprietary
     ? `<span><b>${esc(ov.compiler.name)}</b> isn't installed. It's proprietary software (recompiled by the decomp community); install it only if you accept that.</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install…</button>`
-    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.linux ? linuxHint(ov.compiler.linux_side) : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
+    : `<span><b>${esc(ov.compiler.name)}</b> isn't installed yet.${ov.compiler.linux ? linuxHint() : ""}</span><span class="grow"></span><button class="primary small-btn" id="tcInstall" type="button">Install now</button>`;
   $("tcInstall").onclick = () => installToolchain(ov.compiler.toolchain, ov.compiler.proprietary);
 }
 
@@ -1254,11 +1252,9 @@ function renderHost(box, info) {
   serviceRow(box.querySelector("#svcRow"), "The room is open while decomp.wtf runs.");
 }
 
-/* Start decomp.wtf with the computer (systemd user service, launchd, or a log-on task). */
+/* Start decomp.wtf with the computer (a launchd agent). */
 function serviceRow(row, offText) {
   if (!row) return;
-  if (S.st && S.st.runtime === "docker") { row.innerHTML = `<span class="muted small">Docker keeps decomp.wtf running in the background.</span>`; return; }
-  if (S.st && S.st.runtime === "wsl") { row.innerHTML = `<span class="muted small">decomp.wtf runs while its window is open (the Start menu's decomp.wtf).</span>`; return; }
   api("/api/service").then((sv) => {
     if (!row.isConnected) return;
     row.innerHTML = sv.installed ? `<span class="ok-mark">decomp.wtf starts with this computer</span><button class="ghost small-btn" data-svc="remove" type="button">Don't</button>`
@@ -1295,7 +1291,7 @@ function openJoin() {
     <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
     <label class="field"><span>Your name in the room</span><input id="jName" maxlength="24" placeholder="e.g. alex"></label>
     <label class="field"><span>Your copy of the game</span><input id="jRom" type="file"></label>
-    <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="${S.st && S.st.host_os === "windows" ? "C:\\Games\\game.rvz" : "/home/you/games/game.iso"}"></label>
+    <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="~/Games/game.iso"></label>
     <label class="check"><input type="checkbox" id="jOwn"><span>This is my own copy of this game, obtained legally. I'll keep what the room makes private.</span></label>
     <p class="muted small">A GameCube, Wii or DS project comes with its whole source tree from the host, and is then built here with your copy and your compilers: the first time takes a few minutes.</p>
     <div class="row"><button class="primary" id="jGo" type="button">Join</button></div><pre class="joblog" id="jLog" hidden></pre>`);
@@ -2504,9 +2500,7 @@ async function connectRows(box) {
     return r;
   } catch (e) { box.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return null; }
 }
-const HOST_NAMES = { windows: "Windows", macos: "your Mac", linux: "this computer" };
 async function openConnect() {
-  if (S.st && S.st.runtime && S.st.runtime !== "native") return openHostConnect();
   const body = dialog("Use decomp.wtf from your AI agent", `<p>Connect the agent you already use, once. Then ask it in your terminal, for example:</p>
     ${cmdBox("decompile my game at ~/roms/game.z64")}
     <p class="muted small">It confirms the game is your own copy, imports it, opens this live view and works with every tool here: the byte-for-byte judge, the autopilot, helper agents, export. Anything it does shows up here as it happens.</p>
@@ -2515,23 +2509,6 @@ async function openConnect() {
       <p class="muted small">It starts decomp.wtf when needed; no token, nothing to update when the app restarts.</p></div>`);
   const r = await connectRows(body.querySelector("#connectRows"));
   if (r) body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
-}
-
-/* decomp.wtf in WSL (Windows) or in Docker: the agents you talk to run on the computer itself, so they're
-   connected from there, by the `decomp` command the installer put on it. */
-async function openHostConnect() {
-  const host = HOST_NAMES[S.st.host_os] || "your computer";
-  const shell = S.st.host_os === "windows" ? "PowerShell" : "a terminal";
-  const body = dialog("Use decomp.wtf from your AI agent", `<p>Run this once in ${esc(shell)} on ${esc(host)}: it connects Claude Code, Codex, Antigravity CLI and opencode there.</p>
-    ${cmdBox("decomp connect")}
-    <p>Then ask your agent, for example:</p>
-    ${cmdBox(S.st.host_os === "windows" ? "decompile my game at C:\\Games\\game.z64" : "decompile my game at ~/roms/game.z64")}
-    <p class="muted small">decomp.wtf runs in ${S.st.runtime === "wsl" ? "its own WSL 2 Linux on Windows" : "Docker"}; your agent reaches it through the command below. Anything it does shows up here as it happens.</p>
-    <div class="setup-group"><h3>Any other MCP client (Cursor, Claude Desktop, Windsurf, your own)</h3><pre class="code" id="bridgeJson"></pre></div>`);
-  try {
-    const r = await api("/api/connect");
-    body.querySelector("#bridgeJson").textContent = JSON.stringify({ mcpServers: { decomp: { command: r.bridge[0], args: r.bridge.slice(1) } } }, null, 2);
-  } catch (e) { body.querySelector("#bridgeJson").textContent = e.message; }
 }
 
 /* ------------------------------------------------------------------ steering: instructions, next in line */
@@ -2837,7 +2814,7 @@ function renderTools() {
   $("toolChips").querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => { toolFilter = b.dataset.g; renderTools(); }; });
   const rows = all.filter((t) => !toolFilter || group(t) === toolFilter);
   $("toolGrid").innerHTML = rows.map((t) => `<div class="tool-card ${t.installed ? "ok" : ""}">
-      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux ? `<span class="chip-s" title="A Linux program: ${esc(t.linux_side)}">${t.linux_side === "wsl" ? "WSL 2" : "Docker"}</span>` : ""}</div>
+      <div class="tc-top"><b>${esc(t.name)}</b>${t.license === "proprietary" ? `<span class="chip-s warn">proprietary</span>` : ""}${t.platform ? `<span class="chip-s">${esc(t.platform)}</span>` : ""}${t.linux ? `<span class="chip-s" title="A Linux program: it runs in the compiler container">Docker</span>` : ""}</div>
       <p class="muted small">${esc(t.use)}</p>
       <div class="row">${!t.supported ? `<span class="muted small">not available for this computer</span>` : t.installed ? `<span class="ok-mark">✓ installed</span>` : `<button class="ghost small-btn" data-tc="${esc(t.id)}" data-prop="${t.license === "proprietary" ? 1 : ""}" type="button">Install</button>`}</div></div>`).join("");
   $("toolGrid").querySelectorAll("[data-tc]").forEach((b) => { b.onclick = () => { b.disabled = true; installToolchain(b.dataset.tc, !!b.dataset.prop).finally(() => { b.disabled = false; }); }; });
@@ -2880,14 +2857,13 @@ async function showSettingsPage() {
     <div class="field"><span>Appearance</span><div class="seg" id="themeSeg">${[["", "System"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-theme="${k}" class="${theme === k ? "on" : ""}">${l}</button>`).join("")}</div></div>
     <div class="field"><span>Start with this computer (keeps team rooms open, resumes agents)</span><div class="row" id="svcRow2"><span class="muted small">Checking…</span></div></div>
     <div class="field"><span>Projects live in</span>${cmdBox(st.home)}</div>`;
-  const where = { wsl: " (in its own WSL 2 Linux)", docker: " (in Docker)" }[st.runtime] || "";
   const inst = st.install || {};
-  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on decomp.wtf";
-  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}${esc(where)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
+  const from = inst.channel === "branch" ? `the ${esc(inst.branch)} branch @ <code>${esc((inst.commit || "?").slice(0, 7))}</code>` : "releases on GitHub";
+  $("setAbout").innerHTML = `<p class="small">decomp.wtf ${esc(st.version)} on ${esc(st.platform)}. Free and open source (MIT). Everything runs on this computer: no account, nothing sent to us.</p>
     <div class="field"><span>Updates come from ${from}</span><div class="row"><span class="muted small grow" id="upText">Checking…</span><button class="ghost small-btn" id="upCheck" type="button">Check now</button></div></div>
-    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "decomp.wtf which version is current"}; nothing about you or your projects is sent).</span></label>
+    <label class="check"><input type="checkbox" id="checkUpdateSet" ${st.settings.check_updates ? "checked" : ""}><span><b>Look for updates</b> now and then (it only asks ${inst.channel === "branch" ? "GitHub for the branch's newest commit" : "GitHub which version is current"}; nothing about you or your projects is sent).</span></label>
     <label class="check"><input type="checkbox" id="autoUpdateSet" ${st.settings.auto_update ? "checked" : ""}><span><b>Install updates by itself</b> when no helper agent is working (it restarts in a few seconds; agents carry on).</span></label>
-    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/i12bp8/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
+    <div class="row"><a class="link small" href="https://decomp.wtf" target="_blank" rel="noopener">decomp.wtf</a><a class="link small" href="https://github.com/Nexhas28/decomp.wtf" target="_blank" rel="noopener">Source code</a></div>`;
   const showUpdate = (u) => {
     if (!$("upText") || !u) return;
     $("upText").textContent = u.error ? u.error : u.available ? `New: ${updateName(u)}` : u.disabled ? "Not looking for updates." : "Up to date.";

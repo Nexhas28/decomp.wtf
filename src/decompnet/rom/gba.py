@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 from .. import toolchains
-from ..limits import capped
 from . import gba_candidates
 from .n64 import RomError
 
@@ -54,7 +53,7 @@ def _luvdis(rom: Path, workdir: Path, cfg_in: Path | None, *, guess: bool = True
     if not guess:
         args.append("--no-guess")
     try:
-        res = subprocess.run(capped(args), capture_output=True, text=True, timeout=3600, encoding="utf-8", errors="replace")
+        res = subprocess.run(args, capture_output=True, text=True, timeout=3600, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         raise RomError("luvdis (the GBA disassembler) took more than an hour on this ROM and was stopped. Please "
                        "report it with the log: the game's size and title help") from None

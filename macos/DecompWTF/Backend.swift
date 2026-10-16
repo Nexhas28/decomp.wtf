@@ -72,6 +72,11 @@ final class Backend: ObservableObject {
     }
 
     var checkout: URL? {
+        // DECOMP_CHECKOUT: run another checkout for this launch only (testing a branch), leaving the saved one alone.
+        if let custom = ProcessInfo.processInfo.environment["DECOMP_CHECKOUT"], !custom.isEmpty {
+            let url = URL(fileURLWithPath: (custom as NSString).expandingTildeInPath)
+            if Self.isCheckout(url) { return url }
+        }
         if let saved = UserDefaults.standard.string(forKey: Self.checkoutKey) {
             let url = URL(fileURLWithPath: saved)
             if Self.isCheckout(url) { return url }

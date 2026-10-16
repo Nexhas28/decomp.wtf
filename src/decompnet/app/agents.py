@@ -6,8 +6,8 @@ and exits; the runner starts a fresh one until the user stops it or nothing is l
 an API key (DeepSeek, OpenRouter, a local Ollama, any OpenAI-compatible endpoint) run in a small built-in
 tool loop instead. Everything the agents print is parsed into a readable live feed.
 
-The prompt goes in on stdin, never on the command line: no length limit (Windows caps a command line at 32,767
-characters, and the prompt with its guides and the user's instructions can be long) and nothing in it is parsed.
+The prompt goes in on stdin, never on the command line: no length limit (the prompt with its guides and the user's
+instructions can be long) and nothing in it is parsed.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,9 +29,6 @@ from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
 
-WIN = sys.platform == "win32"
-
-
 class Fatal(RuntimeError):
     """A helper can't work until the user changes something (shown as the helper's error, not retried)."""
 
@@ -43,27 +39,25 @@ class Kind:
     name: str
     command: str  # executable, "" for the built-in agent
     vendor: str
-    install: dict[str, str]  # os -> command
+    install: str  # shell command that installs it
     signin: str
     docs: str
 
 
 KINDS = {
     "claude": Kind("claude", "Claude Code", "claude", "Anthropic",
-                   {"unix": "curl -fsSL https://claude.ai/install.sh | bash",
-                    "windows": "irm https://claude.ai/install.ps1 | iex"},
+                   "curl -fsSL https://claude.ai/install.sh | bash",
                    "Open a terminal, run `claude` and sign in with /login.", "https://docs.claude.com/en/docs/claude-code"),
     "codex": Kind("codex", "Codex CLI", "codex", "OpenAI",
-                  {"unix": "npm install -g @openai/codex", "windows": "npm install -g @openai/codex"},
+                  "npm install -g @openai/codex",
                   "Run `codex login` once in a terminal.", "https://github.com/openai/codex"),
     "antigravity": Kind("antigravity", "Antigravity CLI", "agy", "Google",
-                        {"unix": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-                         "windows": "irm https://antigravity.google/cli/install.ps1 | iex"},
+                        "curl -fsSL https://antigravity.google/cli/install.sh | bash",
                         "Open a terminal and run `agy` once to sign in.", "https://antigravity.google/docs/cli"),
     "opencode": Kind("opencode", "opencode", "opencode", "any provider (DeepSeek, Qwen, Kimi, ...)",
-                     {"unix": "curl -fsSL https://opencode.ai/install | bash", "windows": "npm install -g opencode-ai"},
+                     "curl -fsSL https://opencode.ai/install | bash",
                      "Run `opencode auth login` once to add a provider (DeepSeek, OpenRouter, ...).", "https://opencode.ai"),
-    "api": Kind("api", "API key", "", "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API", {}, "",
+    "api": Kind("api", "API key", "", "DeepSeek, OpenRouter, Ollama, any OpenAI-compatible API", "", "",
                 "https://api-docs.deepseek.com"),
 }
 
@@ -229,7 +223,7 @@ def models(kind: str, path: str | None) -> list[dict]:
     if cached and time.time() - cached[0] < 600:
         return cached[1]
     try:
-        res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        res = subprocess.run([path, "models"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                              stdin=subprocess.DEVNULL, timeout=30)
         lines = [line.strip() for line in res.stdout.splitlines()]
     except (OSError, subprocess.TimeoutExpired):
@@ -244,83 +238,23 @@ def models(kind: str, path: str | None) -> list[dict]:
     return out
 
 
-def search_path() -> str | None:
-    """Where to look for agents and npm (None: this process's PATH). On Windows also the PATH set for the user right
-    now, read from the registry: an agent or Node.js installed while the app runs is found without restarting it."""
-    if not WIN:
-        return None
-    import winreg
-
-    dirs = os.environ.get("PATH", "").split(os.pathsep)
-    for root, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
-                      (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
-        try:
-            with winreg.OpenKey(root, key) as k:
-                dirs += [os.path.expandvars(d) for d in str(winreg.QueryValueEx(k, "Path")[0]).split(";")]
-        except OSError:
-            pass
-    return os.pathsep.join(dict.fromkeys(d for d in dirs if d))
-
-
 def _which(cmd: str) -> str | None:
-    found = shutil.which(cmd, path=search_path())
+    found = shutil.which(cmd)
     if found:
         return found
     home = Path.home()
     dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
-    if WIN and os.environ.get("APPDATA"):
-        dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
-    if WIN and os.environ.get("LOCALAPPDATA"):
-        dirs.append(Path(os.environ["LOCALAPPDATA"]) / "agy" / "bin")  # where Antigravity's installer puts agy
-    # on Windows the file without an extension next to npm's foo.cmd is a shell script Windows can't run
-    names = (f"{cmd}.exe", f"{cmd}.cmd") if WIN else (cmd, f"{cmd}.cmd", f"{cmd}.exe")
     for d in dirs:
-        for name in names:
-            if (d / name).exists():
-                return str(d / name)
+        if (d / cmd).exists():
+            return str(d / cmd)
     return None
-
-
-# npm's Windows launcher (cmd-shim) ends with: "%_prog%" [node options] "%dp0%\node_modules\...\cli.js" %*
-_NPM_SHIM = re.compile(r'"%_prog%"\s+(?P<opts>[^"\r\n]*?)\s*"%~?dp0%?\\(?P<script>[^"\r\n]+)"\s+%\*', re.I)
-
-
-def argv(cmd: list[str]) -> list[str]:
-    """The command to start, as Windows needs it. npm installs agents there as .cmd scripts, which run through cmd.exe:
-    it cuts an argument at its first line break (a prompt loses everything after its first line, and the flags after
-    it with it) and treats & | < > in it as commands. Start node with the agent's script instead, as the .cmd would."""
-    if not WIN or Path(cmd[0]).suffix.lower() not in (".cmd", ".bat"):
-        return cmd
-    shim = Path(cmd[0])
-    try:
-        m = _NPM_SHIM.search(shim.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        m = None
-    if not m:
-        return cmd
-    script = shim.parent / m["script"]
-    node = shim.parent / "node.exe"
-    node = str(node) if node.exists() else shutil.which("node", path=search_path())
-    if not node or not script.exists():
-        return cmd
-    return [node, *m["opts"].split(), str(script), *cmd[1:]]
-
-
-def signin(k: Kind) -> str:
-    """How to sign in to an agent, said for where decomp.wtf runs (WSL/Docker: in decomp.wtf's own terminal)."""
-    from .. import hostenv
-
-    if not k.signin or hostenv.runtime() == "native":
-        return k.signin
-    text = k.signin.removeprefix("Open a terminal, ").removeprefix("Open a terminal and ")
-    return f"{hostenv.terminal_hint()}, then: {text[0].lower()}{text[1:]}"
 
 
 def detect() -> list[dict]:
     out = []
     for k in KINDS.values():
-        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": signin(k), "docs": k.docs,
-               "install": k.install.get("windows" if WIN else "unix", "")}
+        row = {"id": k.id, "name": k.name, "vendor": k.vendor, "signin": k.signin, "docs": k.docs,
+               "install": k.install}
         if not k.command:
             row.update(installed=True, version=None, path=None)
         else:
@@ -328,7 +262,7 @@ def detect() -> list[dict]:
             cached = _versions.get(k.id)
             if path and (cached is None or time.time() - cached[0] > 300):
                 try:
-                    res = subprocess.run(argv([path, "--version"]), capture_output=True, text=True, encoding="utf-8",
+                    res = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8",
                                          errors="replace", timeout=15)
                     version = (res.stdout or res.stderr).strip().splitlines()[0][:60] if (res.stdout or res.stderr).strip() else None
                 except (OSError, subprocess.TimeoutExpired):
@@ -337,10 +271,8 @@ def detect() -> list[dict]:
             row.update(installed=path is not None, path=path, version=_versions.get(k.id, (0, None))[1] if path else None)
             if path:
                 row.update(models=models(k.id, path), default_model=_config_model(k.id))
-        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
+        if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm"):
             row["needs"] = "Node.js (https://nodejs.org) for npm"
-        elif k.id == "claude" and WIN and not shutil.which("git", path=search_path()):
-            row["needs"] = "Git for Windows (https://git-scm.com/downloads/win): Claude Code needs its Git Bash"
         out.append(row)
     return out
 
@@ -906,7 +838,7 @@ class Manager:
             if failures >= 3:
                 s.state = "error"
                 s.error = s.error or "the agent failed three times in a row"
-                s.push("error", f"stopping: {s.error}. {signin(KINDS[s.kind])}".strip())
+                s.push("error", f"stopping: {s.error}. {KINDS[s.kind].signin}".strip())
                 break
             s.state = "waiting"
             s.stop.wait(3 if ok else min(60, 5 * failures + max(0, 10 - (time.time() - t0))))
@@ -960,8 +892,6 @@ class Manager:
         if not exe:
             raise RuntimeError(f"{k.name} is not installed")
         env = dict(os.environ)
-        if WIN:
-            env["PATH"] = search_path()  # the agent finds node (and what it needs) even when installed after the app
         # An agent that only loads the MCP servers in the user's own settings (Antigravity CLI since 1.1.3 ignores a
         # workspace's .agents/mcp_config.json) reaches decomp.wtf through the `decomp mcp` the user connected it
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
@@ -1022,7 +952,7 @@ class Manager:
                 cmd += ["-m", model]
         else:
             raise RuntimeError(s.kind)
-        return argv(cmd), env, prompt
+        return cmd, env, prompt
 
     def _run_cli(self, s: Session, token: str, workdir: Path) -> bool:
         if s.kind == "antigravity" and s.runs == 1:
@@ -1033,10 +963,9 @@ class Manager:
                             "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
         cmd, env, prompt = self._command(s, token, workdir)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
         proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                creationflags=flags, start_new_session=not WIN)
+                                start_new_session=True)
         s.proc = proc
         errors: collections.deque = collections.deque(maxlen=20)
 
@@ -1081,7 +1010,7 @@ class Manager:
             s.throttled = True
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
             s.signed_out = True
-            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {signin(KINDS[s.kind])}"
+            s.error = f"{KINDS[s.kind].name} isn't signed in on this computer. {KINDS[s.kind].signin}"
             s.push("error", s.error)
             return False
         if code != 0 and not s.stop.is_set():
@@ -1287,14 +1216,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    try:
-        if WIN:
-            # the agent with everything it started (node starts opencode.exe, ...): terminate() would only end the
-            # first process and leave the rest working, and spending, in the background
-            res = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
-            if res.returncode != 0 and proc.poll() is None:
-                proc.terminate()
-        else:
-            os.killpg(proc.pid, 15)
-    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+    try:  # the agent with everything it started: terminate() would leave the rest working, and spending
+        os.killpg(proc.pid, 15)
+    except (OSError, ProcessLookupError):
         pass
