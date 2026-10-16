@@ -427,6 +427,7 @@ a.ghost, a.primary { text-decoration: none; }
 .session .last { font: 12px/1.45 var(--mono); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session .last .fn { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; overflow-wrap: anywhere; }
 .session.ext .tag { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--muted); }
+.session.ext .tag + .ghost { margin-left: 0; }
 .empty { padding: 18px 16px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
 .dot.on { background: var(--match); box-shadow: 0 0 0 3px color-mix(in srgb, var(--match) 25%, transparent); animation: breathe 2.2s ease-in-out infinite; }

@@ -28,7 +28,7 @@ from .. import compiler_profiles as profiles
 from .. import linkblock, retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
 from ..network import (RELEASE_COOLDOWN, RESEARCH_PREFIX, SKIP_MAX, STRATEGIES, STRATEGY_INSNS_CAP, STRATEGY_WHERE, Agent,
-                       Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
+                       DISCONNECTED, Network, NetworkError, _adjacent, _fragment_like, _hash_token, config_from, research_note_text)
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -2249,6 +2249,39 @@ class RomNetwork(Network):
             for fid, (aid, _) in list(self._research_held.items()):
                 if aid == agent_id:
                     del self._research_held[fid]
+
+    def disconnect_agent(self, name: str) -> list[str]:
+        """The user cut off an outside agent (one connected over MCP, or a helper the app no longer runs): what it
+        claimed goes back to the others, and its token stops working with a message that says why (see
+        Network.authenticate). Returns the functions it gave back."""
+        row = self.store.one("SELECT id, name, owner, trusted, origin, token_hash FROM agents WHERE name=?", name)
+        if row is None:
+            raise NetworkError(f"no agent named {name!r}")
+        if row["origin"] not in ("chat", "local") or name in ("you", "function-nuke", "autopilot"):
+            raise NetworkError(f"{name} isn't an agent connected to this computer")
+        agent = Agent(row["id"], row["name"], row["owner"], bool(row["trusted"]))
+        freed = []
+        for c in self.store.all("SELECT f.name, p.slug FROM claims c JOIN functions f ON f.id=c.function_id "
+                                "JOIN projects p ON p.id=f.project_id WHERE c.agent_id=?", agent.id):
+            try:
+                if self.fork_slug(c["slug"]) or self._link(c["slug"]) is not None:
+                    self.release(agent, c["name"], "", c["slug"])  # the room's host (or the fork) is told too
+                else:  # not the function's fault: no abandon counted against it
+                    with self.store.tx() as db:
+                        fn = self._function(c["name"], c["slug"])
+                        db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
+                        self._event(db, fn["project_id"], agent.id, "release", fn["name"])
+                freed.append(c["name"])
+            except NetworkError as e:
+                logging.getLogger("decomp.wtf").info("disconnecting %s: releasing %s: %s", name, c["name"], e)
+        with self.store.tx() as db:
+            db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))  # anything the loop couldn't give back
+            if not row["token_hash"].startswith(DISCONNECTED):
+                db.execute("UPDATE agents SET token_hash=? WHERE id=?", (DISCONNECTED + row["token_hash"], agent.id))
+        self.release_research(agent.id)
+        self.role.pop(agent.id, None)
+        self.fixer_ids.discard(agent.id)
+        return freed
 
     def next_to_research(self, agent: Agent, slug: str, count: int = 1) -> str:
         if self.role.get(agent.id) != "researcher":
