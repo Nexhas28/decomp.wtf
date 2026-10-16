@@ -573,6 +573,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         except ValueError:
             since = {}
         out["sessions"] = [s for s in manager.snapshot(since) if s["slug"] == slug]
+        for s in out["sessions"]:
+            s.update(net.session_counts(slug, s["agent"], s["started_at"]))
         return out
 
     def p_compiler(slug, request, data):
