@@ -204,8 +204,8 @@ class Permuter:
         app runs: agents make new ones)."""
         if (st := self.jobs.get(slug)) is not None and st.state == "running":
             return st
-        if slug in self.net.links:  # a room member: the host's copy permutes, and its matches come back here
-            return None
+        # A room member's copy permutes only what its own agents hand over (see round): the host's copy does the
+        # project-wide scan, and a member's match is sent to the host to confirm, like any of its agents' matches.
         st = self.jobs[slug] = State()
         threading.Thread(target=self._loop, args=(slug, st), daemon=True, name=f"permuter-{slug}").start()
         return st
@@ -309,9 +309,31 @@ class Permuter:
         """What this round permutes: queued hand-offs first (oldest first), then the permuter's own scan of the
         project's near misses, without repeats."""
         todo = self.queued(proj)
+        if self.member(proj["slug"]):
+            return todo  # a room member leaves the scan of the whole project to the host's copy
         seen = {fn["id"] for fn in todo}
         todo += [fn for fn in self.candidates(proj) if fn["id"] not in seen]
         return todo
+
+    def member(self, slug: str) -> bool:
+        """Whether this copy joined the project from a friend's room (the host's copy is the authority)."""
+        return slug in (getattr(self.net, "links", None) or {})
+
+    def _share(self, agent, proj, fn, source: str, score: int, matched: bool) -> None:
+        """A room member's result goes to the host like an agent's does: a match for the host to confirm on its
+        copy (the host records it; it comes back through the room), a better attempt as a hint."""
+        link = (getattr(self.net, "links", None) or {}).get(proj["slug"])
+        if link is None:
+            return
+        try:
+            if matched:
+                verdict = link.attempt(agent, fn["name"], source)
+                if not verdict.get("matched"):
+                    log.info("permuter: the room's host did not confirm %s (score %s)", fn["name"], verdict.get("score"))
+            elif (report := getattr(self.net, "_report", None)) is not None:
+                report(link, agent, fn["name"], source, score)
+        except Exception as e:  # sharing is best-effort: the local record stands either way
+            log.info("permuter: sharing %s with the room failed: %s", fn["name"], e)
 
     def _wait(self, st: State, seconds: float) -> None:
         """Idle until something changes: a stop, a hand-off, or the time."""
@@ -435,6 +457,8 @@ class Permuter:
                     stats.refused = refused
                     return EvalOutcome(score=None, kind="evaluate_failure")
                 stats.improved = True
+                if self.member(proj["slug"]):
+                    self._share(agent, proj, fn, source, score, comp.bytes_match)
             return EvalOutcome(score=score, bytes_match=comp.bytes_match, counts=dict(comp.counts),
                                object_digest=comp.candidate.normalised_fingerprint, kind="scored")
         return evaluate

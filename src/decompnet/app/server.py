@@ -133,6 +133,13 @@ class Settings:
         if not isinstance(self.data.get("endpoints"), list):  # one saved "api" before 0.10.1: the first endpoint
             old = self.data.get("api") if isinstance(self.data.get("api"), dict) else {}
             self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
+        if not self.data.get("tiered_default"):
+            # Once: a Claude Code launcher saved before Tiered existed moves to it (Haiku, Sonnet or Opus picked
+            # per function). Picking a fixed model again afterwards is kept, as before.
+            launcher = self.data.get("launcher")
+            if isinstance(launcher, dict) and launcher.get("kind") == "claude":
+                launcher["model"] = "tiered"
+            self.data["tiered_default"] = True
 
     def save(self) -> None:
         """Written whole, then swapped in: a crash mid-write never leaves half a file (it holds API keys: 0600)."""

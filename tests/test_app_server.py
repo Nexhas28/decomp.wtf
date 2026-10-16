@@ -431,3 +431,17 @@ def test_fit_keeps_the_task_and_the_latest_exchange():
     assert msgs[0]["content"] == "rules " * 100 and msgs[1]["content"] == "task " * 100
     assert msgs[-1]["content"] == "assembly 5 " * 400  # the latest result, whole
     assert "trimmed" in msgs[3]["content"]
+
+
+def test_a_saved_claude_code_launcher_moves_to_tiered_once(tmp_path):
+    from decompnet.app.server import Settings
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"launcher": {"kind": "claude", "model": "opus", "count": 1}}))
+    s = Settings(p)
+    assert s.data["launcher"]["model"] == "tiered" and s.data["tiered_default"] is True
+    s.data["launcher"]["model"] = "opus"  # picked again on purpose afterwards: kept
+    s.save()
+    assert Settings(p).data["launcher"]["model"] == "opus"
+    other = tmp_path / "other.json"
+    other.write_text(json.dumps({"launcher": {"kind": "opencode", "model": "big-pickle", "count": 2}}))
+    assert Settings(other).data["launcher"]["model"] == "big-pickle"  # only Claude Code launchers move

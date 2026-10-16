@@ -711,6 +711,27 @@ def compiler_guide(ov: dict) -> str:
         "ido" if ov["compiler"]["toolchain"].startswith("ido") else "gcc-kmc")
 
 
+SKILLS_DIR = Path(__file__).resolve().parents[3] / "plugins" / "decomp-wtf" / "skills"
+
+
+def skill_text(*names: str) -> str:
+    """The bodies of the plugin's skills (plugins/decomp-wtf/skills/<name>/SKILL.md, without their front matter),
+    for a helper's prompt: in-app helpers never load plugins, so what the person's own Claude Code reads as a skill
+    is given to them here. Missing skills (an installed `decomp` without the checkout) are left out quietly."""
+    parts = []
+    for name in names:
+        try:
+            text = (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if text.startswith("---"):
+            head, sep, body = text[3:].partition("\n---")
+            text = body if sep else text
+        if (body := text.strip()):
+            parts.append(body)
+    return "\n\n".join(parts)
+
+
 def run_log(task_class: str, model: str) -> str:
     """The per-run routing log line: what task class ran with what model, under which prompt
     policy (P11.5: log model/version and prompt-policy version per run)."""
@@ -1228,6 +1249,10 @@ class Manager:
             topics = ["workflow", compiler_guide(ov)]
         text += "\nKnow-how you'd otherwise read with guide() (more topics: guide()):\n\n" + "\n\n".join(
             tools._guide(t) for t in topics)
+        # The plugin's skills are written for the Claude Code a person talks to; in-app helpers never load plugins,
+        # so the two that decide how a compile result is read and when to let go come along in the prompt.
+        if (skills := skill_text("read-diff", "match-loop")):
+            text += "\n" + skills
         if (learned := self.net.learnings(s.slug)):
             text += ("\nWhat agents learned on this project so far (compiler quirks, conventions; add yours with "
                      f"add_note and no function):\n{learned}\n")
