@@ -230,6 +230,7 @@ def rescan_gba(net, slug: str, *, apply: bool = False, revision: str | None = No
             with net.twins._lock:
                 net.twins._prints.pop(pid, None)
             net._rescan_previews.pop(slug, None)
+            net._set_aside_checked.discard(pid)  # the new functions' BIOS calls: set aside on the next look
         report["applied"] = True
         log(f"rescan applied: {report['counts']}; history archive {report['archive_id']}")
         return report

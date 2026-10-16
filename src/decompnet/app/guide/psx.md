@@ -19,8 +19,8 @@ Libraries: PSY-Q's libgte, libgpu, libgs, libspu, libcd, libetc, libapi and libc
 as library objects, not decompiled; their names and prototypes are in the project's headers.
 
 BIOS calls: the three-instruction stubs `li $t2, 0xA0/0xB0/0xC0; jr $t2; li $t1, n` (and `syscall` stubs
-like EnterCriticalSection) are set aside as BIOS code, so you won't be handed one. Call them from C by name
-(`printf`, `malloc`, `OpenEvent`...) like any other function.
+like EnterCriticalSection) are set aside as BIOS code, so you won't be handed one. Call one from C by the
+name the assembly uses (`func_8004AB9C(...)`), like any other function; its page says which BIOS call it is.
 
 GTE (the geometry coprocessor): `mtc2`/`mfc2`/`ctc2`/`cfc2`, `lwc2`/`swc2` and commands like
 `RTPS`/`NCLIP` come from PSY-Q's GTE macros (`gte_ldv0`, `gte_rtps`...). Use the project's macros;
