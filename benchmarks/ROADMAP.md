@@ -114,14 +114,29 @@ GUI sidebar              → GBC 0.01%
 On the real cartridge 4/4 `ret`-only functions matched through the app's own `compile_and_diff`. The
 whole path is covered by `tests/test_gb_toolchain.py` (import → claim → diff → MATCH → status matched).
 
+### Bank-aware addressing and the mgbdis split (done)
+
+1. **Bank model.** The ROM's own `call`/`jp` instructions hold CPU-visible addresses: bank 0 is wired to
+   0x0000-0x3FFF, every other bank appears in the 0x4000-0x7FFF MBC window. Functions now carry a bank,
+   `vram` is the CPU address, `rom_offset` the flat file offset, names are `func_<bank>_<cpu>`, and the
+   importer stores one segment per 16 KiB bank with the bank as the unit. Verified: `func_002_46c3`
+   (flat 0x086c3) calling `func_002_482f` emits the CPU address 0x482f where the flat model emitted 0x882f.
+2. **mgbdis split.** [mgbdis](https://github.com/mattcurrie/mgbdis) v3.0 (pinned source archive) plus
+   [rgbds](https://github.com/gbdev/rgbds) v1.0.4 (pinned release; both registered as tools) replace the
+   call-graph extents. mgbdis disassembles with code/data separation and its output, assembled and linked
+   by rgbds, **rebuilds the ROM byte for byte** — the check that the split is faithful. On the cartridge:
+   64 banks, 29,874 labels, **1,639 functions in 2.7 s, reassembly byte-identical**. Boundaries are the
+   labels a `call` reaches (`Call_`/`Func_`/`RST_` plus interrupt vectors); mgbdis's ~28k internal branch
+   labels (`jr_`, `Jump_`) are not entries — treating them as such cut a 16-byte function into one-byte
+   pieces. `gb.split` uses mgbdis when available and falls back to the built-in sweep.
+
 ### Next (enhancements, not blockers)
 
-1. **Bank-aware model**: candidates must link against the MBC bank window (0x4000-0x7FFF) rather than
-   flat offsets, and bank-register writes are relocations.
-3. **Split quality**: [mgbdis v3.0](https://github.com/mattcurrie/mgbdis) (RGBDS-compatible output +
-   symbol files) does proper code/data separation; use it in place of the current call-graph extents.
-4. **Optional**: [binutils-sm83](https://github.com/msinger/binutils-sm83) is a real SM83 binutils port
-   (no prebuilt releases — a source build), which would let the Game Boy lane produce ELF objects and
-   reuse the standard path end to end; [rgbds](https://github.com/gbdev/rgbds) 1.0.4 is installed for
-   the matching-assembly side; pret/pokered and pret/pokecrystal are the reference for symbol naming.
-5. **Draft generation**: m2c is MIPS-only, so Game Boy needs its own SM83→C draft or none.
+1. **Bank-register writes as relocations**: cross-bank calls go through the MBC bank register, which the
+   flat view cannot validate, so those edges are invisible to the call graph.
+2. **Jump-reached code**: a function reached only by `jp` (a tail call) has no `Call_` label and is not an
+   entry in the split; the built-in sweep could complement mgbdis for those.
+3. **Optional**: [binutils-sm83](https://github.com/msinger/binutils-sm83) is a real SM83 binutils port
+   (no prebuilt releases — a source build), which would let the lane produce ELF objects and reuse the
+   standard path end to end; pret/pokered and pret/pokecrystal are the reference for symbol naming.
+4. **Draft generation**: m2c is MIPS-only, so Game Boy needs its own SM83→C draft or none.
