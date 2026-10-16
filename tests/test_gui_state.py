@@ -166,3 +166,20 @@ def test_status_json_carries_the_truthful_scope_fields(tmp_path):
     assert project["stalls"] == {"exhausted": 1}
     # the honest fields survive JSON, which is what the GUI actually receives
     assert json.loads(json.dumps(project["verification"]))["receipts"] == 1
+
+
+def test_drawer_panes_never_collapse_to_zero_height():
+    """Regression: the drawer body is a definite-height grid whose auto rows can collapse to 0px when a
+    pane's automatic minimum is 0. The code pane then painted 580px of overflow while xref/notes were
+    laid out on top of it, covering the Compile and compare button (measured live: rows 117/39/0/46/995,
+    code pane height 0 while its children were 580 tall). The panes must keep max-content height."""
+    css = (Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static" / "app.css").read_text(encoding="utf-8")
+    assert ".code-cols {" in css
+    code_cols = css.split(".code-cols {", 1)[1].split("}", 1)[0]
+    assert "min-height: max-content" in code_cols, "the code pane must not collapse to 0 height"
+    assert "min-height: 0" not in code_cols
+    assert "#fnDiffView { min-height: max-content; }" in css, "the diff pane needs the same guard"
+    # the panes' height alone is not enough: the auto ROW must not shrink either, or the item grows
+    # while its row stays 0px and the next rows land on top of it anyway (measured live).
+    body = css.split(".drawer-body {", 1)[1].split("}", 1)[0]
+    assert "grid-auto-rows: max-content" in body, "drawer rows must size to their content"
