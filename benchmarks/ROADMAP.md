@@ -95,13 +95,28 @@ Tests: `tests/test_gb.py` — 85 passing, including an end-to-end import test.
 symbol injection was verified by a candidate whose `call` carried the ROM's real address `0x4006`
 (`c3 06 40` — SDCC chose a tail call; the address is exact). Tests: `tests/test_gb_toolchain.py` (8).
 
-### Next (to make it agent-facing)
+### Live (finished, Wave 4)
 
-1. **Thread the function name + symbol table into `compile_source` for SM83** so the app's `diff` and
-   judge use the lane directly (today `gb_build` is a library/CLI: `python -m decompnet.rom.gb_build
-   --src f.c --name f --symbols syms.json`). Then flip GB/GBC imports from `asm` to `open` and agents
-   can claim and match Game Boy functions.
-2. **Bank-aware model**: candidates must link against the MBC bank window (0x4000-0x7FFF) rather than
+The lane is wired into the app and running in production: importing a Game Boy ROM creates a project
+whose functions are claimable, `claim` gives an `arch sm83` brief, `diff` compiles the candidate through
+SDCC/GBDK-2020 with the project's symbol table injected, `_evaluate` compares the bytes, and a match is
+accepted and credited like any other platform. Verified live on the running server:
+
+```
+import_game("…Link's Awakening DX….gbc", own_copy=true)
+  → Imported as zelda · compiler: GBDK-2020 (SDCC for the Game Boy) --opt-code-speed
+claim func_000b58        → CLAIMED: zelda/func_000b58 … arch sm83
+diff  func_000b58        → ✅ MATCH! byte-identical to the target (1 instructions). Credited.
+progress                 → zelda: ZELDA (Game Boy Color, from scratch) 2/3108 functions
+GUI sidebar              → GBC 0.01%
+```
+
+On the real cartridge 4/4 `ret`-only functions matched through the app's own `compile_and_diff`. The
+whole path is covered by `tests/test_gb_toolchain.py` (import → claim → diff → MATCH → status matched).
+
+### Next (enhancements, not blockers)
+
+1. **Bank-aware model**: candidates must link against the MBC bank window (0x4000-0x7FFF) rather than
    flat offsets, and bank-register writes are relocations.
 3. **Split quality**: [mgbdis v3.0](https://github.com/mattcurrie/mgbdis) (RGBDS-compatible output +
    symbol files) does proper code/data separation; use it in place of the current call-graph extents.
