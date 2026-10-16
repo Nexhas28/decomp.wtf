@@ -2548,6 +2548,18 @@ class RomNetwork(Network):
                                   "WHERE f.project_id=? AND t.created_at > ?", pid, now - 3600)["n"]
         return {"agents": board[:24], "matches_per_hour": per_hour, "compiles_last_hour": compiles}
 
+    def session_counts(self, slug: str, agent: str, since: float) -> dict:
+        """What one agent session did on this project since it started. Session names (claude-1, ...) come back
+        after a restart, so the agent's all-time totals would count earlier sessions' work as this one's."""
+        pid = self._project(slug)["id"]
+        compiles = self.store.one(
+            "SELECT COUNT(*) AS n FROM attempts t JOIN functions f ON f.id=t.function_id JOIN agents a ON a.id=t.agent_id "
+            "WHERE f.project_id=? AND a.name=? AND t.created_at >= ?", pid, agent, since)["n"]
+        matched = self.store.one(
+            "SELECT COUNT(*) AS n FROM functions f JOIN agents a ON a.id=f.matched_agent_id "
+            "WHERE f.project_id=? AND a.name=? AND f.status='matched' AND f.matched_at >= ?", pid, agent, since)["n"]
+        return {"compiles": compiles, "matched": matched}
+
     def live(self, slug: str, since_event: int = 0, since_attempt: int = 0) -> dict:
         proj = self._project(slug)
         with self.store.tx() as db:

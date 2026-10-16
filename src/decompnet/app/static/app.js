@@ -1725,7 +1725,7 @@ function renderSessions(sessions) {
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
     const live = ["starting", "working", "waiting"].includes(s.state);
-    const b = board.get(s.agent);
+    const b = s.compiles != null ? s : board.get(s.agent);  // this session's own work (names are reused)
     const facts = [s.model ? esc(s.model) : "default model", s.only_starred ? "only ★" : "", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
     return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>
