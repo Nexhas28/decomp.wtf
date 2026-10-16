@@ -143,6 +143,8 @@ _TWINS = ("(f.boost > 0 AND f.n_insns <= 400 AND f.abandons < 2) DESC, "
 _UNBLOCKED = """AND (f.meta IS NULL OR f.meta NOT LIKE '%"link_blocked": true%')"""
 QUICK_INSNS = 48  # a "small" function: the size claim batches are made of (app.engine.BATCH_INSNS)
 # near-miss search has no business with giants (perf-test run 2); quick wins are small ones only
+# the most set-aside names a room member's claim carries (smallest first: the easy strategies reach those first)
+SKIP_MAX = 5000
 STRATEGY_INSNS_CAP = {"closest": 400, "quick": QUICK_INSNS}
 # strategies that leave functions out, not just order them: close = best attempt already 90%+ matched
 # (score <= 10% of n_insns * 100, the scale both ROM and fork scores use)
@@ -794,8 +796,10 @@ class Network:
         return self._brief(fn, agent, header="CLAIMED")
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None,
-                  strategy: str = "easiest"):
-        """Claim (or renew) a function and return its row, or None when nothing is left.
+                  strategy: str = "easiest", skip: list[str] | tuple = ()):
+        """Claim (or renew) a function and return its row, or None when nothing is left. `skip`: names a strategy
+        claim leaves out (a room member's copy set them aside as BIOS calls or assembly), unless a person gave
+        them back to agents here.
 
         A-02 invariant: this is the hottest path in the coordinator and it NEVER consults the analysis
         broker — ordering is plain SQL over functions/search_budgets/events, and 'closest' results
@@ -810,6 +814,8 @@ class Network:
         # The permuter's functions (queued hand-offs, or being permuted now) are not handed to agents by strategy
         # while a permuter is running: finishing them is its job. By name they can still be taken.
         permuted = sorted(self._permuter_held(proj)) if proj is not None and function is None else []
+        if skip and proj is not None and function is None:
+            permuted += self._skippable(proj, skip)
         skip_sql = f"AND f.id NOT IN ({','.join('?' * len(permuted))}) " if permuted else ""
         if strategy == "priority" and proj is not None and function is None:
             # The bounded window is admitted by a cheap proxy of the policy (twins, closeness, little effort
@@ -836,6 +842,9 @@ class Network:
             self._expire_claims(db)
             held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
                               (agent.id,)).fetchone()
+            if held is not None and held["status"] == "asm":  # set aside since it was claimed: let it go
+                db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (held["id"], agent.id))
+                held = None
             if held is not None:
                 if function and held["id"] != self._function(function, proj["slug"] if proj else None)["id"]:
                     raise NetworkError(f"you already hold {held['name']}; match it or release_function it first")
@@ -865,7 +874,8 @@ class Network:
             else:
                 if strategy == "priority":  # P11.2: ranked before the transaction (scoring reads the store)
                     claimed = {r[0] for r in db.execute("SELECT function_id FROM claims").fetchall()}
-                    fn = next((r for r in ranked if r["id"] not in claimed), None)
+                    fn = next((r for r in ranked if r["id"] not in claimed and db.execute(  # (still open: not set aside since)
+                        "SELECT 1 FROM functions WHERE id=? AND status='open'", (r["id"],)).fetchone()), None)
                     if fn is None:
                         return None
                 else:
@@ -884,6 +894,20 @@ class Network:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
         return fn
+
+    def _skippable(self, proj, names) -> list[int]:
+        """The ids of `names` (open here) that a strategy claim leaves out: all but those a person gave back to agents."""
+        rows = self.store.all("SELECT id, meta FROM functions WHERE project_id=? AND status='open' "
+                              "AND name IN (SELECT value FROM json_each(?))", proj["id"], json.dumps(list(names)[:SKIP_MAX]))
+        out = []
+        for r in rows:
+            try:
+                given = bool(json.loads(r["meta"] or "{}").get("for_agents"))
+            except ValueError:
+                given = False
+            if not given:
+                out.append(r["id"])
+        return out
 
     def strategy_left(self, project: str, strategy: str, agent_id: int = 0) -> int:
         """How many open functions a strategy could still hand out to this agent (none another agent holds): 0

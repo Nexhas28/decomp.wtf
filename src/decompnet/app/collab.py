@@ -33,7 +33,7 @@ from starlette.routing import Route
 
 from .. import compiler_profiles as profiles
 from .. import toolchains
-from ..network import Agent, NetworkError, _hash_token
+from ..network import SKIP_MAX, Agent, NetworkError, _hash_token
 from ..rom.symbols import AUTO_NAME
 from . import forkroom
 
@@ -370,8 +370,13 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
-        return {"function": fn["name"] if fn else None, "vram": fn["vram"] if fn else None}
+        if not room.fork:  # this copy's own BIOS and assembly detectors, even if its overview was never opened
+            net._set_aside_once(net.project_row(room.slug))
+        # what the member's copy set aside: strategy claims leave it out, unless a person gave it back here
+        skip = [str(s) for s in d.get("skip") or [] if isinstance(s, str)][:SKIP_MAX] if isinstance(d.get("skip"), list) else []
+        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"), skip=skip)
+        given = bool(fn and fn["meta"] and json.loads(fn["meta"]).get("for_agents"))
+        return {"function": fn["name"] if fn else None, "vram": fn["vram"] if fn else None, "for_agents": given}
 
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
@@ -573,8 +578,16 @@ class Link:
 
     # -- actions, called by RomNetwork for a linked project
 
-    def claim(self, agent: Agent, function: str | None, strategy: str) -> str | None:
-        return self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy})["function"]
+    def claim(self, agent: Agent, function: str | None, strategy: str, skip: list[str] | tuple = ()) -> str | None:
+        """`skip`: what this copy set aside (an older host ignores it). A function the host's person gave back to
+        agents by hand comes with for_agents: this copy follows, so it can take it."""
+        data = {"agent": agent.name, "function": function, "strategy": strategy}
+        if skip:
+            data["skip"] = list(skip)
+        out = self._req("POST", "/collab/claim", data)
+        if out.get("function") and out.get("for_agents"):
+            self.net.follow_give_back(self.slug, out["function"])
+        return out["function"]
 
     def attempt(self, agent: Agent, function: str, source: str) -> dict:
         return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source})

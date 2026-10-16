@@ -504,7 +504,7 @@ def claims(pair, monkeypatch):
                    (json.dumps({"bios": "B0:0C stub"}),))
     offers, calls = [], []
 
-    def claim(agent, function, strategy):
+    def claim(agent, function, strategy, skip=()):
         answer = offers.pop(0)
         if isinstance(answer, Exception):
             raise answer
