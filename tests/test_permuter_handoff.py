@@ -200,3 +200,34 @@ def test_permuter_runs_on_about_a_quarter_of_the_cores():
 def net_workers() -> int:
     from decompnet.app.permute import Permuter
     return Permuter.workers()
+
+
+def test_a_room_member_permutes_only_its_own_hand_offs_and_shares_them(net, monkeypatch):
+    """A copy that joined the project from a friend's room still finishes what its own agents hand over; the
+    project-wide scan stays the host's, and results go to the host like an agent's: a match to confirm, a better
+    attempt as a hint."""
+    from decompnet.app import permute
+
+    calls = []
+    alice = agent(net, "alice")
+    with net.store.tx() as db:  # a near miss the host's scan would pick: not this copy's business
+        db.execute("UPDATE functions SET best_score=1, best_source='int func_002(void) { return 2; }' WHERE id=2")
+    net.claim(alice, "fixture", "func_001")
+    attempt(net, alice, "func_001", NEAR_SOURCE)
+    net.release(alice, "func_001", "", "fixture")
+    proj = net.project_row("fixture")
+    # from here the copy is a room member (a claim or compile would go through the room's host)
+    net.links["fixture"] = SimpleNamespace(
+        attempt=lambda agent, name, source: calls.append(("match", name, source)) or {"matched": True})
+    monkeypatch.setattr(net, "_report", lambda link, agent, name, source, score: calls.append(("best", name, score)))
+    assert net.permuter.member("fixture")
+    assert [f["name"] for f in net.permuter.round(proj)] == ["func_001"]
+    monkeypatch.setattr(permute.threading, "Thread", lambda *a, **kw: SimpleNamespace(start=lambda: None))
+    assert isinstance(type(net.permuter).start(net.permuter, "fixture"), State)  # no longer refused for a member
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    net.permuter._share(alice, proj, fn, "int func_001(void) { return 1; }", 0, True)
+    net.permuter._share(alice, proj, fn, NEAR_SOURCE, 12, False)
+    assert calls == [("match", "func_001", "int func_001(void) { return 1; }"), ("best", "func_001", 12)]
+    del net.links["fixture"]
+    assert not net.permuter.member("fixture")
+    assert [f["name"] for f in net.permuter.round(proj)] == ["func_001", "func_002"]  # the host's copy scans

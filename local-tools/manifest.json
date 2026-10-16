@@ -64,7 +64,7 @@
       "entry": "bin/binwalk",
       "test": "test.sh",
       "status": "pass",
-      "notes": "Installed with cargo install --locked binwalk@3.1.0 (crates.io crate; its Cargo.toml repository field is https://github.com/ReFirmLabs/binwalk). Binary is a Mach-O arm64 executable. test.sh builds a hand-made blob with gzip at 0x400, xz at 0x800 and a standalone zlib file, runs binwalk -e, and checks the signatures and extracted payloads. Passed on 2026-10-16. sha256 is null because the crate archive was not hashed; the git tag was not checked against the repo.",
+      "notes": "Homebrew's Apple Silicon bottle (formula binwalk 3.1.0); bin/binwalk links to /opt/homebrew/bin/binwalk. The earlier cargo build is kept aside in bin.local-build/. test.sh builds a hand-made blob with gzip at 0x400, xz at 0x800 and a standalone zlib file, runs binwalk -e, and checks the signatures and extracted payloads. Passed on 2026-10-16 with the Homebrew build.",
       "folder": "binwalk"
     },
     {
@@ -430,7 +430,7 @@
       "name": "mkpsxiso",
       "repo": "https://github.com/Lameguy64/mkpsxiso",
       "version": "v2.30",
-      "sha256": null,
+      "sha256": "a64d4d57d78ce57cd810a6a044602ce3cf1b552ca7c7e8675518f554206e0b49",
       "category": "disc-image",
       "platforms": [
         "psx"
@@ -439,7 +439,7 @@
       "entry": "bin/mkpsxiso",
       "test": "test.sh",
       "status": "pass",
-      "notes": "Contains mkpsxiso and dumpsxiso (both in bin/), built from tag v2.30 (commit 54fb1644ed8741223583e2dcda358b75a205e214) with CMake Release on macOS arm64. Source was cloned, not downloaded as an archive, so sha256 is null. test.sh builds a small BIN from an XML project, extracts it with dumpsxiso and compares files byte for byte: PASS.",
+      "notes": "Prebuilt binaries mkpsxiso and dumpsxiso from the upstream GitHub release v2.30 (asset mkpsxiso-2.30-Darwin.zip, a universal x86_64+arm64 build; sha256 is of that zip). The earlier CMake build is kept aside in bin.local-build/. test.sh builds a small ISO from a tiny XML/file set with mkpsxiso and reads it back with dumpsxiso. Passed on 2026-10-16 with these binaries.",
       "folder": "mkpsxiso"
     },
     {
@@ -559,8 +559,8 @@
     {
       "name": "pigment64",
       "repo": "https://github.com/decompals/pigment64",
-      "version": "0.6.3 (commit 0fa6b5cf41bb8ec0cf6b82687076931a2e5552c5)",
-      "sha256": null,
+      "version": "0.6.3",
+      "sha256": "b848a38be03958f4eeff71fb81ebf17472d76a17f1089b9734242688acb42a5c",
       "category": "texture-converter",
       "platforms": [
         "n64"
@@ -569,7 +569,7 @@
       "entry": "bin/pigment64",
       "test": "test.sh",
       "status": "pass",
-      "notes": "Built with cargo build --release --locked from the 0.6.3 git tag (rustc 1.98.1, aarch64-apple-darwin) in a scratchpad build dir; bin/pigment64 is that build. Upstream MIT licence. test.sh makes a 4x2 RGBA PNG with pure Python, converts it to N64 RGBA16 and checks the exact bytes, converts back to PNG and to bin again (round trip), and checks an I8 output size. Folder also holds .crates.toml and .crates2.json from an earlier cargo install from crates.io 0.6.3; these are leftover cargo metadata and do not affect the binary.",
+      "notes": "Prebuilt Apple Silicon binary from the upstream GitHub release 0.6.3 (asset pigment64-aarch64-apple-darwin.tar.gz; sha256 is of that archive). Mach-O arm64; `pigment64 --version` reports 0.6.3. Upstream MIT licence. test.sh makes a 4x2 RGBA PNG with pure Python, converts it to N64 RGBA16 and checks the exact bytes, converts back to PNG and to bin again (round trip), and checks an I8 output size. Passed on 2026-10-16 with this binary.",
       "folder": "pigment64"
     },
     {
@@ -645,7 +645,7 @@
       "entry": "bin/radare2",
       "test": "test.sh",
       "status": "pass",
-      "notes": "radare2 6.2.4 built natively for darwin-arm64 into local-tools/radare2 (bin, lib, share, include). test.sh passed on 2026-10-16 (9 checks: rasm2 MIPS/Thumb/PPC/SM83 disassembly, rasm2 MIPS and ARM assembly, radare2 ESIL emulation, and aaa/pdf on a self-built Thumb object when arm-none-eabi-gcc is present). The archive was not kept, so sha256 is null. The release tag 6.2.4 was confirmed on GitHub with gh. Binaries reference lib/ by absolute path inside this project.",
+      "notes": "Homebrew's Apple Silicon bottle (formula radare2 6.2.4, /opt/homebrew/opt/radare2); bin/ holds links to its programs, so `brew upgrade radare2` updates it. The earlier local build is kept aside in bin.local-build/. test.sh passed on 2026-10-16 with the Homebrew build (9 checks: rasm2 MIPS/Thumb/PPC/SM83 disassembly, rasm2 MIPS and ARM assembly, radare2 ESIL emulation, and aaa/pdf on a self-built Thumb object when arm-none-eabi-gcc is present). sha256 is null: Homebrew checks its own bottle.",
       "folder": "radare2"
     },
     {
@@ -661,11 +661,11 @@
         "x86",
         "macos-arm64"
       ],
-      "runs_on": "rosetta",
+      "runs_on": "macos-arm64-native",
       "entry": "run",
       "test": "test.sh",
       "status": "pass",
-      "notes": "x86_64 build (commit 53e55b4b26e9b843787f0e06d867441e32b1604e, build date 2022-12-08) run under Rosetta via the run wrapper. test.sh passed on 2026-10-16 (exit 0, prints ok for mips, ppc and arm then PASS). Source archive not retained, so sha256 is null. Output is C-like first-pass code, not byte-exact.",
+      "notes": "Homebrew's Apple Silicon bottle (formula retdec 5.0, native arm64: no Rosetta any more). bin/retdec-decompiler links to /opt/homebrew/bin/retdec-decompiler and the run wrapper calls it directly. The earlier x86_64 build is kept aside in bin.local-build/. test.sh passed on 2026-10-16 (ok for mips, ppc and arm, then PASS). Upstream's last release is v5.0 (2022-12-08); the repo is still active. Output is C-like first-pass code, not byte-exact.",
       "folder": "retdec"
     },
     {
@@ -688,7 +688,7 @@
       "entry": "bin/rizin",
       "test": "test.sh",
       "status": "pass",
-      "notes": "Built locally for macOS arm64 (rizin 0.9.1). Source clone not kept; tag v0.9.1 is commit c3a90e9226d977f58f4e9c75f78fa6b07afe13c7 on GitHub, build commit not independently confirmed. test.sh passed (8 checks) on 2026-10-16. Depends on arm-none-eabi-gcc for one check (skipped if absent).",
+      "notes": "Built locally for macOS arm64 (rizin 0.9.1). Kept as the build rz-ghidra's plugins were compiled against: Homebrew's rizin 0.9.1 (same version, Apple Silicon bottle) is installed as well, but swapping to it means rebuilding rz-ghidra, whose plugins have absolute paths into this folder; do both together. Source clone not kept; tag v0.9.1 is commit c3a90e9226d977f58f4e9c75f78fa6b07afe13c7 on GitHub. test.sh passed (8 checks) on 2026-10-16. Depends on arm-none-eabi-gcc for one check (skipped if absent).",
       "folder": "rizin"
     },
     {
@@ -719,7 +719,7 @@
       "name": "slinky",
       "repo": "https://github.com/decompals/slinky",
       "version": "0.6.0",
-      "sha256": null,
+      "sha256": "4c2c0db5a9f185cfd02d4a0fb4865b506a5a76dda6f008677b5adaaef1c07fb9",
       "category": "linker-script-generator",
       "platforms": [
         "n64"
@@ -728,7 +728,7 @@
       "entry": "bin/slinky-cli",
       "test": "test.sh",
       "status": "pass",
-      "notes": "Built from source at tag 0.6.0 (commit d01d5c1) with cargo install --locked --path slinky-cli --root local-tools/slinky. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure.",
+      "notes": "Prebuilt Apple Silicon binary from the upstream GitHub release 0.6.0 (asset slinky-cli-aarch64-apple-darwin.tar.gz; sha256 is of that archive). Mach-O arm64; `slinky-cli --version` reports 0.6.0. Smoke test generates a linker script from a two-segment YAML and checks sections, object mappings, fixed VRAM, stdout output and missing-input failure. Passed on 2026-10-16 with this binary.",
       "folder": "slinky"
     },
     {

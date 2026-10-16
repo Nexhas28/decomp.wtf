@@ -11,6 +11,6 @@ local-tools/pigment64/bin/pigment64 to-bin -f rgba16 -o out.bin in.png
 local-tools/pigment64/bin/pigment64 to-png --width 4 --height 2 -f rgba16 -o back.png out.bin
 ```
 
-Install: built from the upstream git tag 0.6.3 (commit 0fa6b5cf41bb8ec0cf6b82687076931a2e5552c5) with `cargo build --release --locked` (rustc 1.98.1, Apple Silicon, native). The release binary was copied into `bin/`.
+Install: the prebuilt Apple Silicon binary from the upstream GitHub release 0.6.3 (`pigment64-aarch64-apple-darwin.tar.gz`, sha256 b848a38be03958f4eeff71fb81ebf17472d76a17f1089b9734242688acb42a5c), copied into `bin/`. No build needed.
 
 Test: `bash local-tools/pigment64/test.sh` prints `PASS` (last run: exit 0). It checks exact RGBA16 bytes for a tiny generated PNG, a PNG round trip, and an I8 output size.

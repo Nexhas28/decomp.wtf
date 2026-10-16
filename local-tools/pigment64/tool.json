@@ -1,13 +1,15 @@
 {
   "name": "pigment64",
   "repo": "https://github.com/decompals/pigment64",
-  "version": "0.6.3 (commit 0fa6b5cf41bb8ec0cf6b82687076931a2e5552c5)",
-  "sha256": null,
+  "version": "0.6.3",
+  "sha256": "b848a38be03958f4eeff71fb81ebf17472d76a17f1089b9734242688acb42a5c",
   "category": "texture-converter",
-  "platforms": ["n64"],
+  "platforms": [
+    "n64"
+  ],
   "runs_on": "macos-arm64-native",
   "entry": "bin/pigment64",
   "test": "test.sh",
   "status": "pass",
-  "notes": "Built with cargo build --release --locked from the 0.6.3 git tag (rustc 1.98.1, aarch64-apple-darwin) in a scratchpad build dir; bin/pigment64 is that build. Upstream MIT licence. test.sh makes a 4x2 RGBA PNG with pure Python, converts it to N64 RGBA16 and checks the exact bytes, converts back to PNG and to bin again (round trip), and checks an I8 output size. Folder also holds .crates.toml and .crates2.json from an earlier cargo install from crates.io 0.6.3; these are leftover cargo metadata and do not affect the binary."
+  "notes": "Prebuilt Apple Silicon binary from the upstream GitHub release 0.6.3 (asset pigment64-aarch64-apple-darwin.tar.gz; sha256 is of that archive). Mach-O arm64; `pigment64 --version` reports 0.6.3. Upstream MIT licence. test.sh makes a 4x2 RGBA PNG with pure Python, converts it to N64 RGBA16 and checks the exact bytes, converts back to PNG and to bin again (round trip), and checks an I8 output size. Passed on 2026-10-16 with this binary."
 }

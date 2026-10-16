@@ -19,7 +19,7 @@ sources:
 radare2 is an open-source reverse engineering framework. It includes disassemblers and assemblers for many CPUs, a binary analyser, and an ESIL emulator [^repo]. For byte-matching decompilation it helps to disassemble target code (MIPS for N64 and PS2, Thumb for GBA and NDS, PowerPC for GameCube and Wii, SM83 for Game Boy) and to check what a short routine computes by emulating it.
 
 ## Local install
-Path `local-tools/radare2/`, version 6.2.4 (release tag). Entry point `bin/radare2`, with `bin/rasm2` and other tools alongside. Built natively for macOS arm64, not rosetta or docker.
+Path `local-tools/radare2/`, version 6.2.4 (release tag). Entry point `bin/radare2`, with `bin/rasm2` and other tools alongside. Homebrew's Apple Silicon bottle (links in `bin/`), native arm64: not rosetta or docker.
 
 ## Examples
 ```bash

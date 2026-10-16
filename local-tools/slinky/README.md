@@ -6,6 +6,6 @@ Why it helps decomp.wtf: it replaces hand-maintained linker scripts with a gener
 
 How to run: `local-tools/slinky/bin/slinky-cli path/to/input.yaml -o out.ld` (omit `-o` to print to stdout).
 
-Installed from the decompals/slinky tag 0.6.0 (commit d01d5c1) with `cargo install --locked --path slinky-cli --root local-tools/slinky`. Installed on macOS arm64, native build.
+Installed from the decompals/slinky GitHub release 0.6.0: the prebuilt Apple Silicon binary `slinky-cli-aarch64-apple-darwin.tar.gz` (sha256 4c2c0db5a9f185cfd02d4a0fb4865b506a5a76dda6f008677b5adaaef1c07fb9), copied into `bin/`. No build needed.
 
 Test: `bash local-tools/slinky/test.sh`. Last run: PASS. The test writes a two-segment YAML, generates a script, checks the SECTIONS block, the object-path mappings, the fixed VRAM address, stdout output, and that a missing input file fails.

@@ -4,10 +4,19 @@
   "version": "v0.9.1",
   "sha256": null,
   "category": "disassembler",
-  "platforms": ["n64", "psx", "ps2", "gamecube", "wii", "gba", "nds", "gameboy"],
+  "platforms": [
+    "n64",
+    "psx",
+    "ps2",
+    "gamecube",
+    "wii",
+    "gba",
+    "nds",
+    "gameboy"
+  ],
   "runs_on": "macos-arm64-native",
   "entry": "bin/rizin",
   "test": "test.sh",
   "status": "pass",
-  "notes": "Built locally for macOS arm64 (rizin 0.9.1). Source clone not kept; tag v0.9.1 is commit c3a90e9226d977f58f4e9c75f78fa6b07afe13c7 on GitHub, build commit not independently confirmed. test.sh passed (8 checks) on 2026-10-16. Depends on arm-none-eabi-gcc for one check (skipped if absent)."
+  "notes": "Built locally for macOS arm64 (rizin 0.9.1). Kept as the build rz-ghidra's plugins were compiled against: Homebrew's rizin 0.9.1 (same version, Apple Silicon bottle) is installed as well, but swapping to it means rebuilding rz-ghidra, whose plugins have absolute paths into this folder; do both together. Source clone not kept; tag v0.9.1 is commit c3a90e9226d977f58f4e9c75f78fa6b07afe13c7 on GitHub. test.sh passed (8 checks) on 2026-10-16. Depends on arm-none-eabi-gcc for one check (skipped if absent)."
 }
