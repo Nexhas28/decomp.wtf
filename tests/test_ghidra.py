@@ -5,6 +5,7 @@ analyzeHeadless with process-group cleanup and is exercised only by the real lan
 explicit reason when Ghidra is not installed on the host).
 """
 
+import hashlib
 import json
 import os
 import signal
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from decompnet import scheduler
 from decompnet.forks import ghidra
 from decompnet.forks.ghidra import (AdmissionError, DraftCandidate, FunctionDossier, GhidraUnavailable,
                                     MemoryRegion, ProposalError, TargetProfile, _RunResult)
@@ -51,9 +53,10 @@ class FakeHeadless:
         self.result = _RunResult(**kwargs)
         return self.result
 
-    def __call__(self, admitted, obj, scripts_src, facets, want_bytes, timeout, cancel):
+    def __call__(self, admitted, obj, scripts_src, facets, want_bytes, timeout, cancel, data=None, digest=None):
         self.calls.append({"admitted": admitted, "obj": obj, "facets": facets, "want_bytes": want_bytes,
-                           "timeout": timeout, "cancel": cancel})
+                           "timeout": timeout, "cancel": cancel, "data": data, "digest": digest,
+                           "analysis_used": scheduler.BUDGET.pressure()["used"]["analysis"]})
         if cancel is not None and cancel.is_set():
             return _RunResult(status="cancelled", cancel_requested=True)
         return self.result
@@ -458,6 +461,80 @@ def test_cancellation_is_reported_without_cache(tmp_path, headless):
     m2 = ghidra.analyze_object(obj, cache)
     assert m2.status == "cancelled" and m2.functions_exported == 1
     assert not cache.exists() or not list(cache.glob("*.json"))
+
+
+class FakePopen:
+    """Stands in for analyzeHeadless: hashes the file handed to -import, then writes a complete empty export."""
+    launched = []
+
+    def __init__(self, argv, *args, **kwargs):
+        self.args = argv
+        self.pid = 0
+        self.returncode = 0
+        imported = Path(argv[argv.index("-import") + 1])
+        out = Path(argv[argv.index("-postScript") + 2])
+        FakePopen.launched.append({"imported": imported, "sha": hashlib.sha256(imported.read_bytes()).hexdigest(),
+                                   "analysis_used": scheduler.BUDGET.pressure()["used"]["analysis"]})
+        Path(str(out) + ".summary.json").write_text(json.dumps(
+            {"type": "summary", "status": "complete", "functions_total": 0, "functions_exported": 0,
+             "failed": []}), encoding="utf-8")
+        mutate = FakePopen.mutate
+        if mutate is not None:
+            mutate()
+
+    mutate = None
+
+    def communicate(self, timeout=None):
+        return "", ""
+
+    def poll(self):
+        return 0
+
+
+@pytest.fixture
+def fake_popen(tmp_path, monkeypatch):
+    FakePopen.launched = []
+    FakePopen.mutate = None
+    monkeypatch.setattr(ghidra, "available", lambda: True)
+    monkeypatch.setattr(ghidra, "provider_version", lambda: "ghidra-12.1.4")
+    monkeypatch.setattr(ghidra, "_headless", lambda: tmp_path / "analyzeHeadless")
+    monkeypatch.setattr(ghidra, "java_home", lambda: None)
+    monkeypatch.setattr(ghidra.subprocess, "Popen", FakePopen)
+    return FakePopen
+
+
+def test_imported_copy_is_the_hashed_copy_even_if_the_target_changes_later(tmp_path, fake_popen):
+    obj = tmp_path / "game.o"
+    original = bytes(range(64))
+    obj.write_bytes(original)
+    fake_popen.mutate = lambda: obj.write_bytes(b"changed after the identity was taken")
+    m = ghidra.analyze_object(obj, tmp_path / "cache")
+    assert m.status == "complete"
+    assert len(fake_popen.launched) == 1
+    launched = fake_popen.launched[0]
+    assert launched["imported"] != obj  # a private work copy, not the caller's file
+    assert launched["sha"] == m.input_digest == hashlib.sha256(original).hexdigest()
+
+
+def test_work_copy_that_differs_from_the_recorded_identity_fails_before_import(tmp_path, fake_popen):
+    obj = tmp_path / "game.o"
+    obj.write_bytes(bytes(64))
+    admitted = ghidra.admit(None, bytes(64))
+    wrong = hashlib.sha256(b"some other bytes").hexdigest()
+    result = ghidra._run_headless(admitted, obj, ghidra.exporter_source(), (), False, 5, None,
+                                  data=bytes(64), digest=wrong)
+    assert result.status == "failed"
+    assert any("identity mismatch" in d for d in result.diagnostics)
+    assert fake_popen.launched == []  # nothing was imported
+
+
+def test_headless_import_holds_and_releases_an_analysis_slot(tmp_path, fake_popen):
+    obj = tmp_path / "game.o"
+    obj.write_bytes(bytes(64))
+    before = scheduler.BUDGET.pressure()["used"]["analysis"]
+    ghidra.analyze_object(obj, tmp_path / "cache")
+    assert fake_popen.launched[0]["analysis_used"] == before + 1
+    assert scheduler.BUDGET.pressure()["used"]["analysis"] == before
 
 
 def test_process_group_kill_cleans_up():

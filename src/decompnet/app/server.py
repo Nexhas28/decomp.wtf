@@ -7,6 +7,7 @@ checked on every request, so web pages can't reach it through DNS rebinding.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import logging.handlers
@@ -31,7 +32,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import __version__, cache as ccache, hostenv, toolchains
+from .. import __version__, cache as ccache, hostenv, scheduler, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
@@ -127,6 +128,7 @@ class Jobs:
 class Settings:
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.Lock()
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -136,11 +138,17 @@ class Settings:
             self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        """Written whole, then swapped in: a crash mid-write never leaves half a file (it holds API keys: 0600)."""
+        with self._lock:
+            text = json.dumps(dict(self.data), indent=2)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".settings-", suffix=".tmp")  # mkstemp: 0600
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.replace(tmp, self.path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
 
     # -- API endpoints: OpenAI-compatible servers for the built-in agent, each with its own address, model and key
 
@@ -417,8 +425,40 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         walls = {r["signature"]: r["n"] for r in net.store.all(
             "SELECT signature, COUNT(*) AS n FROM function_walls w JOIN functions f ON f.id=w.function_id "
             "WHERE f.project_id=? GROUP BY signature", pid)}
+        now = time.time()
+        stalled = []
+        for r in net.store.all(
+                "SELECT f.name, b.cooldown_until, b.reset_reason FROM search_budgets b "
+                "JOIN functions f ON f.id=b.function_id "
+                "WHERE f.project_id=? AND f.status != 'matched' "
+                "AND (b.turns_used >= b.max_turns OR b.cooldown_until > ?) "
+                "ORDER BY b.last_at DESC LIMIT 20", pid, now):
+            if (r["cooldown_until"] or 0) > now:
+                next_action = "wait for cooldown"
+            elif r["reset_reason"]:
+                next_action = "claim by name"
+            else:
+                next_action = "needs new evidence (header/context change or a materially better source)"
+            stalled.append({"function": r["name"], "reason": r["reset_reason"] or "budget-exhausted",
+                            "next_action": next_action})
         return {"receipts": receipts, "matched_epoch": proj["matched_epoch"],
-                "origins": origins, "stalls": stalls, "walls": walls}
+                "origins": origins, "stalls": stalls, "walls": walls, "stalled": stalled} | runtime_pressure()
+
+    def runtime_pressure() -> dict:
+        """P11.7: current resource-budget pressure and whether the analysis broker is cold or warm. Reads only:
+        a broker nobody started is reported as not started, never created for the sake of a status line."""
+        broker = getattr(net, "_analysis_broker", None)
+        analysis: dict = {"broker_started": broker is not None, "state": "cold", "sessions": []}
+        if broker is not None:
+            try:
+                sessions = [{"provider": d.get("provider"), "state": d.get("state"),
+                             "temperature": "warm" if d.get("state") == "ready" else "cold",
+                             "pending": d.get("pending")} for d in broker.session_states().values()]
+                analysis["sessions"] = sessions
+                analysis["state"] = "warm" if any(s["temperature"] == "warm" for s in sessions) else "cold"
+            except Exception:  # noqa: BLE001: a broker that cannot say is "unknown", never a broken page
+                analysis["state"] = "unknown"
+        return {"resources": scheduler.BUDGET.pressure(), "analysis": analysis}
 
     def state() -> dict:
         projects = []
@@ -434,7 +474,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 "log_file": hostenv.shown_path(home / "logs" / "decomp.log"),
                 "projects": projects, "toolchains": tcs, "agents": agents.detect(),
                 "api_presets": agents.API_PRESETS, "settings": settings.public(), "mcp_url": mcp_url,
-                "platform_status": PLATFORM_STATUS,
+                "platform_status": PLATFORM_STATUS, **runtime_pressure(),
                 "codewarrior": {"installed": toolchains.installed("mwcc") is not None,
                                 "ds_installed": toolchains.installed("mwccarm") is not None, **MW_VERSIONS}}
 
@@ -544,20 +584,26 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 name = game.name
             else:
                 name = Path(q.get("name") or "game.bin").name
+                if name in ("", ".", ".."):
+                    return fail(ValueError("that file name won't do"))
                 upload_dir = home / "uploads" / uuid.uuid4().hex[:8]  # keeps the file's own name
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 game = upload_dir / name
                 size = 0
-                with open(game, "wb") as f:
-                    async for chunk in request.stream():
-                        size += len(chunk)
-                        if size > MAX_DISC:
-                            f.close()
-                            game.unlink(missing_ok=True)
-                            return fail(ValueError("that file is larger than any game disc"))
-                        f.write(chunk)
+                try:
+                    with open(game, "wb") as f:
+                        async for chunk in request.stream():
+                            size += len(chunk)
+                            if size > MAX_DISC:
+                                f.close()
+                                shutil.rmtree(upload_dir, ignore_errors=True)
+                                return fail(ValueError("that file is larger than any game disc"))
+                            f.write(chunk)
+                except BaseException:  # the browser went away mid-upload: no half a game left behind
+                    shutil.rmtree(upload_dir, ignore_errors=True)
+                    raise
                 if size == 0:
-                    game.unlink(missing_ok=True)
+                    shutil.rmtree(upload_dir, ignore_errors=True)
                     return fail(ValueError("the file was empty"))
         uploaded = isinstance(game, Path) and game.parent.parent == home / "uploads"
 
@@ -682,7 +728,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"ok": why is None, "message": why}
 
     def p_delete(slug, request, data):
-        manager.stop()
+        for s in list(manager.sessions.values()):  # its helpers only: the other projects' keep going
+            if s.slug == slug:
+                manager.stop(s.id)
+        net.stop_autopilot(slug)
+        net.permuter.stop(slug)
         proj = net.project_row(slug)
         net.remove_project(slug)
         if data.get("files"):
@@ -809,18 +859,24 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             proj = fork_of(slug)
         except NetworkError as e:
             return fail(e)
+        name = Path(q.get("name") or "game.iso").name
+        if name in ("", ".", ".."):
+            return fail(ValueError("that file name won't do"))
         tmp = Path(proj["root"]) / ".decomp-wtf" / f"upload-{uuid.uuid4().hex[:8]}.tmp"
         tmp.parent.mkdir(parents=True, exist_ok=True)
         size = 0
-        with open(tmp, "wb") as f:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > MAX_DISC:
-                    f.close()
-                    tmp.unlink(missing_ok=True)
-                    return fail(ValueError("that file is larger than any game disc"))
-                f.write(chunk)
-        name = Path(q.get("name") or "game.iso").name
+        try:
+            with open(tmp, "wb") as f:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_DISC:
+                        f.close()
+                        tmp.unlink(missing_ok=True)
+                        return fail(ValueError("that file is larger than any game disc"))
+                    f.write(chunk)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
         def work(log):
             try:
@@ -946,11 +1002,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         data = await body(request)
         kind, slug = str(data.get("kind", "")), str(data.get("slug", ""))
         given = data.get("options") or {}
+        if not isinstance(given, dict):
+            return fail(ValueError("invalid options"))
         options = {k: v for k, v in given.items() if k in ("model", "per_session")}
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
-        count = max(1, min(int(data.get("count", 1)), 8))
+        try:
+            count = max(1, min(int(data.get("count", 1)), 8))
+        except (TypeError, ValueError):
+            return fail(ValueError("the number of helpers is a number, like 1"))
         picked: list[str] = []
         try:
             net.project_row(slug)
@@ -1028,25 +1089,40 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)
-        if isinstance(data.get("api"), dict):  # (before 0.10.1: the one endpoint there was) the first one
-            first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
-            settings.save_endpoint(data["api"] | {"id": first})
-        if isinstance(data.get("endpoint"), dict):
-            settings.save_endpoint(data["endpoint"])
+        try:
+            per_session = max(1, min(int(data["per_session"]), 20)) if "per_session" in data else None
+        except (TypeError, ValueError):
+            return fail(ValueError("the turns per session is a number, like 3"))
+        try:
+            budget = max(0.0, float(data["budget_usd"] or 0)) if "budget_usd" in data else None
+        except (TypeError, ValueError):
+            return fail(ValueError("the budget is an amount in dollars, like 5"))
+        if budget is not None and (budget != budget or budget == float("inf")):  # nan/inf: not JSON
+            return fail(ValueError("the budget is an amount in dollars, like 5"))
+        before = copy.deepcopy(settings.data)  # a refused endpoint leaves nothing half-changed
+        try:
+            if isinstance(data.get("api"), dict):  # (before 0.10.1: the one endpoint there was) the first one
+                first = settings.endpoints()[0]["id"] if settings.endpoints() else ""
+                settings.save_endpoint(data["api"] | {"id": first})
+            if isinstance(data.get("endpoint"), dict):
+                settings.save_endpoint(data["endpoint"])
+        except ValueError as e:
+            settings.data = before
+            return fail(e)
         if data.get("remove_endpoint"):
             settings.remove_endpoint(str(data["remove_endpoint"]))
             for sid, sess in list(manager.sessions.items()):  # its sessions stop with it
                 if sess.kind == "api" and sess.options.get("endpoint") == str(data["remove_endpoint"]):
                     manager.stop(sid)
-        if "per_session" in data:
-            settings.data["per_session"] = max(1, min(int(data["per_session"]), 20))
+        if per_session is not None:
+            settings.data["per_session"] = per_session
         if "autopilot" in data:
             settings.data["autopilot"] = bool(data["autopilot"])
         if "autopilot_after_match" in data:
             settings.data["autopilot_after_match"] = bool(data["autopilot_after_match"])
             net.autopilot_after_match = settings.data["autopilot_after_match"]
-        if "budget_usd" in data:
-            settings.data["budget_usd"] = max(0.0, float(data["budget_usd"] or 0))
+        if budget is not None:
+            settings.data["budget_usd"] = budget
         if "auto_update" in data:
             settings.data["auto_update"] = bool(data["auto_update"])
         if "check_updates" in data:
@@ -1164,12 +1240,12 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     # rooms shared at an address of the host's own come back when the app starts, with the same invite
     for p in net.store.all("SELECT slug, config FROM projects"):
-        c = json.loads(p["config"]).get("collab") or {}
-        if c.get("open") and c.get("mode") == "address" and c.get("address"):
-            try:
+        try:  # one project's damaged settings mustn't stop the app starting
+            c = json.loads(p["config"]).get("collab") or {}
+            if c.get("open") and c.get("mode") == "address" and c.get("address"):
                 open_room(p["slug"], "address", c["address"], int(c.get("port") or 6481), keep=True)
-            except (NetworkError, OSError):
-                pass
+        except (NetworkError, OSError, ValueError, TypeError, AttributeError):
+            pass
 
     @mcp.custom_route("/api/collab", methods=["GET"])
     async def api_collab(request: Request) -> Response:
@@ -1285,18 +1361,25 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if not game.is_file():
                 return fail(ValueError(f"no file at {game}"))
         else:  # the browser's upload, streamed to disk
+            fname = Path(q.get("filename") or "game.bin").name
+            if fname in ("", ".", ".."):
+                return fail(ValueError("that file name won't do"))
             upload = home / "uploads" / uuid.uuid4().hex[:8]
             upload.mkdir(parents=True, exist_ok=True)
-            game = upload / (Path(q.get("filename") or "game.bin").name or "game.bin")
+            game = upload / fname
             size = 0
-            with open(game, "wb") as f:
-                async for chunk in request.stream():
-                    size += len(chunk)
-                    if size > MAX_DISC:
-                        f.close()
-                        shutil.rmtree(upload, ignore_errors=True)
-                        return fail(ValueError("that file is larger than any game disc"))
-                    f.write(chunk)
+            try:
+                with open(game, "wb") as f:
+                    async for chunk in request.stream():
+                        size += len(chunk)
+                        if size > MAX_DISC:
+                            f.close()
+                            shutil.rmtree(upload, ignore_errors=True)
+                            return fail(ValueError("that file is larger than any game disc"))
+                        f.write(chunk)
+            except BaseException:
+                shutil.rmtree(upload, ignore_errors=True)
+                raise
             if size == 0:
                 shutil.rmtree(upload, ignore_errors=True)
                 game = None

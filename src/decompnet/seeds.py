@@ -691,6 +691,12 @@ def draft(asm_text: str, name: str, toolchain_id: str | None = None, *,
     try:
         return dcache.get_or_run(key, produce, wait_timeout=max(timeout * 4, 120.0))
     except cache.CoalesceTimeout:
+        if dcache.in_flight(key):
+            # the identical draft is still running: never start a second m2c run (P2.6); this
+            # timeout is not cached and not a deterministic failure
+            result = DraftResult(outcome="timeout", target=target, dependencies=deps)
+            result.diagnostics.append(_diag("error", "timeout: waiting for an identical in-flight draft"))
+            return result
         return _draft_uncached(asm_text, name, target, prep, prep_diags, data_asm, timeout, valid,
                                options or {}, deps)
 

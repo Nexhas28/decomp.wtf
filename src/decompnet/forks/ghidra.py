@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass, field
 from importlib import resources
 from pathlib import Path
 
-from .. import toolchains
+from .. import scheduler, toolchains
 from ..limits import capped
 
 #: Exporter/schema version: the reviewed exporter (schema 1) emitted only {"name", "c"} rows. Schema 2 adds
@@ -835,9 +835,15 @@ def _read_summary(out: Path) -> dict | None:
 
 
 def _run_headless(admitted: AdmittedProfile, obj: Path, scripts_src: Path, facets: tuple, want_bytes: bool,
-                  timeout: float, cancel: threading.Event | None) -> _RunResult:
+                  timeout: float, cancel: threading.Event | None, data: bytes | None = None,
+                  digest: str | None = None) -> _RunResult:
     """Import the object with headless Ghidra and run the exporter post-script. The exporter reuses one
-    DecompInterface for the whole Program, so one import serves every function. Replaced wholesale in tests."""
+    DecompInterface for the whole Program, so one import serves every function. Replaced wholesale in tests.
+
+    `data` are the bytes the identity `digest` was computed from: they are written once to the private work
+    copy, the copy itself is re-hashed, and the import is refused when it differs from `digest`."""
+    if data is None:
+        data = obj.read_bytes()
     with tempfile.TemporaryDirectory(prefix="decompwtf-ghidra-") as tmp:
         tmp = Path(tmp)
         scripts = tmp / "scripts"
@@ -845,7 +851,16 @@ def _run_headless(admitted: AdmittedProfile, obj: Path, scripts_src: Path, facet
         (scripts / "DecompWtfExport.java").write_text(scripts_src.read_text(encoding="utf-8"), encoding="utf-8")
         out = tmp / "out.jsonl"
         target = tmp / obj.name
-        shutil.copyfile(obj, target)
+        target.write_bytes(data)
+        copy_digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if digest is not None and copy_digest != digest:
+            return _RunResult(status="failed", diagnostics=[
+                f"identity mismatch: the private work copy of {obj.name} hashes to {copy_digest} but the "
+                f"recorded identity is {digest}; nothing was imported or cached"])
+        try:
+            os.chmod(target, 0o444)  # the imported copy stays what was hashed
+        except OSError:
+            pass
         argv = [str(_headless()), str(tmp), "decompwtf", "-import", str(target), "-scriptPath", str(scripts),
                 "-analysisTimeoutPerFile", "600", *admitted.script_args(), "-postScript",
                 "DecompWtfExport.java", str(out), *_facet_args(admitted, facets, want_bytes), "-deleteProject"]
@@ -1090,7 +1105,9 @@ def analyze_object(obj: Path, cache_dir: Path, *, profile: TargetProfile | dict 
     if not available():
         raise GhidraUnavailable("Ghidra (analyzeHeadless) is not installed here (the ghidra toolchain and "
                                 "Java 21+ are required): no analysis was run and nothing was cached")
-    result = _run_headless(admitted, obj, exporter_source(), facets, want_bytes, timeout, cancel)
+    with scheduler.BUDGET.slot("analysis"):
+        result = _run_headless(admitted, obj, exporter_source(), facets, want_bytes, timeout, cancel,
+                               data=data, digest=digest)
     manifest = _build_manifest(obj, digest, key, admitted, facets, result)
     cacheable = manifest.status == "complete" or (manifest.status == "partial" and manifest.functions_exported > 0)
     if cacheable:

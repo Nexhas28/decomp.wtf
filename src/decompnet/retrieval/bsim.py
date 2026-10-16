@@ -24,9 +24,11 @@ a fake in-memory/JSON index.
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 
+from .. import telemetry
 from .registry import Admission, Registry, RetrievalConfig, admit_retrieval
 
 SIGNATURE_SCHEMA = 1
@@ -235,22 +237,41 @@ class BsimIndex:
       matches the registry — an index/corpus version or profile change is diagnosably stale (B-04).
     """
 
-    def __init__(self, registry: Registry | None = None, *, cold: bool = False, build_cost: float = 0.0):
+    def __init__(self, registry: Registry | None = None, *, cold: bool = False, build_cost: float | None = None):
         self.registry = registry
         self.cold = cold
-        self.build_cost = build_cost
+        self._build_cost = build_cost   # explicit cost only; None means use the measured build_seconds
         self.schema = SIGNATURE_SCHEMA
         self._sigs: dict[str, BsimSignature] = {}
         self._sidecars: dict[str, SidecarEntry] = {}
         self._stale: dict[str, str] = {}
         self.queries = 0
         self.invalidations = 0
+        self.build_seconds = 0.0        # P10.3.7: index construction cost (time.monotonic())
+        self.query_seconds_total = 0.0  # P10.3.7: summed query latency; mean = total / queries
+
+    @property
+    def build_cost(self) -> float:
+        """The cold-build cost the exit gate reads: the explicit value when one was supplied, otherwise the
+        measured build time."""
+        return self._build_cost if self._build_cost is not None else self.build_seconds
+
+    def stats(self) -> dict:
+        """Index construction cost, query latency and size (P10.3.7); verified reuse is recorded by the
+        acceptance feedback ledger, not here."""
+        return {"signatures": len(self._sigs), "build_seconds": self.build_seconds,
+                "queries": self.queries, "query_seconds_total": self.query_seconds_total,
+                "query_seconds_mean": self.query_seconds_total / self.queries if self.queries else 0.0,
+                "invalidations": self.invalidations}
 
     # ------------------------------------------------------------ lifecycle
 
     def add(self, signature: BsimSignature, sidecar: SidecarEntry) -> None:
-        self._sigs[signature.sig_id] = signature
-        self._sidecars[signature.sig_id] = sidecar
+        started = time.monotonic()
+        with telemetry.span("retrieval.bsim.build"):
+            self._sigs[signature.sig_id] = signature
+            self._sidecars[signature.sig_id] = sidecar
+        self.build_seconds += time.monotonic() - started
 
     def remove(self, sig_id: str) -> None:
         self._sigs.pop(sig_id, None)
@@ -324,6 +345,16 @@ class BsimIndex:
         """Bounded shortlist retrieval (P10.3.5): compatible processor/mode, similarity floor, filter by
         usable source/profile, rerank with project-specific features. Candidates without usable source
         are retained as investigation evidence (B-03) but never enter the reusable shortlist."""
+        started = time.monotonic()
+        try:
+            with telemetry.span("retrieval.bsim.query"):
+                return self._query(target, top=top, floor=floor, project_features=project_features,
+                                   rerank=rerank)
+        finally:
+            self.query_seconds_total += time.monotonic() - started
+
+    def _query(self, target: BsimSignature, *, top: int, floor: float, project_features: dict | None,
+               rerank) -> BsimResult:
         self.validate()
         self.queries += 1
         rerank = rerank or _default_rerank
@@ -373,7 +404,7 @@ class BsimIndex:
     def to_json(self, *, indent: int = 2) -> str:
         import json
 
-        return json.dumps({"schema": self.schema, "cold": self.cold, "build_cost": self.build_cost,
+        return json.dumps({"schema": self.schema, "cold": self.cold, "build_cost": self._build_cost,
                            "signatures": [s.to_dict() for s in self._sigs.values()],
                            "sidecars": {sig_id: s.to_dict() for sig_id, s in self._sidecars.items()},
                            "stale": dict(sorted(self._stale.items()))}, indent=indent)
@@ -382,16 +413,19 @@ class BsimIndex:
     def from_json(cls, text: str, registry: Registry | None = None) -> "BsimIndex":
         import json
 
-        data = json.loads(text)
-        index = cls(registry, cold=bool(data.get("cold", False)),
-                    build_cost=float(data.get("build_cost", 0.0)))
-        index.schema = int(data.get("schema", SIGNATURE_SCHEMA))
-        for row in data.get("signatures", []):
-            sig = BsimSignature.from_dict(row)
-            index._sigs[sig.sig_id] = sig
-        for sig_id, row in (data.get("sidecars") or {}).items():
-            index._sidecars[sig_id] = SidecarEntry.from_dict(row)
-        index._stale = dict(data.get("stale") or {})
+        started = time.monotonic()
+        with telemetry.span("retrieval.bsim.build"):
+            data = json.loads(text)
+            index = cls(registry, cold=bool(data.get("cold", False)),
+                        build_cost=None if data.get("build_cost") is None else float(data["build_cost"]))
+            index.schema = int(data.get("schema", SIGNATURE_SCHEMA))
+            for row in data.get("signatures", []):
+                sig = BsimSignature.from_dict(row)
+                index._sigs[sig.sig_id] = sig
+            for sig_id, row in (data.get("sidecars") or {}).items():
+                index._sidecars[sig_id] = SidecarEntry.from_dict(row)
+            index._stale = dict(data.get("stale") or {})
+        index.build_seconds = time.monotonic() - started
         return index
 
 

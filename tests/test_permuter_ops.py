@@ -236,9 +236,9 @@ def test_p02e_independent_statements_swap_as_restricted():
 def test_p03_categories_are_fixed_by_construction():
     """Signedness/control-flow operators are exploratory; dependency-checked ones are restricted."""
     exploratory = {"retype_local", "cast_add", "cast_remove", "return_ternary", "branch_swap",
-                   "loop_bound_explore"}
+                   "loop_bound_explore", "register_toggle"}
     restricted = {"swap_statements", "reorder_decls", "temp_introduce", "temp_eliminate",
-                  "inc_style", "comparison_flip", "cond_bool_form", "while_for", "register_toggle"}
+                  "inc_style", "comparison_flip", "cond_bool_form", "while_for"}
     assert exploratory | restricted == set(OPERATORS)
     for op_id in exploratory:
         assert OPERATORS[op_id].category == EXPLORATORY
@@ -450,7 +450,7 @@ def test_register_hint_requires_address_never_taken():
     ok_src = "int g(void) {\n    s32 x;\n    x = 3;\n    return x;\n}\n"
     m, out = find_mutation(ok_src, "register_toggle")
     assert m is not None and out is not None
-    assert m.category == RESTRICTED and "register s32 x;" in out
+    assert m.category == EXPLORATORY and "register s32 x;" in out
     taken = ("int g(void) {\n    s32 x;\n    s32 *q;\n    q = &x;\n    return *q;\n}\n")
     for seed in range(150):
         rec: list[Mutation] = []

@@ -271,3 +271,105 @@ def test_r06_usable_source_and_provenance_rank_visibly():
     st = idx.stats()
     assert st["available_sources"] == 1 and st["reuse_routes"] == {2: "structural-rerank"}
     assert similarity.reuse_stats(0)["routes"]["structural-rerank"] == 1
+
+
+# ------------------------------------------------------------------ P6 exit gate: wiring and opt-in structure
+
+@pytest.fixture
+def look_alike_game(tmp_path):
+    """A ROM project of three near-identical functions: one open (the query), one open and one matched."""
+    net = RomNetwork(tmp_path / "app.db", tmp_path)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(id, slug, name, description, arch, big_endian, root, config) "
+                   "VALUES(1, 'simrom', 'sim', 'similarity fixture', 'mips', 1, ?, '{}')", (str(tmp_path),))
+        for fid, name, code, status, source in ((1, "func_a", FUNC_A, "open", None),
+                                                (2, "func_b", FUNC_B, "open", None),
+                                                (3, "func_c", FUNC_C, "matched", "int func_c(void) { return 1; }")):
+            db.execute("INSERT INTO functions(id, project_id, name, size, n_insns, target, relocs, asm, unit, vram, "
+                       "rom_offset, status, matched_source) VALUES(?,1,?,20,5,?,'[]','','',?,?,?,?)",
+                       (fid, name, code, 0x80041000 + 0x100 * fid, 0x1000 * fid, status, source))
+    return net
+
+
+def test_engine_similar_builds_features_once(look_alike_game):
+    """The second identical query is served from the shared index: nothing rebuilt, only cache hits."""
+    net = look_alike_game
+    proj = net.project_row("simrom")
+    fn = net._function("func_a", "simrom")
+    first = net.similar(proj, fn, top=5)
+    index = net._similarity_index
+    builds, hits = index.builds, index.hits
+    assert builds == 3
+    assert [r["name"] for r, _ in first] == ["func_c", "func_b"]  # matched first
+    assert all(sim == pytest.approx(1.0) for _, sim in first)
+    second = net.similar(proj, fn, top=5)
+    assert index.builds == builds
+    assert index.hits > hits
+    assert [(r["name"], s) for r, s in second] == [(r["name"], s) for r, s in first]
+
+
+def test_engine_similar_keeps_usability_rank_within_matched_first(look_alike_game, monkeypatch):
+    """Matched examples still come first, but inside each group the usability-adjusted rank_score (P6.4)
+    decides, not the raw similarity."""
+    net = look_alike_game
+    with net.store.tx() as db:
+        db.execute("INSERT INTO functions(id, project_id, name, size, n_insns, target, relocs, asm, unit, vram, "
+                   "rom_offset, status, matched_source) VALUES(4,1,'func_d',20,5,?,'[]','','',?,?,'matched', "
+                   "'int func_d(void) { return 2; }')", (FUNC_C, 0x80041400, 0x4000))
+    proj = net.project_row("simrom")
+    fn = net._function("func_a", "simrom")
+
+    def match(key, sim, rank):
+        return similarity.Match(key=key, similarity=sim, rank_score=rank, why="", route="full-sequence",
+                                source_available=True, verified=False, verification_history="", compiler_ok=None,
+                                language=None, context_available=True, reloc_compatible=None, adaptation="",
+                                provenance="")
+
+    # func_d is more similar but less usable than func_c; the open func_b outranks both but stays last
+    fake = [match(4, 0.95, 0.80), match(2, 1.0, 1.30), match(3, 0.90, 0.90)]
+    monkeypatch.setattr(similarity.FeatureIndex, "search", lambda self, *args, **kwargs: list(fake))
+    hits = net.similar(proj, fn, top=5)
+    assert [r["name"] for r, _ in hits] == ["func_c", "func_d", "func_b"]
+    assert [sim for _, sim in hits] == [0.90, 0.95, 1.0]
+
+
+def test_structural_term_is_opt_in(monkeypatch):
+    """Same mnemonics, different constants: only the structural rerank notices the difference."""
+    a = similarity.Features.from_pairs([("addiu", "t0, t0, 100")] * 8)
+    b = similarity.Features.from_pairs([("addiu", "t0, t0, 1")] * 8)
+    monkeypatch.delenv("DECOMPNET_STRUCTURAL_RERANK", raising=False)
+    assert similarity.structural_rerank_enabled() is False
+    off = similarity._similarity(a, b)
+    assert off == pytest.approx(1.0)  # 0.6 * sequence + 0.4 * cosine
+    monkeypatch.setenv("DECOMPNET_STRUCTURAL_RERANK", "1")
+    assert similarity.structural_rerank_enabled() is True
+    on = similarity._similarity(a, b)
+    assert 0.0 <= on < off
+    monkeypatch.setenv("DECOMPNET_STRUCTURAL_RERANK", "0")
+    assert similarity.structural_rerank_enabled() is False
+
+
+def test_widths_alone_do_not_enable_structural_term(monkeypatch):
+    """Mnemonic-only features carry access widths but no operand data, so the structural term stays off."""
+    f = similarity.Features.from_ops(("lwz", "addi", "bl", "blr", "stw"))
+    f2 = similarity.Features.from_ops(("stw", "addi", "bl", "lwz", "blr"))
+    assert f.widths and not similarity._has_operand_data(f)
+    monkeypatch.setenv("DECOMPNET_STRUCTURAL_RERANK", "1")
+    on = similarity._similarity(f, f2)
+    monkeypatch.delenv("DECOMPNET_STRUCTURAL_RERANK", raising=False)
+    off = similarity._similarity(f, f2)
+    assert on == pytest.approx(off)
+
+
+def test_route_label_is_per_pair():
+    """Only the pair that actually used windowed comparison is labelled windowed."""
+    base = [HEAD[i % len(HEAD)] for i in range(1100)]
+    shorter = base + [HEAD[i % len(HEAD)] for i in range(50)]    # 1150 ops: whole-sequence comparison
+    longer = base + [HEAD[i % len(HEAD)] for i in range(200)]    # 1300 ops: bounded windows
+    assert not similarity.uses_windows(1100, 1150) and similarity.uses_windows(1100, 1300)
+    idx = similarity.FeatureIndex()
+    for fid, data in ((1, base), (2, shorter), (3, longer)):
+        idx.features_for(fid, 1, f"d{fid}", "syn", "syn", data)
+    matches = {m.key: m for m in idx.search(1, "syn", "syn", top=5)}
+    assert matches[2].route == "full-sequence"
+    assert matches[3].route == "windowed-sequence"

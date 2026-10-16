@@ -12,6 +12,7 @@ running a different search (P-08: incompatible policy versions are rejected or e
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from ..permuter import DEFAULT_POLICY, OPERATORS
@@ -35,6 +36,7 @@ class SearchPolicy:
     max_history: int = 64         # mutation-history entries kept per candidate
     routing: str = "mismatch-v1"  # routing-table version (P5.4)
     base_weights: dict = field(default_factory=lambda: dict(DEFAULT_POLICY))
+    restart_from_best: float = 0.15  # chance a donated-compute step mutates the best source, not the current one
 
     @property
     def epoch(self) -> str:
@@ -45,7 +47,7 @@ class SearchPolicy:
         return {"id": self.id, "version": self.version, "beam": self.beam, "plateau": self.plateau,
                 "max_source_chars": self.max_source_chars, "max_steps": self.max_steps,
                 "max_history": self.max_history, "routing": self.routing,
-                "base_weights": dict(self.base_weights)}
+                "base_weights": dict(self.base_weights), "restart_from_best": self.restart_from_best}
 
     @staticmethod
     def from_dict(d: dict) -> "SearchPolicy":
@@ -62,6 +64,7 @@ class SearchPolicy:
         max_steps = d.get("max_steps", 400)
         max_history = d.get("max_history", 64)
         routing = d.get("routing", "mismatch-v1")
+        restart_from_best = d.get("restart_from_best", 0.15)
         if not isinstance(beam, int) or beam < 1:
             raise SearchPolicyError("beam must be a positive integer")
         if not isinstance(plateau, (int, float)) or not 0 <= plateau < 1:
@@ -74,6 +77,9 @@ class SearchPolicy:
             raise SearchPolicyError("max_history must be a positive integer")
         if not isinstance(routing, str) or not routing:
             raise SearchPolicyError("routing must name a registered routing table")
+        if (not isinstance(restart_from_best, (int, float)) or isinstance(restart_from_best, bool)
+                or not 0 <= restart_from_best < 1):
+            raise SearchPolicyError("restart_from_best must be in [0, 1)")
         weights = d.get("base_weights", {})
         if not isinstance(weights, dict):
             raise SearchPolicyError("base_weights must be a dict of operator id -> positive weight")
@@ -84,12 +90,30 @@ class SearchPolicy:
                 raise SearchPolicyError(f"weight for {op!r} must be a positive integer")
         return SearchPolicy(id=id_, version=version, beam=beam, plateau=float(plateau),
                             max_source_chars=max_source_chars, max_steps=max_steps,
-                            max_history=max_history, routing=routing, base_weights=dict(weights))
+                            max_history=max_history, routing=routing, base_weights=dict(weights),
+                            restart_from_best=float(restart_from_best))
 
 
 SEARCH_POLICY = SearchPolicy(id="guided", version=1)
 
-_REGISTRY: dict[str, dict[int, SearchPolicy]] = {SEARCH_POLICY.id: {SEARCH_POLICY.version: SEARCH_POLICY}}
+# The legacy single trajectory: one candidate, downhill acceptance, no mismatch routing (base weights
+# are used unchanged). This is what runs unless guided search is switched on.
+SINGLE_TRAJECTORY_POLICY = SearchPolicy(id="single", version=1, beam=1, routing="uniform")
+
+_REGISTRY: dict[str, dict[int, SearchPolicy]] = {
+    SEARCH_POLICY.id: {SEARCH_POLICY.version: SEARCH_POLICY},
+    SINGLE_TRAJECTORY_POLICY.id: {SINGLE_TRAJECTORY_POLICY.version: SINGLE_TRAJECTORY_POLICY},
+}
+
+
+def guided_enabled() -> bool:
+    """Guided (beam + mismatch-routed) search is opt-in: DECOMPNET_GUIDED_SEARCH=1."""
+    return os.environ.get("DECOMPNET_GUIDED_SEARCH", "0") == "1"
+
+
+def active_policy() -> SearchPolicy:
+    """The policy new runs use: guided when enabled, otherwise the single-trajectory policy."""
+    return SEARCH_POLICY if guided_enabled() else SINGLE_TRAJECTORY_POLICY
 
 
 def parse_policy(d: dict) -> SearchPolicy:
@@ -100,9 +124,15 @@ def parse_policy(d: dict) -> SearchPolicy:
     if not isinstance(d, dict):
         raise SearchPolicyError("policy spec must be a dict")
     try:
-        return _REGISTRY[d["id"]][d["version"]]
+        canonical = _REGISTRY[d["id"]][d["version"]]
     except (KeyError, TypeError):
         registered = ", ".join(f"{k}-v{v}" for k, vs in sorted(_REGISTRY.items())
                                for v in sorted(vs))
         raise SearchPolicyError(f"unknown search policy {d.get('id')!r} version {d.get('version')!r}; "
                                 f"registered: {registered or 'none'}")
+    spec = canonical.to_dict()
+    differing = sorted(k for k, v in d.items() if k not in spec or spec[k] != v)
+    if differing:
+        raise SearchPolicyError(f"search policy {canonical.epoch} does not match this process's "
+                                f"definition (differs in {', '.join(map(str, differing))})")
+    return canonical

@@ -150,13 +150,17 @@ def test_record_refuses_a_match_from_the_artefact(tmp_path):
     net = RomNetwork(str(db), root)  # real HOME: the toolchains live there
     fn = net._function("func_800A4620", "slus-01363-4")
     agent_row = net.store.one("SELECT id,name,owner,trusted FROM agents ORDER BY id LIMIT 1")
+    from decompnet import snapshots
     from decompnet.network import Agent
 
     agent = Agent(agent_row["id"], agent_row["name"], agent_row["owner"], bool(agent_row["trusted"]))
     ctx = net._context(fn["project_id"], fn["unit"])
+    fn_row = net.store.one("SELECT * FROM functions WHERE id=?", fn["id"])
+    proj_row = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
 
-    net._record(net.store.one("SELECT * FROM functions WHERE id=?", fn["id"]), agent,
-                score=0, source=artifact.read_text(), ctx_version=ctx["version"], matched=True)
+    net._record(fn_row, agent,
+                score=0, source=artifact.read_text(), ctx_version=ctx["version"], matched=True,
+                snapshot=snapshots.capture(fn_row, proj_row, ctx))
 
     after = net.store.one("SELECT status, meta FROM functions WHERE id=?", fn["id"])
     assert after["status"] != "matched", "a match built from undefined behaviour must be refused"

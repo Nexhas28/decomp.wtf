@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
@@ -29,6 +30,12 @@ CLAIM_TTL = 30 * 60
 # starts on something fresh instead of passing the same function back and forth. Asked for by name, it comes at once.
 RELEASE_COOLDOWN = 15 * 60
 MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their claims never mean "given up on"
+# A better source resets a function's permuter budget only when it is a material improvement (new score at most
+# BUDGET_RESET_RATIO of the previous best) and at most MAX_BUDGET_RESETS times in the function's lifetime, so tiny
+# stochastic gains cannot keep the search running forever (plan P1.2).
+MAX_BUDGET_RESETS = 3
+BUDGET_RESET_RATIO = 0.95
+ANALYSIS_SESSIONS_PER_PROJECT = 2  # analysis-broker session cap per project (the broker's global cap is 4)
 # A function released with a toolchain-wall note is left out of strategy claims for this long (asking by name
 # still works): the same signature gives the same result, and agents were burning their first claims on walls
 # everyone already swept. A context or compiler-profile change clears the cooldown (see _reset_budgets_for_context).
@@ -161,6 +168,17 @@ def _counts_from_rows(rows) -> dict:
     return counts
 
 
+def _mismatch_text(summary: dict) -> str:
+    """The P3.4 structured mismatch summary as a compact agent-facing block: schema version and
+    coverage marker, then only the non-zero counts (and the hypotheses, if the summary has any)."""
+    counts = ", ".join(f"{kind} {n}" for kind, n in summary["counts"].items() if n)
+    line = (f"mismatch summary (schema v{summary['schema_version']}, coverage {summary['coverage']['status']}): "
+            f"{counts or 'no instruction-level differences'}")
+    if summary.get("hypotheses"):
+        line += "\nhypotheses: " + "; ".join(summary["hypotheses"])
+    return line
+
+
 def _action_advice(action, name: str, since: int, stale: str = "") -> str:
     """The policy's next action, as one appended agent-facing line."""
     lines = {
@@ -279,12 +297,6 @@ class NetworkError(Exception):
     """An error meant to be shown to the agent as-is."""
 
 
-# The optional retrieval block of a project's config JSON (plan Section 18.9): every flag defaults
-# off, so projects without the block behave exactly as before.
-RETRIEVAL_KEYS = ("function_id_retrieval", "bsim_retrieval", "external_queries", "route_order",
-                  "bsim_max_cold_cost")
-
-
 def config_from(proj) -> retrieval.RetrievalConfig:
     """`retrieval.config_from(proj)`: parse the optional ``retrieval`` block of a project's config JSON
     into a :class:`decompnet.retrieval.RetrievalConfig`. Unknown keys are rejected loudly — a typo must
@@ -293,10 +305,16 @@ def config_from(proj) -> retrieval.RetrievalConfig:
     block = cfg.get("retrieval", {}) or {}
     if not isinstance(block, dict):
         raise NetworkError("project config `retrieval` must be a table of retrieval flags")
-    unknown = sorted(set(block) - set(RETRIEVAL_KEYS))
+    from .project import CONFIG_SCHEMA, ConfigError, validate_config
+
+    unknown = sorted(set(block) - set(CONFIG_SCHEMA["retrieval"]))
     if unknown:
         raise NetworkError(f"unknown retrieval config key(s) {', '.join(unknown)}; "
-                           f"known keys: {', '.join(RETRIEVAL_KEYS)}")
+                           f"known keys: {', '.join(CONFIG_SCHEMA['retrieval'])}")
+    try:  # the same schema project.toml is validated against (plan 18.9), so the two can never disagree
+        validate_config({"retrieval": block})
+    except ConfigError as e:
+        raise NetworkError(f"bad retrieval config: {e}") from e
     try:
         return retrieval.RetrievalConfig.from_dict(block)
     except ValueError as e:
@@ -703,6 +721,7 @@ class Network:
                         "reset_reason='wall:'||excluded.reset_reason, epoch='wall', turns_used=4, last_at=excluded.last_at",
                         (fn["id"], time.time() + WALL_COOLDOWN, sig, time.time()))
             self._event(db, fn["project_id"], agent.id, "release", fn["name"])
+        self._report_escalation(fn["id"], False)  # released without a verified improvement
         out = (f"Released {fn['name']}. Your best attempt and notes are saved so the next agent starts "
                f"where you left off. Call claim_function for a new one.")
         if wall_signature(note or ""):
@@ -820,7 +839,8 @@ class Network:
                         db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
-        snap = snapshots.capture(fn, proj, ctx)
+        with telemetry.span("attempt.snapshot"):
+            snap = snapshots.capture(fn, proj, ctx, symbols_digest=snapshots.symbol_table_digest(self.store, proj["id"]))
         with telemetry.span("attempt.compile", origin=agent.name):
             result = self._compile(proj, ctx["header"], source, fn)
 
@@ -890,14 +910,18 @@ class Network:
 
         if self._hash_only(fn):
             self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
-                         compiled=True, snapshot=snap)
+                         compiled=True, snapshot=snap,
+                         object_digest=cand.fingerprint() if matched_now else None,
+                         link_verdict=verdict is True)
             if matched_now:
                 return {"text": f"✅ MATCH! {fn['name']} matches the target fingerprint. Credited to {agent.name}; "
                                 f"your claim is released.", "score": 0, "matched": True}
             return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
                             f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
                             "against your own lawful copy.", "score": None, "matched": False}
-        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap)
+        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap,
+                     object_digest=cand.fingerprint() if matched_now else None,
+                     link_verdict=verdict is True or d.bytes_match)
 
         if scratch:
             head = f"(scratch — {fn['name']} was already matched) score {d.score}"
@@ -913,6 +937,10 @@ class Network:
                 head += ("\nNOT A MATCH YET: every instruction reads the same, but the bytes differ"
                          + (" because of the linking notes at the end: fix those." if problems else
                             ": an encoding the listing doesn't show (branch form, an immediate, a relocation)."))
+        mismatch = ""
+        if not d.bytes_match:
+            mismatch = "\n" + _mismatch_text(scoring.mismatch_summary(
+                _counts_from_rows(d.rows), bytes_match=False, score=d.score))
         warn = ""
         if variant_note:
             tail = result.log.strip().splitlines()[-1] if result.log.strip() else "used"
@@ -921,7 +949,9 @@ class Network:
             warn = f"\ncompiler output:\n{result.log.strip()}"
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
-        return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
+        with telemetry.span("attempt.render"):
+            rendered = d.render()
+        return {"text": f"{head}\n{rendered}{mismatch}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
 
     def stall_note(self, function_id: int, agent_id: int, after: int | None = None) -> str:
         """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
@@ -948,16 +978,55 @@ class Network:
         return nudge + _escalation_advice(self, function_id, agent_id, since)
 
     def analysis_broker(self):
-        """The coordinator's analysis broker (P8). Built lazily with NO providers attached: the app
-        layer (the chat.py wiring) registers DirectGhidraProvider/ReaProvider on it. The lazy import
-        keeps the claim/attempt hot paths free of the broker (A-02)."""
+        """The coordinator's analysis broker (P8). Built lazily on the first escalation, never on the
+        claim/attempt hot paths (A-02). DirectGhidraProvider is registered when Ghidra is available;
+        ReaProvider only when DECOMPNET_REA_PROVIDER=1 and REA is available (feature flag rea_provider,
+        off by default). A provider that cannot be set up is skipped: ordinary matching is untouched."""
         from .analysis import Broker
 
         broker = getattr(self, "_analysis_broker", None)
         if broker is None:
-            broker = Broker()
+            from .analysis.evidence_store import EvidenceStore
+
+            broker = Broker(evidence_store=EvidenceStore(self.store),
+                            max_sessions_per_project=ANALYSIS_SESSIONS_PER_PROJECT)
+            try:
+                from .forks import ghidra
+
+                if ghidra.available():
+                    import tempfile
+
+                    from .analysis.broker import DirectGhidraProvider
+
+                    root = os.environ.get("DECOMPNET_CACHE_DIR") or tempfile.gettempdir()
+                    broker.register_provider(DirectGhidraProvider(Path(root) / "decompnet-ghidra"))
+            except Exception:
+                pass
+            try:
+                if os.environ.get("DECOMPNET_REA_PROVIDER") == "1":
+                    from .analysis import rea
+
+                    if rea.available():
+                        broker.register_provider(rea.ReaProvider())
+            except Exception:
+                pass
             self._analysis_broker = broker
         return broker
+
+    def _report_escalation(self, function_id: int, improved: bool) -> None:
+        """Feed a function's verified result back to the broker that investigated it (once per
+        investigation). Guarded: with no pending escalation or no broker this does nothing."""
+        pending = self.__dict__.get("_escalation_ids")
+        if not pending:
+            return
+        investigation_id = pending.pop(function_id, None)
+        broker = getattr(self, "_analysis_broker", None)
+        if investigation_id is None or broker is None:
+            return
+        try:
+            broker.report_outcome(investigation_id, improved)
+        except Exception:
+            pass
 
     def escalate(self, function: str, *, question: str | None = None, provider: str | None = None,
                  budget: dict | None = None, project: str | None = None) -> str:
@@ -994,11 +1063,88 @@ class Network:
             investigation = broker.propose_investigation(
                 key, question or f"How should {fn['name']} be changed to reach an exact match?",
                 None, cap, snapshot=f"rev-{fn['revision']}", requester="escalate_function")
+            pending = self.__dict__.setdefault("_escalation_ids", {})
+            earlier = pending.get(fn["id"])
+            if earlier is not None:  # escalated again with nothing verified in between
+                broker.report_outcome(earlier, False)
+            pending[fn["id"]] = investigation.investigation_id
             return _render_investigation(investigation, cap)
         except (CapabilityError, TargetError) as e:
             return f"escalate_function: {e}"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def calibrate_profile(self, project: str | None = None, candidates=None, functions=None) -> str:
+        """P4.1: a bounded compiler-profile calibration, returned as a plain-text report. The sample is at most
+        3 open functions that have target bytes and a retained draft; the candidates are the project's configured
+        compiler plus its alternative `compiler_profiles` (or the given Profile / compiler dicts), at most 6 of
+        them. A profile counts as confirmed only when a draft is byte-exact under it; a poor draft is never
+        evidence against a profile. Nothing is committed: changing the project's profile stays behind
+        toolchains.calibrate_and_commit (held-out validation and the accepted-match regression check)."""
+        from . import toolchains
+
+        proj = self._project(project)
+        cfg = json.loads(proj["config"])
+        base = dict(cfg.get("compiler") or {})
+        configured = toolchains.profile_from(base)
+        profiles, seen = [], set()
+        for c in (list(candidates) if candidates is not None
+                  else [base, *(cfg.get("compiler_profiles") or {}).values()]):
+            p = c if isinstance(c, toolchains.Profile) else toolchains.profile_from(c)
+            if p.toolchain and (p.toolchain, p.flags, p.wrapper) not in seen:
+                seen.add((p.toolchain, p.flags, p.wrapper))
+                profiles.append(p)
+        if functions:
+            rows = [self._function(name, proj["slug"]) for name in functions]
+        else:
+            rows = self.store.all(
+                "SELECT * FROM functions WHERE project_id=? AND status='open' AND target IS NOT NULL "
+                "AND best_source IS NOT NULL ORDER BY best_score LIMIT 3", proj["id"])
+        rows = [r for r in rows if r["status"] == "open" and r["target"] is not None
+                and (r["best_source"] or "").strip()][:3]
+        if not profiles or not rows:
+            return (f"calibrate_profile: nothing to calibrate for {proj['slug']} — it needs at least one "
+                    f"candidate compiler profile ({len(profiles)} found) and an open function with target bytes "
+                    f"and a retained draft ({len(rows)} found). Nothing was changed.")
+        sample = [(r["best_source"], r, self._context(proj["id"], r["unit"])["header"]) for r in rows]
+
+        def judge(profile, source, fn, header):
+            compiler = {**base, "toolchain": profile.toolchain, "flags": list(profile.flags)}
+            if (profile.toolchain, profile.flags) != (configured.toolchain, configured.flags):
+                compiler.pop("cmd", None)  # a default command template must not shadow the candidate compiler
+            result = compile_source(compiler_config(Path(proj["root"]), {**cfg, "compiler": compiler}),
+                                    header, source)
+            if not result.ok:
+                return {"verdict": "inconclusive", "evidence": f"{fn['name']}: draft does not compile"}
+            cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+            if cand is None:
+                return {"verdict": "inconclusive", "evidence": f"{fn['name']}: no such function in the object"}
+            d = scoring.diff(self._target_obj(fn, proj), cand)
+            exact = verdict if verdict is not None else d.bytes_match
+            return {"verdict": "match" if exact else "inconclusive", "score": d.score,
+                    "evidence": f"{fn['name']}: score {d.score}"}
+
+        report = toolchains.calibrate(profiles, sample, judge, max_profiles=6, max_samples=3)
+        lines = [f"Profile calibration for {proj['slug']}: {report.status} ({report.judge_calls} compiles; "
+                 f"at most {report.max_profiles} profiles x {report.max_samples} functions)",
+                 "sample: " + ", ".join(r["name"] for r in rows)]
+        for r in report.results:
+            line = f"- {r.profile.describe()} [{r.identity[:12]}]: {r.verdict}"
+            if r.score is not None:
+                line += f", mean score {r.score:.0f}"
+            if r.truncated:
+                line += ", partial sample"
+            if r.error:
+                line += f", untested: {r.error}"
+            lines.append(line)
+        if report.skipped:
+            lines.append(f"{len(report.skipped)} further candidate(s) skipped (over the {report.max_profiles}-profile budget)")
+        if report.recommendation is not None:
+            lines.append(f"Recommended: {report.recommendation.describe()}. NOT applied: committing a profile "
+                         f"needs held-out validation and an accepted-match regression check.")
+        else:
+            lines.append("No profile recommended; the project's profile is unchanged.")
+        return "\n".join(lines)
 
     def _validity(self, fn, source: str) -> validity.Validity:
         """Run the undefined-behaviour guard on one candidate source.
@@ -1009,18 +1155,19 @@ class Network:
         verdict when the project context cannot be resolved, so the guard can never
         turn into an outage.
         """
-        try:
-            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-            ctx = self._context(fn["project_id"], fn["unit"])
-            raw = json.loads(proj["config"])
-            if str(raw.get("arch") or "").lower() == "sm83":
-                # The probe is a GCC `-Wuninitialized` check: SDCC/GBDK has no equivalent flag, so on the
-                # Game Boy lane it is skipped rather than run with flags the compiler would reject.
-                return validity.Validity(ok=True, detail="guard not applicable to the Game Boy lane (SDCC)")
-            cfg = compiler_config(Path(proj["root"]), raw)
-        except Exception:  # pragma: no cover - defensive: never block on guard setup
-            return validity.Validity(ok=True, detail="guard skipped: context unavailable")
-        return validity.check(cfg, ctx["header"], source, compile_source)
+        with telemetry.span("attempt.validate"):
+            try:
+                proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+                ctx = self._context(fn["project_id"], fn["unit"])
+                raw = json.loads(proj["config"])
+                if str(raw.get("arch") or "").lower() == "sm83":
+                    # The probe is a GCC `-Wuninitialized` check: SDCC/GBDK has no equivalent flag, so on the
+                    # Game Boy lane it is skipped rather than run with flags the compiler would reject.
+                    return validity.Validity(ok=True, detail="guard not applicable to the Game Boy lane (SDCC)")
+                cfg = compiler_config(Path(proj["root"]), raw)
+            except Exception:  # pragma: no cover - defensive: never block on guard setup
+                return validity.Validity(ok=True, detail="guard skipped: context unavailable")
+            return validity.check(cfg, ctx["header"], source, compile_source)
 
     def _flag_validity(self, db, fn, source: str, why: str, verdict) -> None:
         """Record a validity verdict: a meta flag on the function plus an operator note."""
@@ -1034,19 +1181,32 @@ class Network:
 
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
-                stale_reason: str | None = None):
+                stale_reason: str | None = None, object_digest: str | None = None,
+                link_verdict: bool | None = None):
         """Record one attempt. `stale_reason` marks the result historical: it is stored (with its snapshot)
         as search evidence but never updates best_score/status, never accepts a match and never writes a
-        receipt (plan P1.4: a stale compilation cannot become a current match)."""
+        receipt (plan P1.4: a stale compilation cannot become a current match).
+
+        Receipt provenance (plan 18.4): `object_digest` is the candidate object's fingerprint, stored as
+        candidate_object_digest. `link_verdict` says whether the judge had a linked verdict or a full-diff
+        byte match: False records function_link_match 'unverified'; None (a caller that did not judge
+        through _judge) keeps the historical 'exact'."""
         telemetry.count("attempt.record")
         now = time.time()
         compiled = score is not None if compiled is None else compiled
-        if matched and self.acceptance_paused(
-                self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]):
+        slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
+        if matched and self.acceptance_paused(slug):
             # Runbook 24.1 step 1, enforced for every ingress path (agents, permuter, jobs, twins):
             # retained as search evidence, never accepted while the project's acceptance is paused.
             matched = False
-        with self.store.tx() as db:
+        if matched and snapshot is None and stale_reason is None and not (
+                getattr(self, "fork_slug", None) and self.fork_slug(slug)):
+            # Every ROM-project acceptance needs the dependency snapshot captured BEFORE the compile
+            # (plan P1.4); without one the result cannot be proven current, so it is historical only.
+            matched = False
+            stale_reason = "no snapshot captured before compile"
+        improved = False
+        with telemetry.span("attempt.persist"), self.store.tx() as db:
             # A rescan can archive the highest attempt rows. Keep live-feed IDs above that watermark
             # instead of reusing SQLite rowids.
             next_id = db.execute(
@@ -1056,32 +1216,52 @@ class Network:
             db.execute("INSERT INTO attempts(id,function_id,agent_id,score,compiled,context_version,source,created_at,via) "
                        "VALUES(?,?,?,?,?,?,?,?,?)", (next_id, fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
             attempt_id = next_id
-            if snapshot is not None:
+            row_snap = snapshot
+            if row_snap is None and stale_reason is not None:
+                # no snapshot to store: record the current dependencies so the historical reason is kept
+                row_snap = snapshots.capture(
+                    fn, db.execute("SELECT * FROM projects WHERE id=?", (fn["project_id"],)).fetchone(),
+                    self._context(fn["project_id"], fn["unit"]),
+                    symbols_digest=snapshots.symbol_table_digest(self.store, fn["project_id"]))
+            if row_snap is not None:
                 db.execute(
                     "INSERT INTO attempt_snapshots(attempt_id, project_id, function_id, function_revision, "
                     "context_version, context_digest, target_digest, compiler_digest, scorer_version, policy_version, "
                     "stale_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (attempt_id, snapshot["project_id"], snapshot["function_id"], snapshot["function_revision"],
-                     snapshot["context_version"], snapshot["context_digest"], snapshot["target_digest"],
-                     snapshot["compiler_digest"], snapshot["scorer_version"], snapshot["policy_version"], stale_reason))
+                    (attempt_id, row_snap["project_id"], row_snap["function_id"], row_snap["function_revision"],
+                     row_snap["context_version"], row_snap["context_digest"], row_snap["target_digest"],
+                     row_snap["compiler_digest"], row_snap["scorer_version"], row_snap["policy_version"], stale_reason))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if stale_reason is not None:
                 return  # historical only: no best/status/claim/receipt/epoch changes
+            if matched and snapshot is not None:
+                # P1.4 step 3: verify the dependency epochs again inside the short acceptance transaction
+                # (the store is one connection under an RLock, so this read sees the open transaction).
+                current, why = snapshots.check_current(
+                    self, db.execute("SELECT * FROM projects WHERE id=?", (fn["project_id"],)).fetchone(), fn, snapshot)
+                if not current:
+                    db.execute("UPDATE attempt_snapshots SET stale_reason=? WHERE attempt_id=?", (why, attempt_id))
+                    return  # became stale after the caller's check: historical only, never accepted
             # P4.6: retain every distinct source as a provenance-tagged candidate instead of letting the
             # latest draft overwrite the only copy; alternatives are never current-best unless rescored.
             self._note_candidate(db, fn, via, source, snapshot)
             if score is not None:
+                prev_best = db.execute("SELECT best_score FROM functions WHERE id=?", (fn["id"],)).fetchone()[0]
                 cur = db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=?, best_verified=1 "
                                  "WHERE id=? AND status='open' AND (best_score IS NULL OR best_score > ?)",
                                  (score, source, agent.id, fn["id"], score))
+                improved = bool(cur.rowcount)
                 # A materially better source from an agent is new search input: give the permuter a fresh
                 # budget (bounded, reset reason recorded). The permuter's own improvements don't reset its
                 # own budget — that would make the budget infinite. Equal scores (cosmetic changes) don't
-                # either: the strict best_score > ? comparison is what gates this.
-                if cur.rowcount and via != "permuter":
+                # either: the strict best_score > ? comparison is what gates this. Tiny gains don't (new score
+                # must be at most BUDGET_RESET_RATIO of the previous best) and a lifetime cap bounds the resets.
+                if (cur.rowcount and via != "permuter"
+                        and (prev_best is None or score <= prev_best * BUDGET_RESET_RATIO)):
                     db.execute("UPDATE search_budgets SET turns_used=0, epoch=?, reset_reason='better-source', "
-                               "last_at=? WHERE function_id=? AND turns_used > 0",
-                               (f"best-{score}", now, fn["id"]))
+                               "last_at=?, lifetime_resets=lifetime_resets+1 "
+                               "WHERE function_id=? AND turns_used > 0 AND lifetime_resets < ?",
+                               (f"best-{score}", now, fn["id"], MAX_BUDGET_RESETS))
                 # A near-miss improvement is exactly where undefined behaviour hides (an
                 # uninitialised pointer that lands in a plausible register scores well by
                 # shape). Flag it without blocking: the match guard below is the hard gate.
@@ -1108,18 +1288,21 @@ class Network:
                 db.execute("DELETE FROM search_budgets WHERE function_id=?", (fn["id"],))
                 snap = snapshot if snapshot is not None else snapshots.capture(
                     fn, db.execute("SELECT * FROM projects WHERE id=?", (fn["project_id"],)).fetchone(),
-                    self._context(fn["project_id"], fn["unit"]))
+                    self._context(fn["project_id"], fn["unit"]),
+                    symbols_digest=snapshots.symbol_table_digest(self.store, fn["project_id"]))
                 db.execute(
                     "INSERT OR REPLACE INTO verification_receipts(function_id, attempt_id, snapshot_id, source_digest, "
                     "candidate_object_digest, origin, object_match, function_link_match, unit_code_data_match, "
                     "whole_image_checksum, acceptance_policy, verified_at_utc) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (fn["id"], attempt_id, snapshots.snapshot_id(snap), snapshots.sha(source.encode()), None,
+                    (fn["id"], attempt_id, snapshots.snapshot_id(snap), snapshots.sha(source.encode()), object_digest,
                      via, "fingerprint" if fn["target"] is None else "exact",
-                     "exact", "unverified", "not_run", f"rom-function-policy-v{snapshots.POLICY_VERSION}",
+                     "unverified" if link_verdict is False else "exact", "unverified", "not_run", f"rom-function-policy-v{snapshots.POLICY_VERSION}",
                      snapshots.now_utc()))
                 db.execute("UPDATE projects SET matched_epoch=matched_epoch+1 WHERE id=?", (fn["project_id"],))
                 self._event(db, fn["project_id"], agent.id, "match", fn["name"])
+        if improved or matched:
+            self._report_escalation(fn["id"], True)
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
 
@@ -1152,10 +1335,12 @@ class Network:
         if not rows:
             return f"No retained candidates for {fn['name']} yet."
         out = [f"### {fn['name']}: {len(rows)} retained candidate(s)"]
+        symbols_digest = snapshots.symbol_table_digest(self.store, proj["id"])
         for r in rows:
             fresh = r["evidence"] is None or (
                 r["score_version"] == snapshots.SCORER_VERSION and ctx is not None
-                and r["evidence"] == snapshots.snapshot_id(snapshots.capture(fn, proj, ctx)))
+                and r["evidence"] == snapshots.snapshot_id(
+                    snapshots.capture(fn, proj, ctx, symbols_digest=symbols_digest)))
             out.append(f"- {r['origin']} ({'current-snapshot' if fresh else 'historical'}): "
                        f"{r['source'].strip().splitlines()[0] if r['source'].strip() else '(empty)'}")
         return "\n".join(out)
@@ -1268,7 +1453,8 @@ class Network:
                     d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
                 score, ok = d.score, d.score == fn["best_score"]
             with self.store.tx() as db:
-                db.execute("UPDATE functions SET best_verified=1 WHERE id=?", (fn["id"],))
+                if ok:  # a best that is not reproduced stays flagged unverified (the note below says why)
+                    db.execute("UPDATE functions SET best_verified=1 WHERE id=?", (fn["id"],))
                 db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) "
                            "VALUES(?,?,NULL,?,?)", (proj["id"], fn["id"],
                                                     f"revalidated legacy best: reproduces (score {score})"
@@ -1641,8 +1827,15 @@ class Network:
         with self.store.tx() as db:
             ids = [r["id"] for r in db.execute("SELECT id FROM functions WHERE project_id=?", (proj["id"],))]
             for table in ("claims", "attempts", "attempt_snapshots", "verification_receipts", "candidates",
-                        "function_walls", "merge_proposals"):
+                        "function_walls", "merge_proposals", "function_identity"):
                 db.executemany(f"DELETE FROM {table} WHERE function_id=?", [(i,) for i in ids])
+            # evidence holds target-derived text (pseudocode, instructions): a takedown removes it too. Its
+            # function keys are "<slug>::<name>" (escalate), and a payload goes once no record points at it
+            prefix = f"{proj['slug']}::"
+            db.execute("DELETE FROM evidence_records WHERE substr(function_key, 1, ?) = ?", (len(prefix), prefix))
+            db.execute("DELETE FROM evidence_payloads WHERE payload_ref NOT IN (SELECT json_extract(f.value, "
+                       "'$.payload_ref') FROM evidence_records r, json_each(r.facets) f "
+                       "WHERE json_extract(f.value, '$.payload_ref') IS NOT NULL)")
             for table in ("notes", "events", "context_versions", "functions", "symbols", "twin_misses"):
                 db.execute(f"DELETE FROM {table} WHERE project_id=?", (proj["id"],))
             db.execute("DELETE FROM reference_sources WHERE project_id=?", (proj["id"],))

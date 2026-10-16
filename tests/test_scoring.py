@@ -347,7 +347,9 @@ def test_s02_score_only_and_render_paths_agree_on_scores_and_verdicts():
             penalty = sum(s.counts[k] * COUNT_PENALTIES[k] for k in COUNT_PENALTIES)
             expected = 0 if s.bytes_match else (1 if penalty == 0 else penalty)
             assert s.score == expected, (arch, name)
-            assert list(s.counts) == ["register", "stack_offset", "operand", "insertion", "deletion", "reorder"]
+            assert list(s.counts) == ["register", "stack_offset", "operand", "insertion", "deletion", "reorder",
+                                      "call_reference"]
+            assert s.counts["call_reference"] <= s.counts["operand"]  # informational subset, no own penalty
             assert s.summary["schema_version"] == 1
             assert set(s.summary) == {"schema_version", "counts", "observations", "hypotheses", "coverage", "verification"}
             assert s.summary["verification"] == {"function_link_match": "unverified"}
@@ -539,3 +541,98 @@ def test_s07_alternative_alignment_changes_ranking_only_when_versioned():
             scoring.register_normalisation_policy(NORMALISATION_POLICY, lambda *a: "x")
     finally:
         del scoring._ALIGNERS["alt-replace-v1"]
+
+
+# ------------------------------------------------------- P3.3 fast path, P3.1 sequence reuse, P5.4 counts
+
+def test_p33_authoritative_verdict_skips_alignment_but_a_fingerprint_alone_never_does(monkeypatch):
+    prepare_cache_clear()
+    t = obj("x86_64", False, X64_BASE)
+    same = obj("x86_64", False, X64_BASE)
+    other = obj("x86_64", False, X64_REG)
+    expected = score_only(t, other)  # scored before the guards below are installed
+    full = score_only(t, same)
+    calls = []
+    real_align, real_compare = scoring._align, scoring._compare
+    monkeypatch.setattr(scoring, "_align", lambda *a, **k: calls.append("align") or real_align(*a, **k))
+    monkeypatch.setattr(scoring, "_compare", lambda *a, **k: calls.append("compare") or real_compare(*a, **k))
+
+    fast = score_only(t, same, verdict=True)
+    assert calls == []  # no alignment and no comparison ran
+    assert (fast.score, fast.bytes_match, fast.max_score) == (0, True, full.max_score)
+    assert all(v == 0 for v in fast.counts.values()) and list(fast.counts) == list(full.counts)
+    assert fast.summary["counts"] == fast.counts
+    assert fast.summary["verification"] == {"function_link_match": "exact"}
+    assert fast.percent == 100.0
+    assert fast.render() == full.render()  # rows are still available on demand
+
+    # a fingerprint match alone (no verdict, or a negative one) is still aligned and scored
+    for v in (None, False):
+        calls.clear()
+        res = score_only(t, same, verdict=v)
+        assert "align" in calls and "compare" in calls
+        assert (res.score, res.bytes_match) == (0, True)
+        assert res.summary["verification"] == {"function_link_match": "unverified"}
+
+    # a verdict never overrides a normalised-fingerprint difference: the candidate is scored normally
+    calls.clear()
+    res = score_only(t, other, verdict=True)
+    assert "align" in calls
+    assert (res.score, res.bytes_match, res.counts) == (expected.score, False, expected.counts)
+    assert res.summary["verification"] == {"function_link_match": "unverified"}
+    with pytest.raises(ValueError, match="unknown alignment version"):
+        score_only(t, same, verdict=True, alignment_version="never-registered-v1")
+
+
+def test_p31_baseline_aligner_reuses_the_prepared_mnemonic_sequences(monkeypatch):
+    prepare_cache_clear()
+    t = obj("x86_64", False, X64_BASE)
+    c = obj("x86_64", False, X64_INS)
+    pt, pc = prepare(t), prepare(c)
+    seen = []
+    real = difflib.SequenceMatcher
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(scoring.difflib, "SequenceMatcher", spy)
+    s = score_only(t, c)
+    d = diff(t, c)
+    rendered = s.rows()
+    assert len(seen) == 3  # score_only, diff and the deferred rows: one alignment each
+    assert all(k["a"] is pt.mnemonic_sequence and k["b"] is pc.mnemonic_sequence for k in seen)
+    monkeypatch.undo()
+    assert rendered == d.rows == b_diff(t, c)[2]  # unchanged result: golden parity holds
+
+
+def test_p54_call_and_global_reference_differences_are_counted_conservatively():
+    def counts(t, c):
+        s = score_only(t, c)
+        assert sum(s.counts[k] * COUNT_PENALTIES[k] for k in COUNT_PENALTIES) == s.score  # no extra penalty
+        assert s.summary["counts"] == s.counts
+        return s.counts
+
+    call = bytes.fromhex("e8 00 00 00 00 c3")
+    # relocated call to a different callee: a call-target reference difference, still an operand mismatch
+    c = counts(obj("x86_64", False, call, [Reloc(1, 4, "foo", -4)]),
+               obj("x86_64", False, call, [Reloc(1, 4, "bar", -4)]))
+    assert (c["operand"], c["call_reference"]) == (1, 1)
+    # relocated global data reference to a different symbol
+    load = bytes.fromhex("48 8b 05 00 00 00 00 c3")
+    c = counts(obj("x86_64", False, load, [Reloc(3, 2, "g1", -4)]),
+               obj("x86_64", False, load, [Reloc(3, 2, "g2", -4)]))
+    assert (c["operand"], c["call_reference"]) == (1, 1)
+    # the same symbol with a different addend is not a reference difference: unknown stays operand
+    c = counts(obj("x86_64", False, load, [Reloc(3, 2, "g1", -4)]),
+               obj("x86_64", False, load, [Reloc(3, 2, "g1", 0)]))
+    assert (c["operand"], c["call_reference"]) == (1, 0)
+    # an unrelocated direct call to a different address is a call-target difference
+    c = counts(obj("x86_64", False, bytes.fromhex("e8 05 00 00 00 c3")),
+               obj("x86_64", False, bytes.fromhex("e8 10 00 00 00 c3")))
+    assert (c["operand"], c["call_reference"]) == (1, 1)
+    # a plain immediate difference and register-only differences are never call references
+    c = counts(obj("x86_64", False, X64_IMM), obj("x86_64", False, X64_IMM2))
+    assert (c["operand"], c["call_reference"]) == (1, 0)
+    c = counts(obj("x86_64", False, X64_BASE), obj("x86_64", False, X64_REG))
+    assert c["call_reference"] == 0 and c["register"] > 0

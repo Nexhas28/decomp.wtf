@@ -123,6 +123,7 @@ import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -649,6 +650,18 @@ def validate_schema_pin(catalog: dict) -> None:
 
 # ---------------------------------------------------------------- stdio sidecar transport
 
+@contextmanager
+def _analysis_slot(timeout: float):
+    """Hold one scheduler analysis slot for a single sidecar request. The sidecar session itself is
+    not budgeted; a busy budget fails the request instead of queuing it."""
+    from .. import scheduler  # lazy: avoids an import cycle with the scheduler
+    try:
+        with scheduler.BUDGET.slot("analysis", timeout=timeout):
+            yield
+    except TimeoutError as e:
+        raise ReaProviderFailure("analysis budget busy") from e
+
+
 class ReaMCPClient:
     """A private stdio JSON-RPC client over the pinned REA server (P9.3). Newline-delimited JSON,
     one request in flight at a time, bounded reads, MCP ``notifications/cancelled`` on cancel."""
@@ -1110,17 +1123,26 @@ class ReaProvider(Provider):
                 f"{digest[:16]}... but current bytes hash to {current[:16]}... — the identity "
                 f"conflict must be resolved by re-admission, never by using mismatched evidence")
         client = ReaMCPClient(self.command, cwd=self.cwd, env=self.env)
-        client.start()
         try:
-            client.initialize()
-            client.list_tools()  # E-01: schema drift fails here, before any guessed arguments
+            client.start()
+        except OSError as e:
+            client.close()  # nothing was spawned, nothing is registered in self._sessions
+            raise ReaProviderFailure(f"REA sidecar could not be started "
+                                     f"({self.command[0] if self.command else '<empty command>'}): "
+                                     f"{e}") from e
+        try:
+            with _analysis_slot(client.start_timeout):
+                client.initialize()
+            with _analysis_slot(client.start_timeout):
+                client.list_tools()  # E-01: schema drift fails here, before any guessed arguments
             arguments = {"path": str(artifact), "provider_id": REA_GHIDRA_PROVIDER_ID}
             if profile.get("format") == "dos-com":
                 arguments["format"] = "dos-com"
             if profile.get("snapshot_path"):
                 arguments["snapshot_path"] = str(profile["snapshot_path"])
-            outcome = client.call("open_binary", arguments,
-                                  deadline=time.monotonic() + client.start_timeout)
+            with _analysis_slot(client.start_timeout):
+                outcome = client.call("open_binary", arguments,
+                                      deadline=time.monotonic() + client.start_timeout)
             if not outcome.ok:
                 raise ReaProviderFailure(f"REA open_binary failed: {outcome.diagnostic}")
             facts = outcome.value
@@ -1274,8 +1296,9 @@ class ReaProvider(Provider):
                                      diagnostics=[f"no procedure for {name!r} (not an observed "
                                                   f"absence: the name simply did not resolve)"]),
                     {}, [])
-        outcome = client.call("analyze_function", {"procedure": address}, cancel=cancel,
-                              deadline=deadline)
+        with _analysis_slot(client.start_timeout):
+            outcome = client.call("analyze_function", {"procedure": address}, cancel=cancel,
+                                  deadline=deadline)
         if not outcome.ok:
             if outcome.recovery_ref:
                 # E-03/E-04: a partial observation or an oversized-but-completed analysis keeps
@@ -1313,8 +1336,9 @@ class ReaProvider(Provider):
                                      f"normalized_result: {type(normalized).__name__}")
         instructions_view = None
         if "instructions" in facets:
-            inst_outcome = client.call("read_function_instructions", {"procedure": address},
-                                       cancel=cancel, deadline=deadline)
+            with _analysis_slot(client.start_timeout):
+                inst_outcome = client.call("read_function_instructions", {"procedure": address},
+                                           cancel=cancel, deadline=deadline)
             instructions_view = self._instructions_view(inst_outcome, handle)
         views, coverage, entry, classification = self._project_dossier(
             normalized, facets, limits, instructions_view)
@@ -1331,8 +1355,9 @@ class ReaProvider(Provider):
 
     def _resolve_procedure(self, client, name: str, cancel, deadline: float,
                            digest: str) -> str | None:
-        outcome = client.call("procedure_address", {"procedure": name}, cancel=cancel,
-                              deadline=deadline)
+        with _analysis_slot(client.start_timeout):
+            outcome = client.call("procedure_address", {"procedure": name}, cancel=cancel,
+                                  deadline=deadline)
         if not outcome.ok:
             return None
         validate_evidence_envelope(outcome.value, "procedure_address", digest,

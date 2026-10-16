@@ -1,0 +1,168 @@
+{
+  "date": "2026-10-16",
+  "item": "Ghidra real lane: cold/warm import cost, memory, evidence-assisted case",
+  "host": {
+    "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.12.13 (.venv/bin/python -> cpython-3.12-macos-aarch64)"
+  },
+  "toolchain": {
+    "ghidra_home": "/Users/shanemcgovern/Documents/Codex/2026-10-14/i-want/work/ghidra-displaylink/ghidra_12.1.4_PUBLIC",
+    "provider_version": "ghidra-12.1.4",
+    "java_home": "/Users/shanemcgovern/Decomp/java/jdk-21.0.12.1+1/Contents/Home",
+    "java_version_line": "openjdk version \"21.0.12.1\" 2026-08-18 LTS",
+    "system /usr/bin/java": "stub, no runtime installed (Unable to locate a Java Runtime)"
+  },
+  "commands": {
+    "pytest": "cd /Users/shanemcgovern/dev/decomp.wtf-dev && PYTHONPATH=src .venv/bin/python -m pytest tests/test_ghidra.py tests/test_ghidra_rom.py -rs -v -p no:cacheprovider",
+    "measurement_runner": "sh scratchpad/ghidra/run.sh  (sets PYTHONPATH=src, DECOMP_GHIDRA_USER_HOME=scratchpad/ghidra/ghuser, each run wrapped in /usr/bin/time -l .venv/bin/python scratchpad/ghidra/measure.py)",
+    "object": "projects/demo-n64/target/game.o (ELF32 MSB relocatable, MIPS-II); profile kind=object processor=mips bits=32 endian=big",
+    "cache_dirs": "scratchpad/ghidra/cache-evidence (cold then warm), scratchpad/ghidra/cache-plain (cold, pseudocode only)"
+  },
+  "real_lane_enablement": "No env var or marker. tests/test_ghidra.py::test_real_lane_imports_a_clang_object_with_identity_correct_dossiers and tests/test_ghidra_rom.py::test_decompile_rom_function_real_lane run when ghidra.available() (ghidra_home + java_home + java>=21) is true; they skip otherwise.",
+  "tests": {
+    "result": "43 passed, 0 failed, 0 skipped (exit 0)",
+    "skipped": 0,
+    "exit_code": 0,
+    "log_tail": [
+      "============================== 43 passed in 9.27s ==============================",
+      "EXIT=0"
+    ]
+  },
+  "measurements": {
+    "cold_evidence": {
+      "facets": [
+        "instructions",
+        "blocks",
+        "calls",
+        "references",
+        "types"
+      ],
+      "status": "complete",
+      "from_cache": false,
+      "functions_exported": 13,
+      "script_wall_seconds": 5.903,
+      "real_seconds": 6.02,
+      "max_rss_bytes": 552599552,
+      "peak_memory_footprint_bytes": 24068648
+    },
+    "warm_evidence": {
+      "facets": [
+        "instructions",
+        "blocks",
+        "calls",
+        "references",
+        "types"
+      ],
+      "status": "complete",
+      "from_cache": true,
+      "functions_exported": 13,
+      "script_wall_seconds": 0.004,
+      "real_seconds": 0.08,
+      "max_rss_bytes": 35143680,
+      "peak_memory_footprint_bytes": 24117776
+    },
+    "cold_plain_pseudocode_only": {
+      "facets": [],
+      "status": "complete",
+      "from_cache": false,
+      "functions_exported": 13,
+      "script_wall_seconds": 5.19,
+      "real_seconds": 5.26,
+      "max_rss_bytes": 495239168,
+      "peak_memory_footprint_bytes": 23478824
+    }
+  },
+  "evidence_summary": {
+    "functions": 13,
+    "coverage_cold_evidence": {
+      "pseudocode": {
+        "ok": 13
+      },
+      "instructions": {
+        "ok": 13
+      },
+      "blocks": {
+        "ok": 13
+      },
+      "calls": {
+        "empty": 9,
+        "ok": 4
+      },
+      "references": {
+        "ok": 12,
+        "empty": 1
+      },
+      "types": {
+        "ok": 13
+      },
+      "pcode": {
+        "unknown": 13
+      }
+    },
+    "pseudocode_identical_plain_vs_evidence_functions": "13/13",
+    "calls_with_resolved_target": "7/8",
+    "example_entity_spawn": {
+      "plain_c_signature": "short * entity_spawn(short param_1,undefined4 param_2,undefined4 param_3)",
+      "calls": [
+        {
+          "address": 66056,
+          "target": 65884,
+          "name": "entity_default_hp"
+        }
+      ],
+      "references_count": 23,
+      "types": [
+        {
+          "name": "entity_spawn",
+          "signature": "undefined entity_spawn(void)",
+          "origin": "decompiler",
+          "complete": false
+        }
+      ],
+      "blocks": 6
+    },
+    "example_entity_collides": {
+      "calls": [
+        {
+          "address": 66296,
+          "target": 65572,
+          "name": "abs_s32"
+        },
+        {
+          "address": 66348,
+          "target": 65572,
+          "name": "abs_s32"
+        }
+      ],
+      "references_count": 9,
+      "types": [
+        {
+          "name": "entity_collides",
+          "signature": "undefined entity_collides(void)"
+        }
+      ],
+      "plain_c_text_equal_to_evidence_text": true
+    },
+    "plain_run_dossier_facets_populated": "Checked for entity_spawn and entity_collides only: the plain run (no facets) has 0 calls, 0 references, 0 types for each.",
+    "notes": "Plain C text is identical to the evidence-run C text. The evidence run adds resolved call targets, reference observations and a per-function type entry whose signature is only the function's own prototype (e.g. 'undefined entity_spawn(void)'). No struct field-offset type or switch table facts were produced for these functions."
+  },
+  "function_names": [
+    "abs_s32",
+    "add_score",
+    "checksum_save",
+    "clamp_s32",
+    "count_alive_entities",
+    "entity_collides",
+    "entity_default_hp",
+    "entity_spawn",
+    "entity_update_physics",
+    "game_tick",
+    "lerp",
+    "player_take_damage",
+    "rng_next"
+  ],
+  "raw_artifacts": [
+    "benchmarks/real-lanes/ghidra-measure-2026-10-16-functions.json (cold evidence dossiers)"
+  ]
+}

@@ -2,14 +2,16 @@
 
 The structured mismatch counts produced by `scoring.Comparison` (register, stack_offset, operand,
 insertion, deletion, reorder) are routed to preferred operator families. Routing only *reweights*:
-every operator keeps at least its base weight, so a routed family is never hard-excluded and the
-search can always recover through another family.
+every operator keeps a positive weight, so a routed family is never hard-excluded and the search can
+always recover through another family. Boosts never go below the base weight; the one down-weighting
+is for dominant call/global reference differences (`call_reference`, an informational subset of
+`operand`), where prototype/context investigation comes before broad random mutation.
 
 Literal/data mismatches are never routed to generic permutation: the summary has no literal count,
-so count-less-but-not-matching evidence is treated as "no structured evidence" and keeps the
-conservative mixed portfolio, with the decision recording that data/constant representation is out
-of the permuter's reach. Unknown or weakly classified evidence falls back to the same conservative
-portfolio. The `RoutingDecision` is recorded with every run (P5.4: record the decision and outcome).
+so count-less-but-not-matching evidence is treated as "no structured evidence" and boosts the
+exploratory constant/representation operators (retype_local, cast_add, cast_remove) while
+down-weighting structural reordering, with the decision recording that literal/data is suspected.
+Unknown or weakly classified evidence falls back to the same conservative portfolio. The `RoutingDecision` is recorded with every run (P5.4: record the decision and outcome).
 """
 
 from __future__ import annotations
@@ -32,13 +34,21 @@ _ROUTE_V1: dict[str, tuple[str, ...]] = {
     "deletion": ("return_ternary", "branch_swap", "loop_bound_explore", "while_for", "inc_style"),
     # instruction scheduling: dependency-safe order changes and expression grouping
     "reorder": ("swap_statements", "temp_introduce", "temp_eliminate", "inc_style"),
+    # call/global reference differences: prototype/context investigation before broad random mutation.
+    # These type-facing operators stay at base weight; every other operator is down-weighted.
+    "call_reference": ("retype_local", "cast_add", "cast_remove"),
 }
 
 ROUTING_TABLES = {"mismatch-v1": _ROUTE_V1}
 
-_MISMATCH_KEYS = frozenset({"register", "stack_offset", "operand", "insertion", "deletion", "reorder"})
+_MISMATCH_KEYS = frozenset({"register", "stack_offset", "operand", "insertion", "deletion", "reorder",
+                            "call_reference"})
 _DOMINANT_BOOST = 4
 _SECONDARY_BOOST = 2
+_CALL_REFERENCE_DOWNWEIGHT = 0.5
+_LITERAL_DATA_FAMILIES = ("retype_local", "cast_add", "cast_remove")
+_STRUCTURAL_REORDER = frozenset({"reorder_decls", "swap_statements", "temp_introduce", "temp_eliminate"})
+_REORDER_DOWNWEIGHT = 0.5
 
 _FAMILY_NOTES = {
     "register": "declaration order, temporary lifetime, expression decomposition",
@@ -47,6 +57,7 @@ _FAMILY_NOTES = {
     "insertion": "conditions, early returns, loop shape",
     "deletion": "conditions, early returns, loop shape",
     "reorder": "dependency-safe order changes and expression grouping",
+    "call_reference": "prototype/context investigation first",
 }
 
 
@@ -85,22 +96,40 @@ def route(counts: dict, coverage: str, policy: SearchPolicy) -> RoutingDecision:
         raise ValueError(f"unknown mismatch keys {sorted(unknown)}; expected {sorted(_MISMATCH_KEYS)}")
     weights = dict(policy.base_weights)
     present = {k: v for k, v in counts.items() if v > 0}
+    call_reference = present.pop("call_reference", 0)
+    if call_reference:  # an informational subset of "operand": only the remaining operand mismatches count
+        remaining = present.pop("operand", 0) - call_reference
+        if remaining > 0:
+            present["operand"] = remaining
+        present["call_reference"] = call_reference
     families: tuple[str, ...] = ()
     if not present:
-        reason = ("no structured mismatch evidence (possible literal/data or encoding-only "
-                  "differences): no permutation family is boosted — conservative mixed portfolio; "
-                  "data/constant representation is never reached through generic permutation")
+        families = _LITERAL_DATA_FAMILIES
+        for op in families:
+            weights[op] = weights.get(op, 1) * _DOMINANT_BOOST
+        for op in weights:
+            if op in _STRUCTURAL_REORDER:
+                weights[op] = weights[op] * _REORDER_DOWNWEIGHT
+        reason = "literal/data suspected: try constant representation and data declarations"
     else:
         dominant = max(present, key=present.get)
         families = table[dominant]
-        for op in families:
-            weights[op] = weights.get(op, 1) * _DOMINANT_BOOST
+        if dominant == "call_reference":
+            for op in weights:
+                if op not in families:
+                    weights[op] = weights[op] * _CALL_REFERENCE_DOWNWEIGHT
+            reason = (f"call_reference mismatches dominate ({present[dominant]}); "
+                      f"{_FAMILY_NOTES[dominant]}: down-weighting broad random mutation, keeping "
+                      f"{', '.join(families)} at base weight")
+        else:
+            for op in families:
+                weights[op] = weights.get(op, 1) * _DOMINANT_BOOST
+            reason = (f"{dominant} mismatches dominate ({present[dominant]}); boosting "
+                      f"{', '.join(families)} — {_FAMILY_NOTES[dominant]}")
         for key, n in present.items():
-            if key == dominant:
+            if key == dominant or key == "call_reference":
                 continue
             for op in table.get(key, ()):
                 weights[op] = max(weights[op], policy.base_weights.get(op, 1) * _SECONDARY_BOOST)
-        reason = (f"{dominant} mismatches dominate ({present[dominant]}); boosting "
-                  f"{', '.join(families)} — {_FAMILY_NOTES[dominant]}")
     return RoutingDecision(routing=policy.routing, policy_epoch=policy.epoch, counts=dict(counts),
                            coverage=coverage, families=families, weights=weights, reason=reason)

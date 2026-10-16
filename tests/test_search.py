@@ -39,6 +39,13 @@ SRC = """s32 collide(s32 a, s32 b) {
 """
 
 
+@pytest.fixture(autouse=True)
+def guided_search(monkeypatch):
+    """The guided beam search is opt-in (plan P5 exit gate); the permuter tests here assert the guided
+    policy's epoch and version, so they run with it switched on. Tests of the default unset the variable."""
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
+
+
 def make_evaluator(scores=None, object_key=None, compile_errors=frozenset()):
     """A deterministic fake compile/score: score by content lookup or hash, object identity optional."""
     calls = []
@@ -240,6 +247,42 @@ def test_p06e_propose_failures_are_recorded():
     assert r.stats["propose_failure"] == 1
 
 
+def test_p06f_portfolio_seeds_give_different_reproducible_runs_and_distinct_structures():
+    """Different seeds diverge, each seed replays exactly, and diversity admission never keeps two members
+    with one structure key (P-06)."""
+    from decompnet.search.portfolio import Candidate, Portfolio, structure_key
+
+    policy = SearchPolicy(id="t", version=1, beam=4, plateau=0.2, max_steps=40,
+                          base_weights=dict(SEARCH_POLICY.base_weights))
+
+    def score(source):  # deterministic, varied: ties and improvements both occur
+        return 1 + sum(map(ord, source)) % 7
+
+    def drive(seed):
+        r = new_run(policy, seed, "snap-1", SRC, 8)
+        results = step_all(r, make_evaluator(score)[0])
+        trace = [(o.step, o.kind, o.operator, o.child_digest, o.score) for o in results]
+        return trace, checkpoint_run(r)
+
+    first, again, other = drive("portfolio-a"), drive("portfolio-a"), drive("portfolio-b")
+    assert len(first[0]) > 10
+    assert first == again  # each seed reproduces its trace and its whole portfolio state
+    assert first[0] != other[0] and first[1]["rng"] != other[1]["rng"]  # a different seed is a different run
+    assert first[1]["slot_seeds"] != other[1]["slot_seeds"]
+
+    # diversity admission: a member sharing a structure key (or a source) is refused, a new shape is kept
+    p = Portfolio(policy, SRC, 5)
+    same_shape = SRC.replace("x = a + b;", "x = b + a;")
+    new_shape = SRC.replace("    return y;", "    x = 0;\n    return y;")
+    assert structure_key(same_shape) == structure_key(SRC) and structure_key(new_shape) != structure_key(SRC)
+    assert not p.offer(Candidate(same_shape, 5, structure_key(same_shape)))
+    assert p.offer(Candidate(new_shape, 5, structure_key(new_shape)))
+    assert not p.offer(Candidate(new_shape.replace("x = 0;", "x = 1;"), 5, structure_key(new_shape)))
+    structures = [m.structure for m in p.members]
+    assert len(structures) == len(set(structures)) == 2 and p.best.source == SRC
+    assert len(p.members) <= policy.beam
+
+
 # -------------------------------------------------------------- P5.4 routing
 
 def test_routing_maps_register_mismatches_to_decl_and_temporary_families():
@@ -266,14 +309,41 @@ def test_routing_maps_insertion_deletion_to_control_flow_families():
     assert set(d.families) == {"return_ternary", "branch_swap", "loop_bound_explore", "while_for", "inc_style"}
 
 
+def test_routing_downweights_broad_mutation_for_call_reference_mismatches():
+    """Call/global reference differences: prototype/context investigation before broad mutation (P5.4)."""
+    base = SEARCH_POLICY.base_weights
+    d = route({"operand": 3, "call_reference": 3}, "complete", SEARCH_POLICY)  # every operand mismatch is a call ref
+    assert d.families == ("retype_local", "cast_add", "cast_remove")
+    assert "prototype/context investigation first" in d.reason and "call_reference" in d.reason
+    assert all(d.weights[op] == base[op] for op in d.families)  # type-facing operators keep base weight
+    assert d.weights["swap_statements"] == base["swap_statements"] * 0.5
+    assert all(0 < d.weights[op] <= base[op] for op in base)  # down-weighted, never excluded or boosted
+    # routing stays pure and records the original counts
+    assert d == route({"operand": 3, "call_reference": 3}, "complete", SEARCH_POLICY)
+    assert d.to_dict()["counts"] == {"operand": 3, "call_reference": 3}
+    from decompnet.search.routing import RoutingDecision
+    assert RoutingDecision.from_dict(d.to_dict()) == d
+    # when other operand mismatches outnumber the call references, the existing operand routing applies
+    mixed = route({"operand": 5, "call_reference": 1}, "complete", SEARCH_POLICY)
+    assert mixed.families == route({"operand": 4}, "complete", SEARCH_POLICY).families
+    assert mixed.weights["swap_statements"] >= base["swap_statements"]
+    # a non-dominant call_reference leaves the other routing untouched
+    reg = route({"register": 7, "operand": 1, "call_reference": 1}, "complete", SEARCH_POLICY)
+    assert reg.families == ("reorder_decls", "temp_introduce", "temp_eliminate")
+    assert reg.weights == route({"register": 7}, "complete", SEARCH_POLICY).weights
+
+
 def test_routing_never_boosts_permutation_without_structured_evidence():
-    """Literal/data or encoding-only differences route to the conservative mixed portfolio (P5.4)."""
+    """Literal/data or encoding-only differences boost constant/representation operators, not permutation (P5.4)."""
+    base = SEARCH_POLICY.base_weights
     d = route({}, "complete", SEARCH_POLICY)
-    assert d.families == ()
-    assert d.weights == SEARCH_POLICY.base_weights
-    assert "literal/data" in d.reason
+    assert d.families == ("retype_local", "cast_add", "cast_remove")
+    assert all(d.weights[op] > base[op] for op in d.families)
+    assert all(d.weights[op] <= base[op] for op in ("reorder_decls", "swap_statements", "temp_introduce", "temp_eliminate"))
+    assert d.reason == "literal/data suspected: try constant representation and data declarations"
     d2 = route({"register": 0, "operand": 0}, "prefix_limited", SEARCH_POLICY)
-    assert d2.families == () and d2.coverage == "prefix_limited"
+    assert d2.families == d.families and d2.coverage == "prefix_limited"
+    assert d2.weights == d.weights and d2.reason == d.reason
 
 
 def test_routing_is_recorded_deterministic_and_validated():
@@ -322,6 +392,112 @@ def test_policy_spec_carries_seed_identity_requirements():
     assert {"id", "version", "beam", "plateau", "max_steps", "routing", "base_weights"} <= set(d)
     r = new_run(SEARCH_POLICY, "job-seed-42", "snap-1", SRC, 7)
     assert r.seed == "job-seed-42" and r.slot_seeds and all(s.startswith("job-seed-42:slot") for s in r.slot_seeds)
+
+
+def test_single_trajectory_policy_is_default_and_guided_is_opt_in(monkeypatch):
+    from decompnet.search.policy import SINGLE_TRAJECTORY_POLICY, active_policy, guided_enabled
+    assert SINGLE_TRAJECTORY_POLICY.beam == 1 and SINGLE_TRAJECTORY_POLICY.routing == "uniform"
+    assert SINGLE_TRAJECTORY_POLICY.epoch == "single-v1"
+    monkeypatch.delenv("DECOMPNET_GUIDED_SEARCH", raising=False)
+    assert not guided_enabled() and active_policy() is SINGLE_TRAJECTORY_POLICY
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "0")
+    assert active_policy() is SINGLE_TRAJECTORY_POLICY
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
+    assert guided_enabled() and active_policy() is SEARCH_POLICY
+    assert parse_policy(SINGLE_TRAJECTORY_POLICY.to_dict()) is SINGLE_TRAJECTORY_POLICY
+
+
+def test_parse_policy_rejects_fields_that_differ_from_the_registered_policy():
+    spec = SEARCH_POLICY.to_dict()
+    spec["beam"] = SEARCH_POLICY.beam + 4  # same id/version, different behaviour: reject, don't substitute
+    with pytest.raises(SearchPolicyError):
+        parse_policy(spec)
+    spec = SEARCH_POLICY.to_dict()
+    spec["base_weights"] = {**spec["base_weights"], "swap_statements": 99}
+    with pytest.raises(SearchPolicyError):
+        parse_policy(spec)
+    spec = SEARCH_POLICY.to_dict()
+    spec["routing"] = "uniform"
+    with pytest.raises(SearchPolicyError):
+        parse_policy(spec)
+
+
+def test_uniform_routing_uses_base_weights_unchanged():
+    from decompnet.search.policy import SINGLE_TRAJECTORY_POLICY
+    r = new_run(SINGLE_TRAJECTORY_POLICY, "u", "snap-1", SRC, 7, counts={"register": 9}, coverage="complete")
+    assert r.routing.routing == "uniform"
+    assert r.routing.weights == SINGLE_TRAJECTORY_POLICY.base_weights
+    assert r.routing.families == ()
+    assert len(r.slot_seeds) == 1 and r.summary()["routing"]["routing"] == "uniform"
+
+
+def test_pick_parent_favours_the_best_member():
+    from decompnet.search.portfolio import Candidate, Portfolio
+
+    class WeightSpy:
+        def choices(self, population, weights, k):
+            self.weights = list(weights)
+            return [population[0]]
+
+    policy = SearchPolicy(id="t", version=1, beam=4, base_weights=dict(SEARCH_POLICY.base_weights))
+    p = Portfolio(policy, SRC, 5)
+    # a new best appended at the end must get the largest weight; the worst the smallest
+    p.members = [Candidate("a", 5, "s1"), Candidate("b", 8, "s2"), Candidate("c", 5, "s3"),
+                 Candidate("d", 2, "s4")]
+    spy = WeightSpy()
+    p.pick_parent(spy)
+    assert spy.weights == [3, 1, 2, 4]  # (score, insertion index) ascending: d, a, c, b
+
+
+def test_restart_from_best_is_part_of_the_versioned_spec():
+    from decompnet.search.policy import SINGLE_TRAJECTORY_POLICY
+    assert SEARCH_POLICY.restart_from_best == 0.15 and SINGLE_TRAJECTORY_POLICY.restart_from_best == 0.15
+    assert SEARCH_POLICY.to_dict()["restart_from_best"] == 0.15
+    assert SearchPolicy.from_dict({"id": "x", "version": 1}).restart_from_best == 0.15
+    assert SearchPolicy.from_dict({"id": "x", "version": 1, "restart_from_best": 0}).restart_from_best == 0.0
+    for bad in (-0.1, 1, 1.5, "0.1", True):
+        with pytest.raises(SearchPolicyError):
+            SearchPolicy.from_dict({"id": "x", "version": 1, "restart_from_best": bad})
+    spec = SEARCH_POLICY.to_dict()
+    spec["restart_from_best"] = 0.5  # same id/version, different behaviour: reject
+    with pytest.raises(SearchPolicyError):
+        parse_policy(spec)
+
+
+def test_worker_search_takes_its_operator_mix_from_the_policy(monkeypatch):
+    """Two policies with different base weights drive different operator mixes in the donated-compute loop."""
+    import decompnet.permuter as permuter_mod
+
+    class StubScorer:
+        def __init__(self, job, log=print):
+            pass
+
+        def score(self, source):
+            return 5  # every variant ties the seed: no improvement, mutations keep flowing
+
+    used = []
+    real_mutate = permuter_mod.mutate
+
+    def spy(source, rng, policy=None, record=None):
+        recorded = []
+        out = real_mutate(source, rng, policy, recorded)
+        used.extend(m.operator for m in recorded)
+        return out
+
+    monkeypatch.setattr(permuter_mod, "LocalScorer", StubScorer)
+    monkeypatch.setattr(permuter_mod, "mutate", spy)
+
+    def operators_for(weights):
+        used.clear()
+        policy = SearchPolicy(id="t", version=1, base_weights=weights)
+        permuter_mod.search({"source": SRC, "best_score": 5}, 0.2, lambda s, c: None, log=lambda m: None,
+                            seed="mix", policy=policy)
+        return set(used)
+
+    only_decls = operators_for({"reorder_decls": 1})
+    only_swaps = operators_for({"swap_statements": 1})
+    assert only_decls == {"reorder_decls"}
+    assert only_swaps == {"swap_statements"}
 
 
 # ------------------------------------------------------- permuter wiring (app)

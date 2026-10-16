@@ -18,22 +18,34 @@ import re
 import shutil
 import subprocess
 import tempfile
-import threading
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import cache as ccache
-from . import linuxbox, wsl
+from . import linuxbox, scheduler, telemetry, wsl
 from .limits import killed_for_memory
 
 MAX_SOURCE_BYTES = 64 * 1024
-# Per-compile resource caps (address space, CPU seconds, output file size) and a global
-# concurrency cap, so a hostile submission can't take the host down with it.
+# Per-compile resource caps (address space, CPU seconds, output file size); the global concurrency
+# cap is the 'compiler' pool of scheduler.BUDGET (see _slot), so a hostile submission can't take the
+# host down with it.
 # DECOMP_COMPILER_AS_LIMIT (bytes, 0 = none): the old 32-bit compilers run emulated in a container on Apple
 # Silicon, and the emulator needs a 4 GiB guest address space, so a lower cap makes it fail.
 LIMITS = [*([f"--as={n}"] if (n := int(os.environ.get("DECOMP_COMPILER_AS_LIMIT", 2147483648))) else []),
           "--cpu=30", "--fsize=67108864"]
-_SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
+
+
+@contextmanager
+def _slot():
+    """One unit of the global compiler budget around a compiler subprocess; the wait for it is the
+    'compiler.queue' stage and the subprocess itself 'compiler.subprocess' (plan P0.3)."""
+    with ExitStack() as stack:
+        with telemetry.span("compiler.queue"):
+            stack.enter_context(scheduler.BUDGET.slot("compiler"))
+        with telemetry.span("compiler.subprocess"):
+            yield
+
 
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 _FORBIDDEN = [
@@ -208,7 +220,7 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         key = ccache.build_key(cfg, context_header, source, mode=_sandbox_mode(cfg),
                                work_base=cache.root / "work")
         if key is not None:
-            hit = cache.get(key.digest)
+            hit = cache.get(key.digest, request=key.request_id)
             if hit is not None:
                 return CompileResult(hit.ok, hit.payload, hit.log)
             transient = cache.transient_get(key.digest)
@@ -219,7 +231,11 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
                                         producer=lambda: _produce(cache, cfg, context_header, source, key),
                                         wait_timeout=max(cfg.timeout * 4, 120.0))
             except ccache.CoalesceTimeout:
-                # this waiter gave up on the shared flight: run the compile itself
+                if cache.in_flight(key.digest):
+                    # the identical compile is still running: never start a second one (P2.6);
+                    # this timeout is not cached and not a deterministic failure
+                    return CompileResult(False, None, "timeout: waiting for an identical in-flight compile")
+                # the shared flight ended without a result for this waiter: run the compile itself
                 try:
                     return _produce(cache, cfg, context_header, source, key)
                 except ccache.CoalesceTimeout:
@@ -338,7 +354,7 @@ def _reset_work(work: Path) -> None:
 def _run_attempt(cfg: CompilerConfig, work: Path, argv: list[str], root: str,
                  snapshot: Path | None) -> _Attempt:
     try:
-        with _SLOTS:
+        with _slot():
             proc = _exec(cfg, work, argv, cfg.timeout, snapshot=snapshot,
                          **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}))
     except subprocess.TimeoutExpired:
@@ -405,7 +421,7 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
             compile_argv += ["-o", subst["{asm}"]]
         wsl_extra = {"outputs": ["func.s", "func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}
         try:
-            with _SLOTS:
+            with _slot():
                 proc = _exec(cfg, work, compile_argv, cfg.timeout, **wsl_extra)
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
@@ -440,7 +456,7 @@ def _compile_variant(cfg: CompilerConfig, context_header: str, source: str) -> C
         asm_argv = [asm_subst.get(a, a) for a in cfg.asm_cmd]
         asm_argv = [a.replace("{include}", asm_subst["{include}"]) for a in asm_argv]
         try:
-            with _SLOTS:
+            with _slot():
                 proc = _exec(cfg, work, asm_argv, cfg.timeout, **wsl_extra)
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"assembler timed out after {cfg.timeout}s")
@@ -472,7 +488,7 @@ def _compile_legacy(cfg: CompilerConfig, context_header: str, source: str) -> Co
         argv = [subst.get(a, a) for a in cfg.cmd]
         argv = [a.replace("{include}", subst["{include}"]) for a in argv]
         try:
-            with _SLOTS:
+            with _slot():
                 proc = _exec(cfg, work, argv, cfg.timeout,
                              **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "linux" else {}))
         except subprocess.TimeoutExpired:

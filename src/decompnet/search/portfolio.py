@@ -61,7 +61,11 @@ class Portfolio:
 
     def pick_parent(self, rng) -> Candidate:
         """Rank-biased parent choice: the best gets the most proposals; all members are reachable."""
-        weights = [len(self.members) - i for i in range(len(self.members))]
+        n = len(self.members)
+        order = sorted(range(n), key=lambda i: (self.members[i].score, i))  # best first
+        weights = [0] * n
+        for rank, i in enumerate(order):
+            weights[i] = n - rank
         return rng.choices(self.members, weights=weights, k=1)[0]
 
     def build(self, parent: Candidate, mutation: Mutation, outcome: EvalOutcome) -> Candidate:

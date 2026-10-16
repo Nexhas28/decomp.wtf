@@ -1,5 +1,7 @@
 # Final delivery report (plan Section 27) — PR-01..PR-30 coverage
 
+> **Update 16 Oct 2026:** an independent re-check found 79 plan requirements that were not fully implemented despite the ✅ marks below. They are fixed or listed as still open in [RECHECK-2026-10-16.md](RECHECK-2026-10-16.md); read that file for the current state. Test suite after the fixes: 897 passed, 1 failed + 3 errors (all tests/test_ds.py, DS toolchain not installed), 136 skipped.
+
 Working tree: /Users/<user>/Decomp/decomp-wtf, base 575b4a30 (the plan's reviewed commit).
 Every row below maps a plan PR to its commit and evidence. Status: ✅ = implemented + tested +
 committed; ⏳ = in flight.
@@ -58,7 +60,7 @@ benchmarks/ABLATIONS.md as untested lanes).
 - [x] Cache identity covers material inputs and preserves source policy (C-01..C-12)
 - [x] Include staging immutable and sandboxed (P2.7 snapshots, C-11)
 - [x] Prepared targets and score-only evaluation preserve verdicts (S-01..S-07 golden parity)
-- [x] Compiler profiles and m2c context explicit and reproducible (D-01..D-05, D-07 variant)
+- [x] Compiler profiles and m2c context explicit and reproducible (D-01..D-05, D-07 variant) — calibration now refuses to commit without a regression check
 - [ ] Mutation/search changes improve measured verified outcomes — measured only where toolchains
       exist; deterministic replay + parity proven, solve-rate ablation remains an untested lane
       (documented in benchmarks/ABLATIONS.md; the plan itself requires the change to be opt-in
@@ -67,7 +69,7 @@ benchmarks/ABLATIONS.md as untested lanes).
 - [x] Rich Ghidra records have correct identity, coverage, provenance (G-01..G-10)
 - [x] Analysis admitted per host/format/mode, budgeted, provider-failure-safe (A-01..A-07)
 - [x] REA pinned (rea-agents 6.4.0), schema-tested against the live tools/list, read-only, optional,
-      off by default (E-01..E-09 + real-lane discovery test)
+      off by default (E-01..E-09 + real-lane discovery test) — note: the REA vs direct-Ghidra comparison (P9.8) is still unmeasured; see RECHECK-2026-10-16.md
 - [x] FunctionID/BSim provenance + judge path: corpus-gated, default disabled, candidates go through
       the coordinator judge only (B-01..B-06)
 - [x] Migrations/backups/cancellation/cleanup verified (O-01 WAL-safe backup regression)
@@ -94,7 +96,7 @@ defects three production perf-test runs found. Status per item (details in `ROAD
 | --- | --- | --- | --- |
 | Model routing (configurable identities, benchmark-gated) | P11.5 | landed, opt-in | `tests/test_model_routing.py` 12 |
 | Broker/escalation into the live stall path | P8.4 | landed | `tests/test_escalation_wiring.py` 12 |
-| Calibration admission + held-out validation | P4.1 | landed, refuses to commit blind | `tests/test_calibration_commit.py` 17 |
+| Calibration admission + held-out validation | P4.1 | landed, refuses to commit blind (before 16 Oct it still committed when no regression hook was supplied; fixed) | `tests/test_calibration_commit.py` 17 |
 | Multi-seed stats + grouped-vs-single drafting + holdout recall | P12.2/P4.5 | landed | `tests/test_ablate_harness.py` 7; `benchmarks/harness/{stats,draft_compare,holdout_recall}.py` |
 | Section 20 stragglers (O-02, O-04..O-08, W-02/03/06) | §20 | landed | `tests/test_operations.py`, `tests/test_scheduler.py` 19 |
 | Retrieval acceptance feedback + holdout leakage gate | P6.5/P10.5 | landed | `tests/test_retrieval_feedback.py` 12 |

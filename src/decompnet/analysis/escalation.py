@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 
 from .. import scoring
@@ -22,6 +23,7 @@ assert set(scoring.COUNT_PENALTIES) == {"register", "stack_offset", "operand", "
                                         "reorder"}, "scoring mismatch schema drifted"
 _REGISTER_KEYS = ("register", "stack_offset")  # register/stack differences: a permutation problem
 _STRUCTURAL_KEYS = ("insertion", "deletion", "reorder")  # instruction-stream differences: evidence first
+_PROFILE_CALIBRATION_FUNCTIONS = 3  # distinct functions with low profile confidence before calibration fires
 
 #: Rule kinds the policy can route to (P8.4 default table). Rules can be disabled automatically when
 #: they keep costing without producing verified progress (P8.7).
@@ -44,6 +46,7 @@ class EscalationInputs:
     m2c_tried: bool = False
     compile_errors: tuple = ()  # e.g. ("missing declaration foo", ...)
     compiler_profile_confidence: float | None = None
+    compiler_profile: str = "default"  # the project/profile the confidence belongs to
     prior_investigations: int = 0
     recent_progress: bool = False
     new_evidence_expected: bool = False
@@ -72,12 +75,14 @@ class EscalationPolicy:
 
     def __init__(self, *, attempts_before_analysis: int = 2, attempts_before_release: int = 6,
                  profile_confidence_threshold: float = 0.5, disable_after_failures: int = 3,
-                 min_cost_to_disable: float = 5.0):
+                 min_cost_to_disable: float = 5.0, profile_window: int = 16):
         self.attempts_before_analysis = attempts_before_analysis
         self.attempts_before_release = attempts_before_release
         self.profile_confidence_threshold = profile_confidence_threshold
         self.disable_after_failures = disable_after_failures
         self.min_cost_to_disable = min_cost_to_disable
+        self.profile_window = profile_window
+        self._low_confidence: dict[str, deque] = {}  # per profile: recent low-confidence function keys
         self.rule_stats: dict[str, dict] = {kind: {"investigations": 0, "improvements": 0, "cost": 0.0}
                                             for kind in RULE_KINDS}
         self.disabled: dict[str, str] = {}
@@ -167,9 +172,13 @@ class EscalationPolicy:
                 return a
         if (inputs.compiler_profile_confidence is not None
                 and inputs.compiler_profile_confidence < self.profile_confidence_threshold):
-            if (a := take("profile_calibration", "the compiler profile remains doubtful across multiple "
-                          "functions: bounded profile calibration")):
-                return a
+            recent = self._low_confidence.setdefault(inputs.compiler_profile,
+                                                     deque(maxlen=self.profile_window))
+            recent.append(inputs.function_key)
+            if len(set(recent)) >= _PROFILE_CALIBRATION_FUNCTIONS:
+                if (a := take("profile_calibration", "the compiler profile remains doubtful across multiple "
+                              "functions: bounded profile calibration")):
+                    return a
         if inputs.data_literal_mismatch:
             if (a := take("data_literal_check", "data/literal differences remain after the code aligns: "
                           "focus on the unit's data/literal checks rather than generic code analysis")):

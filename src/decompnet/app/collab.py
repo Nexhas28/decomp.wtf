@@ -302,10 +302,19 @@ def host_app(net, rooms: dict[str, Room]) -> Starlette:
         return room
 
     async def body(request: Request) -> dict:
-        if int(request.headers.get("content-length") or 0) > MAX_BODY:
-            raise NetworkError("request too large")
         try:
-            data = await request.json()
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            raise NetworkError("invalid request") from None
+        if declared > MAX_BODY:
+            raise NetworkError("request too large")
+        raw = bytearray()
+        async for chunk in request.stream():  # a chunked request has no length to check: count as it comes
+            raw += chunk
+            if len(raw) > MAX_BODY:
+                raise NetworkError("request too large")
+        try:
+            data = json.loads(raw)
         except ValueError:
             raise NetworkError("invalid request") from None
         if not isinstance(data, dict):

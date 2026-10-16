@@ -53,8 +53,10 @@ def net(tmp_path):
 def clear_reuse_ledger():
     """similarity.note_reuse's ledger is in-memory module state: isolate it per test."""
     similarity._ledger.clear()
+    feedback.ACCEPTANCE_CLASSES.clear()
     yield
     similarity._ledger.clear()
+    feedback.ACCEPTANCE_CLASSES.clear()
 
 
 @pytest.fixture
@@ -106,6 +108,16 @@ def test_route_from_origin_maps_the_four_routes_and_synonyms():
     assert route_from_origin("permuter") is None
     assert route_from_origin("") is None
     assert route_from_origin("not-a-route") is None
+
+
+def test_route_from_origin_accepts_retrieval_prefixed_origins():
+    """The engine records verified retrieval candidates with origin 'retrieval:<route>'."""
+    assert route_from_origin("retrieval:function_id") == "function_id"
+    assert route_from_origin("retrieval:bsim") == "bsim"
+    assert route_from_origin("retrieval:exact-twin") == "exact_twins"
+    assert route_from_origin("retrieval:similarity") == "lightweight_similarity"
+    assert route_from_origin("retrieval:agent") is None
+    assert route_from_origin("retrieval:") is None
 
 
 # ---------------------------------------------------------------------------- on_match wiring
@@ -231,6 +243,144 @@ def test_surface_leaks_is_empty_when_retrieval_is_disabled(net):
     fn = net.store.one("SELECT * FROM functions WHERE id=1")
     config = __import__("decompnet.retrieval.registry", fromlist=["RetrievalConfig"]).RetrievalConfig()
     assert surface_leaks(net, net.store.one("SELECT * FROM projects WHERE id=1"), fn, config) == []
+
+
+def target_leaking_entry(entry_id: str, target_identity: str) -> ReferenceEntry:
+    """A corpus entry whose built artifact digest equals a holdout function's target digest."""
+    return ReferenceEntry(entry_id=entry_id, repository="liba", version="1.0",
+                          source_location=f"liba/{entry_id}/other.c", toolchain="gcc-2.7.2-kmc",
+                          profile="gcc-2.7.2-kmc", target_identity=target_identity,
+                          processor="mips", mode="", provenance="built in CI",
+                          source_digest="", holdout=False)
+
+
+def test_surface_leaks_reads_holdout_txt_from_the_project_root(net, tmp_path):
+    """No `_holdout_answers` set: the project's own holdout.txt (comments allowed) feeds the gate."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "holdout.txt").write_text("# held out of tuning\nf1  # the leaked one\n\nnot_a_function\n")
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET root=? WHERE id=1", (str(root),))
+    proj = enable_retrieval(net, {"function_id_retrieval": True})
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    registry = Registry()
+    registry.add(target_leaking_entry("liba-1", snapshots.target_digest(fn)))
+    net.save_reference_sources(registry, project_id=1)
+    assert getattr(net, "_holdout_answers", None) is None
+    config = __import__("decompnet.retrieval.registry", fromlist=["RetrievalConfig"]).RetrievalConfig(
+        function_id_retrieval=True)
+    leaks = surface_leaks(net, proj, fn, config)
+    assert [(leak.entry_id, leak.answer_id, leak.kind) for leak in leaks] == [("liba-1", "f1", "target_digest")]
+    # a function that is not listed in holdout.txt is not blocked
+    other = net.store.one("SELECT * FROM functions WHERE id=2")
+    assert surface_leaks(net, proj, other, config) == []
+
+
+def test_surface_leaks_reads_holdout_from_the_project_config(net, tmp_path):
+    """The `retrieval.holdout` config list declares holdouts too, without any holdout.txt."""
+    root = tmp_path / "empty-root"
+    root.mkdir()
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET root=? WHERE id=1", (str(root),))
+    proj = enable_retrieval(net, {"function_id_retrieval": True, "holdout": ["f1"]})
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    registry = Registry()
+    registry.add(target_leaking_entry("liba-1", snapshots.target_digest(fn)))
+    net.save_reference_sources(registry, project_id=1)
+    config = __import__("decompnet.retrieval.registry", fromlist=["RetrievalConfig"]).RetrievalConfig(
+        function_id_retrieval=True)
+    assert [leak.answer_id for leak in surface_leaks(net, proj, fn, config)] == ["f1"]
+
+
+def test_load_holdout_answers_identities(net, tmp_path):
+    """Identity per holdout function: target digest, matched-source digest (empty while unmatched)."""
+    root = tmp_path / "ids-root"
+    root.mkdir()
+    (root / "holdout.txt").write_text("f1\nf2\n")
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET root=? WHERE id=1", (str(root),))
+        db.execute("UPDATE functions SET matched_source=? WHERE id=2", ("int f2(void) { return 0; }",))
+    proj = enable_retrieval(net, {"holdout": ["f1", "missing"]})
+    answers = feedback.load_holdout_answers(net, proj)
+    assert sorted(answers) == ["f1", "f2"]
+    f1 = net.store.one("SELECT * FROM functions WHERE id=1")
+    f2 = net.store.one("SELECT * FROM functions WHERE id=2")
+    assert answers["f1"] == {"target_digest": snapshots.target_digest(f1), "source_digest": "",
+                             "source_location": ""}
+    assert answers["f2"]["source_digest"] == snapshots.sha("int f2(void) { return 0; }".encode())
+    assert answers["f2"]["target_digest"] == snapshots.target_digest(f2)
+
+
+def test_load_holdout_answers_is_empty_without_declarations(net):
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    assert feedback.load_holdout_answers(net, proj) == {}
+
+
+# ---------------------------------------------------------------------------- P10.5 acceptance classes
+
+def give_target(net, fid: int, vram: int) -> None:
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=?, vram=?, size=16, n_insns=4 WHERE id=?",
+                   (MIPS_BYTES, vram, fid))
+
+
+def test_record_acceptance_classifies_an_exact_duplicate(net, proj):
+    """Another matched function with the same target digest makes this acceptance an exact duplicate."""
+    give_target(net, 1, 0x80001000)
+    give_target(net, 2, 0x80001000)
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched', matched_source=? WHERE id=2",
+                   ("int f2(void) { return 2; }",))
+    write_receipt(net, 1, "function_id")
+    assert feedback.record_acceptance(net, proj, 1) == "exact_duplicate"
+    assert feedback.ACCEPTANCE_CLASSES[(proj["id"], 1)] == "exact_duplicate"
+
+
+def test_record_acceptance_classifies_an_indexed_copy(net, proj):
+    """The accepted source digest is a reference entry's source digest for this same target."""
+    give_target(net, 1, 0x80001000)
+    source = "int f1(void) { return 1; }"
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET matched_source=? WHERE id=1", (source,))
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    registry = Registry()
+    registry.add(ReferenceEntry(entry_id="liba-1", repository="liba", version="1.0",
+                                source_location="liba/f1.c", toolchain="gcc-2.7.2-kmc",
+                                profile="gcc-2.7.2-kmc", target_identity=snapshots.target_digest(fn),
+                                processor="mips", mode="", provenance="built in CI",
+                                source_digest=snapshots.sha(source.encode()), holdout=False))
+    net.save_reference_sources(registry, project_id=1)
+    write_receipt(net, 1, "function_id")
+    assert feedback.record_acceptance(net, proj, 1) == "indexed_copy"
+    assert feedback.ACCEPTANCE_CLASSES[(proj["id"], 1)] == "indexed_copy"
+
+
+def test_record_acceptance_classifies_cross_function_reuse_and_plain_agent_matches(net, proj):
+    """A retrieval route with no duplicate or indexed copy is cross-function reuse; a plain agent origin
+    is not retrieval at all."""
+    write_receipt(net, 1, "bsim")
+    assert feedback.record_acceptance(net, proj, 1) == "cross_function_reuse"
+    write_receipt(net, 2, "agent")
+    assert feedback.record_acceptance(net, proj, 2) == "not_retrieval"
+    assert feedback.ACCEPTANCE_CLASSES == {(proj["id"], 1): "cross_function_reuse",
+                                           (proj["id"], 2): "not_retrieval"}
+    assert [row["reuse_class"] for row in similarity._ledger[proj["id"]]] == ["cross_function_reuse",
+                                                                             "not_retrieval"]
+
+
+def test_note_reuse_and_acceptance_store_the_reuse_class():
+    """The reuse ledger keeps the P10.5 class of each acceptance; it is None when not given."""
+    similarity.note_reuse(7, 1, route="bsim", reuse_class="indexed_copy")
+    similarity.note_reuse(7, 2)
+    rows = similarity._ledger[7]
+    assert rows[0]["reuse_class"] == "indexed_copy"
+    assert rows[1]["reuse_class"] is None
+    index = similarity.FeatureIndex(project_id=7)
+    index.acceptance(3, route="function_id", reuse_class="exact_duplicate")
+    assert similarity._ledger[7][2]["reuse_class"] == "exact_duplicate"
+    assert similarity._ledger[7][2]["route"] == "function_id"
+    index.acceptance(4)
+    assert similarity._ledger[7][3]["reuse_class"] is None
 
 
 def test_find_similar_leakage_check_never_touches_match_state(net, monkeypatch):

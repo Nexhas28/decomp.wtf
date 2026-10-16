@@ -77,7 +77,7 @@ def test_o01b_legacy_state_is_never_silently_promoted(tmp_path):
     assert s["verification"]["receipts"] == 0 and s["matched"] == 1
 
 
-def test_o03_partial_publication_never_leaves_a_dangling_reference(tmp_path):
+def test_o03_partial_publication_never_leaves_a_dangling_reference(tmp_path, monkeypatch):
     """Plan O-03: a crash mid-publish cannot leave the database pointing at a partial payload. The
     atomic-publish convention (write temp, then commit entry) is exercised on the candidate/receipt
     rows: every record's payload fields are complete or the record does not exist."""
@@ -87,6 +87,31 @@ def test_o03_partial_publication_never_leaves_a_dangling_reference(tmp_path):
     assert all(r["snapshot_id"] and r["source_digest"] and r["acceptance_policy"] for r in rows)
     cand = net.store.all("SELECT * FROM candidates")
     assert all(c["source"] and c["source_digest"] for c in cand)
+
+    # a process dying between the temp write and the rename leaves nothing visible
+    from decompnet import cache as ccache
+
+    root = tmp_path / "cache"
+    cache = ccache.CompileCache(root)
+    key = "b" * 64
+    receipts = net.store.one("SELECT COUNT(*) AS n FROM verification_receipts")["n"]
+    candidates = net.store.one("SELECT COUNT(*) AS n FROM candidates")["n"]
+
+    def die(src, dst):
+        raise RuntimeError("process died before rename")
+
+    monkeypatch.setattr("os.replace", die)
+    with pytest.raises(RuntimeError, match="process died"):
+        cache.put(key, ok=True, outcome=ccache.OUTCOME_SUCCESS, payload=b"OBJ", log="")
+    monkeypatch.undo()
+    # the lookup misses and the partial entry directory is quarantined or removed
+    assert cache.get(key) is None
+    assert not (root / "objects" / key).exists()
+    assert not list((root / "tmp").glob("put-*"))  # the failed publish leaves no temp file behind
+    assert ccache.CompileCache(root).get(key) is None  # a fresh open also sees no entry
+    # no receipt or candidate row references the interrupted publish
+    assert net.store.one("SELECT COUNT(*) AS n FROM verification_receipts")["n"] == receipts
+    assert net.store.one("SELECT COUNT(*) AS n FROM candidates")["n"] == candidates
 
 
 FP = "9f86d081884c7d659a2feaa0c55cd015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # fixture fingerprint

@@ -47,6 +47,9 @@ from .contracts import (BUNDLE_STATUSES, BrokerError, Budget, CapabilityError, C
 from .escalation import CandidatePortfolio, EscalationPolicy, run_investigation
 
 
+MAX_AWAITING_OUTCOMES = 256  # investigations whose verified outcome is still pending (bounded)
+
+
 def _identity(engine: str, profile: dict, digest: str, facets: tuple, functions: tuple, kind: str) -> str:
     """Request identity for coalescing: only equivalent (engine, profile, input identity, functions,
     facets, kind) requests share work (P8.2.6)."""
@@ -244,10 +247,12 @@ class Session:
     serial request stream and explicit lifecycle states closed->starting->ready->draining->closed,
     failing or cancelling on the way."""
 
-    def __init__(self, key: str, provider: Provider, profile: dict):
+    def __init__(self, key: str, provider: Provider, profile: dict, module: str = ""):
         self.key = key
         self.provider = provider
         self.profile = profile
+        self.module = module
+        self.retiring = False
         self.state = "closed"
         self.handle = None
         self.failure = ""
@@ -280,7 +285,15 @@ class Session:
         self.state = "cancelled"
         self._dispose_handle()
 
+    def begin_drain(self) -> None:
+        """ready -> draining: new requests are denied, queued and in-flight ones still finish."""
+        self.retiring = True
+        if self.state == "ready":
+            self.state = "draining"
+
     def close(self) -> None:
+        if self.state == "ready":
+            self.state = "draining"
         self._dispose_handle()
         self.state = "closed"
 
@@ -369,8 +382,27 @@ class MetricsLedger:
                 "resolved_unknowns": sum(1 for r in records if r.resolved_unknown),
                 "total_wall_seconds": sum(r.wall_seconds for r in records),
                 "total_worker_seconds": sum(r.worker_seconds for r in records),
-                "compiles_before": sum(r.compiles_before for r in records),
-                "compiles_after": sum(r.compiles_after for r in records)}
+                "compiles_before": sum(r.compiles_before for r in records if r.compiles_before is not None),
+                "compiles_after": sum(r.compiles_after for r in records if r.compiles_after is not None),
+                "compiles_unknown": sum(1 for r in records
+                                        if r.compiles_before is None or r.compiles_after is None)}  # unknown is not zero
+
+
+class _BundleTap:
+    """Hands every evidence call through to the broker and remembers the bundles, so an investigation's
+    reused-versus-new evidence can be measured without changing what the investigation receives."""
+
+    def __init__(self, broker):
+        self._broker = broker
+        self.bundles: list[EvidenceBundle] = []
+
+    def get_function_evidence(self, *args, **kwargs) -> EvidenceBundle:
+        bundle = self._broker.get_function_evidence(*args, **kwargs)
+        self.bundles.append(bundle)
+        return bundle
+
+    def __getattr__(self, name):
+        return getattr(self._broker, name)
 
 
 class Broker:
@@ -379,10 +411,15 @@ class Broker:
     request is admitted, provider-pinned, coalesced, budgeted and attributed."""
 
     def __init__(self, *, cache_dir: Path | str | None = None, policy: EscalationPolicy | None = None,
-                 max_sessions: int = 4, idle_seconds: float = 1800.0, max_pending_per_session: int = 32):
+                 max_sessions: int = 4, idle_seconds: float = 1800.0, max_pending_per_session: int = 32,
+                 max_sessions_per_project: int | None = None, evidence_store=None):
+        self.evidence_store = evidence_store  # optional EvidenceStore: persists fresh evidence (18.5)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.policy = policy or EscalationPolicy()
         self.max_sessions = max(1, max_sessions)
+        # per-project quota (keyed by the module prefix before '::'); defaults to the global cap
+        self.max_sessions_per_project = (self.max_sessions if max_sessions_per_project is None
+                                         else max(1, max_sessions_per_project))
         self.idle_seconds = idle_seconds
         self.max_pending_per_session = max(1, max_pending_per_session)
         self._providers: dict[str, Provider] = {}
@@ -393,6 +430,8 @@ class Broker:
         self._metrics = MetricsLedger()
         self._lock = threading.RLock()
         self._denials: list[dict] = []
+        self._starts: dict[str, int] = {}  # session key -> how many times that session was started
+        self._awaiting_outcome: dict[str, EscalationMetrics] = {}  # investigation id -> its metrics row
 
     # ------------------------------------------------------------ registration
 
@@ -561,6 +600,7 @@ class Broker:
                 result, session_key = self._execute(prov, target, request, cancel)
                 existing.session_key = session_key
                 bundle = self._bundle(result, request, prov, group, requester, snapshot)
+                self._persist(bundle, target, prov)
             except Exception as e:  # the owner never strands waiters
                 bundle = EvidenceBundle(request_id=request.request_id, requester=requester,
                                         function_keys=request.functions, snapshot=snapshot,
@@ -574,6 +614,25 @@ class Broker:
                     self._inflight.pop(identity, None)
             return bundle
         return self._wait_shared(existing, requester, cancel, budget)
+
+    def _persist(self, bundle: EvidenceBundle, target: TargetRecord, prov: Provider) -> None:
+        """Save fresh evidence durably. A storage failure is reported on the bundle, never raised: the
+        in-memory evidence is still valid for this caller."""
+        if self.evidence_store is None or not bundle.ok() or bundle.reused:
+            return
+        from .evidence_store import record_from_evidence
+
+        for evidence in bundle.functions.values():
+            try:
+                record, payloads = record_from_evidence(
+                    evidence, provider_route=prov.name, engine=prov.engine, target_digest=target.digest,
+                    profile=target.profile, correlation_group=bundle.correlation_group, snapshot=bundle.snapshot)
+                self.evidence_store.save(record, payloads)
+                bundle.refs.setdefault(f"evidence:{evidence.function_key}",
+                                       EvidenceRef(ref=record.evidence_id, facet="evidence_record",
+                                                   summary=evidence.function_key))
+            except Exception as e:
+                bundle.diagnostics.append(f"evidence not persisted for {evidence.function_key}: {e}")
 
     def _wait_shared(self, inflight: InFlight, requester: str, cancel: threading.Event | None,
                      budget: Budget) -> EvidenceBundle:
@@ -622,14 +681,18 @@ class Broker:
             if session is not None and session.state in ("failed", "cancelled"):
                 self._sessions.pop(session_key, None)  # re-establish explicitly on the next request
                 session = None
-            if session is not None and session.state == "draining":
+            if session is not None and (session.state == "draining" or session.retiring):
                 reason = f"session {session_key} is draining: request denied, retry later"
                 self._denials.append({"session": session_key, "request": request.request_id, "reason": reason})
                 return ProviderResult(status="denied", diagnostics=[reason], denied_reason=reason), session_key
             if session is None:
-                if len(self._sessions) >= self.max_sessions:
+                if sum(1 for s in self._sessions.values() if not s.retiring
+                       and s.module == target.module) >= self.max_sessions_per_project:
+                    self._evict_lru_locked(f"project session quota {self.max_sessions_per_project} reached "
+                                           f"for {target.module}", target.module)
+                if sum(1 for s in self._sessions.values() if not s.retiring) >= self.max_sessions:
                     self._evict_lru_locked(f"session quota {self.max_sessions} reached")
-                session = Session(session_key, prov, target.profile)
+                session = Session(session_key, prov, target.profile, module=target.module)
                 self._sessions[session_key] = session
             session.touch()
         result = self._run_session(session, request, cancel)
@@ -639,6 +702,10 @@ class Broker:
                      cancel: threading.Event | None) -> ProviderResult:
         q = QueuedRequest(request, cancel)
         with self._lock:
+            if session.state == "draining" or session.retiring:
+                reason = f"session {session.key} is draining: request denied, retry later"
+                self._denials.append({"session": session.key, "request": request.request_id, "reason": reason})
+                return ProviderResult(status="denied", diagnostics=[reason], denied_reason=reason)
             if len(session.pending) >= self.max_pending_per_session:
                 reason = f"session queue full ({self.max_pending_per_session} pending): request denied"
                 self._denials.append({"session": session.key, "request": request.request_id, "reason": reason})
@@ -677,11 +744,13 @@ class Broker:
                         return
                     if not session.pending:
                         return
-                    if session.state == "closed" and not session.start():
-                        self._finish_pending(session, status="retryable",
-                                             why=f"session failed to start: {session.failure}")
-                        return
-                    if session.state != "ready":
+                    if session.state == "closed":
+                        if not session.start():
+                            self._finish_pending(session, status="retryable",
+                                                 why=f"session failed to start: {session.failure}")
+                            return
+                        self._starts[session.key] = self._starts.get(session.key, 0) + 1
+                    if session.state not in ("ready", "draining"):
                         self._finish_pending(session, status="retryable",
                                              why=f"session {session.state}: {session.failure}")
                         return
@@ -700,6 +769,11 @@ class Broker:
                         session.cancel("the active shared request was cancelled: the session is invalidated")
                         self._finish_pending(session, skip=q, status="retryable",
                                              why="session cancelled with the active request")
+                        return
+                    if session.retiring and not session.pending:
+                        session.close()  # draining -> closed once the in-flight request has finished
+                        if self._sessions.get(session.key) is session:
+                            self._sessions.pop(session.key, None)
                         return
 
     def _fetch(self, session: Session, q: QueuedRequest) -> ProviderResult:
@@ -747,17 +821,43 @@ class Broker:
         """A focused investigation through the broker: coalesced evidence, ranked hypotheses, minimal
         candidate changes and a stopping condition. Candidates attach to the snapshot that produced
         them; applying one under a different snapshot is refused (A-06)."""
+        target = self._target(function_key)
+        session_key = self._session_key(target, target.provider)
+        with self._lock:
+            starts_before = self._starts.get(session_key, 0)
         start = time.monotonic()
-        investigation = run_investigation(self, function_key, question, evidence_refs, budget,
+        tap = _BundleTap(self)
+        investigation = run_investigation(tap, function_key, question, evidence_refs, budget,
                                           snapshot=snapshot, requester=requester, cancel=cancel)
         wall = max(0.0, time.monotonic() - start)
-        self._metrics.record(EscalationMetrics(escalation_id=investigation.investigation_id,
-                                               function_key=function_key, action="investigate_function",
-                                               cold_start=False, wall_seconds=wall,
-                                               worker_seconds=investigation.budget_consumed.worker_seconds,
-                                               outcome=investigation.status))
-        self.policy.observe("investigate_function", improved=False, cost=wall)
+        with self._lock:
+            cold_start = self._starts.get(session_key, 0) > starts_before  # this call started the session
+        usable = [b for b in tap.bundles if b.ok()]
+        # a bundle served from a cache, a prior run or another caller's coalesced request is reused;
+        # anything else the provider produced for this call is new
+        evidence_reused = any(b.reused or b.from_cache or b.shared for b in usable)
+        evidence_new = any(not (b.reused or b.from_cache or b.shared) for b in usable)
+        self.record_escalation(action="investigate_function", function_key=function_key,
+                               cold_start=cold_start, wall_seconds=wall,
+                               worker_seconds=investigation.budget_consumed.worker_seconds,
+                               evidence_reused=evidence_reused, evidence_new=evidence_new,
+                               compiles_before=None, compiles_after=None,  # unknown, not zero (I-07)
+                               outcome=investigation.status, escalation_id=investigation.investigation_id,
+                               await_outcome=True)
         return investigation
+
+    def report_outcome(self, investigation_id: str, improved: bool) -> bool:
+        """The verified result of an earlier investigation (a better score or a match for its function,
+        or a release without progress). Feeds the escalation policy and the stored metrics row; each
+        investigation is reported once. Returns False for an unknown or already reported id."""
+        with self._lock:
+            metrics = self._awaiting_outcome.pop(investigation_id, None)
+            if metrics is None:
+                return False
+            metrics.verified_improvement = bool(improved)
+            metrics.outcome = f"{metrics.outcome}:{'improved' if improved else 'no_improvement'}"
+        self.policy.observe(metrics.action, improved=bool(improved), cost=metrics.wall_seconds)
+        return True
 
     # ------------------------------------------------------------ refresh / flush / eviction
 
@@ -803,35 +903,64 @@ class Broker:
             for key, session in list(self._sessions.items()):
                 if session.active is None and now - session.last_used >= self.idle_seconds:
                     reason = f"idle for {now - session.last_used:.0f}s (limit {self.idle_seconds:.0f}s)"
-                    session.close()
+                    self._retire_locked(session)
                     closed.append({"session": key, "reason": reason})
-                    self._sessions.pop(key, None)
         return closed
 
-    def _evict_lru_locked(self, reason: str) -> None:
-        if not self._sessions:
+    def close_session(self, session_key: str) -> bool:
+        """Close one session through its lifecycle: ready -> draining (new requests denied, in-flight
+        and queued ones finish) -> closed. Returns False when no such session is open."""
+        with self._lock:
+            session = self._sessions.get(session_key)
+            if session is None:
+                return False
+            self._retire_locked(session)
+            return True
+
+    def _retire_locked(self, session: Session) -> None:
+        session.begin_drain()
+        if session.active is None and not session.pending:
+            session.close()  # nothing in flight: draining -> closed now
+            self._sessions.pop(session.key, None)
+        # otherwise it stays listed as draining (new requests denied) and the request pump closes it
+        # as soon as the in-flight work finishes
+
+    def _evict_lru_locked(self, reason: str, module: str | None = None) -> None:
+        pool = [s for s in self._sessions.values()
+                if not s.retiring and (module is None or s.module == module)]
+        if not pool:
             return
-        victim = min(self._sessions.values(), key=lambda s: s.last_used)
+        victim = min(pool, key=lambda s: s.last_used)
         self._denials.append({"session": victim.key, "reason": f"evicted: {reason}"})
-        victim.close()
-        self._sessions.pop(victim.key, None)
+        self._retire_locked(victim)
 
     # ------------------------------------------------------------ measurement (P8.7)
 
     def record_escalation(self, *, action: str, function_key: str, cold_start: bool = False,
                           wall_seconds: float = 0.0, worker_seconds: float = 0.0,
                           evidence_reused: bool = False, evidence_new: bool = False,
-                          additional_tokens: int = 0, compiles_before: int = 0, compiles_after: int = 0,
+                          additional_tokens: int = 0, compiles_before: int | None = 0,
+                          compiles_after: int | None = 0,
                           verified_improvement: bool = False, resolved_unknown: bool = False,
-                          outcome: str = "") -> EscalationMetrics:
-        m = EscalationMetrics(escalation_id=str(uuid.uuid4()), function_key=function_key, action=action,
+                          outcome: str = "", escalation_id: str | None = None,
+                          await_outcome: bool = False) -> EscalationMetrics:
+        """The single recording path for an escalation's measurement. With `await_outcome` the row waits
+        for report_outcome (which feeds the policy) instead of observing the policy now."""
+        m = EscalationMetrics(escalation_id=escalation_id or str(uuid.uuid4()), function_key=function_key,
+                              action=action,
                               cold_start=cold_start, wall_seconds=wall_seconds, worker_seconds=worker_seconds,
                               evidence_reused=evidence_reused, evidence_new=evidence_new,
                               additional_tokens=additional_tokens, compiles_before=compiles_before,
                               compiles_after=compiles_after, verified_improvement=verified_improvement,
                               resolved_unknown=resolved_unknown, outcome=outcome)
+        if await_outcome:
+            with self._lock:
+                self._awaiting_outcome[m.escalation_id] = m
+                while len(self._awaiting_outcome) > MAX_AWAITING_OUTCOMES:  # bounded: oldest drops first
+                    self._awaiting_outcome.pop(next(iter(self._awaiting_outcome)))
         self._metrics.record(m)
-        self.policy.observe(action, improved=verified_improvement, cost=wall_seconds)
+        if not await_outcome:
+            self.policy.observe(action, improved=verified_improvement, cost=wall_seconds)
         return m
 
     def metrics_summary(self) -> dict:

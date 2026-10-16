@@ -84,9 +84,16 @@ def new_run(policy: SearchPolicy, seed: str, snapshot_key: str, best_source: str
             *, counts: dict | None = None, coverage: str = "unknown") -> SearchRun:
     """A fresh run: deterministic RNG from the seed, mismatch-routed weights, seeded portfolio."""
     rng = random.Random(seed)
+    if policy.routing == "uniform":  # single-trajectory policy: base weights unchanged, no routing
+        routing = RoutingDecision(
+            routing="uniform", policy_epoch=policy.epoch, counts=dict(counts or {}), coverage=coverage,
+            families=(), weights=dict(policy.base_weights),
+            reason="uniform routing: base operator weights are used unchanged")
+    else:
+        routing = route(counts or {}, coverage, policy)
     return SearchRun(
         policy=policy, seed=seed, snapshot_key=snapshot_key,
-        routing=route(counts or {}, coverage, policy),
+        routing=routing,
         portfolio=Portfolio(policy, best_source, best_score),
         evals=EvalCache(snapshot_key), rng=rng,
         slot_seeds=tuple(f"{seed}:slot{i}" for i in range(policy.beam)))
