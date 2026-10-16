@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scoring, snapshots
+from . import policy, scheduler, scoring, snapshots
 from .compiler import compile_source
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
@@ -43,6 +43,9 @@ STRATEGIES = {
     "closest": "f.best_score IS NULL, f.abandons ASC, CAST(f.best_score AS REAL) / (f.n_insns * 100) ASC",
     "hardest": "f.n_insns DESC",
     "random": "RANDOM()",
+    # P11.2: the explainable adaptive policy; scored in Python (scheduler.choose) over a bounded window,
+    # so its value here is just the admission key — never rendered into SQL.
+    "priority": "",
 }
 
 
@@ -300,16 +303,29 @@ class Network:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
-                fn = db.execute(
-                    f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
-                        AND f.id NOT IN (SELECT function_id FROM claims)
-                        AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
-                        ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
-                                            AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                    (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
-                ).fetchone()
-                if fn is None:
-                    return None
+                if strategy == "priority":  # P11.2: the explainable adaptive policy picks from a bounded window
+                    rows = db.execute(
+                        """SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                           AND f.id NOT IN (SELECT function_id FROM claims)
+                           AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                           ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                               AND created_at > ?), f.id LIMIT 200""",
+                        (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                    ).fetchall()
+                    if not rows:
+                        return None
+                    fn = scheduler.choose(self, proj, list(rows), 1)[0]
+                else:
+                    fn = db.execute(
+                        f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
+                            AND f.id NOT IN (SELECT function_id FROM claims)
+                            AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                            ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+                                                AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
+                        (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                    ).fetchone()
+                    if fn is None:
+                        return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
         return fn
@@ -796,6 +812,16 @@ class Network:
                      for f in self.store.all("SELECT name, n_insns, status, best_score FROM functions "
                                              "WHERE project_id=? ORDER BY name", p["id"])]
             legal = json.loads(p["config"]).get("legal", {})
+            # P11.7: truthful verification scope and origins, not just green percentages
+            receipts = self.store.one(
+                "SELECT COUNT(*) AS n FROM verification_receipts r JOIN functions f ON f.id=r.function_id "
+                "WHERE f.project_id=?", p["id"])["n"] or 0
+            origins = {r["origin"]: r["n"] for r in self.store.all(
+                "SELECT origin, COUNT(*) AS n FROM candidates c JOIN functions f ON f.id=c.function_id "
+                "WHERE f.project_id=? GROUP BY origin", p["id"])}
+            stalls = {r["reset_reason"] or "none": r["n"] for r in self.store.all(
+                "SELECT reset_reason, COUNT(*) AS n FROM search_budgets b JOIN functions f ON f.id=b.function_id "
+                "WHERE f.project_id=? GROUP BY reset_reason", p["id"])}
             projects.append({
                 "legal": {"basis": legal.get("basis"), "license": legal.get("license")},
                 "funcs": funcs,
@@ -803,6 +829,8 @@ class Network:
                 "functions": agg["total"], "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
                 "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
                 "context_version": ctx["version"] if ctx else 0,
+                "verification": {"receipts": receipts, "matched_epoch": p["matched_epoch"]},
+                "origins": origins, "stalls": stalls,
                 "claims": [{"function": c["name"], "agent": c["agent"], "since": c["claimed_at"],
                             "best_score": c["best_score"], "insns": c["n_insns"]} for c in claims],
             })
