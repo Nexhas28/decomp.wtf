@@ -1265,6 +1265,17 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                        "offsets) go to a new file. Kept only if the game still builds identically.",
                        s(path=st("file", True), at=st("function name or .text offset", True),
                          new_name=st("new file path (optional)"), data=st("e.g. .rodata:0x88 .data:0x28 (optional)"))),
+        "local_tools": ("Reverse-engineering tools on this computer (disassemblers, decompilers, decompressors, symbol "
+                        "finders, extractors) and what run_tool can do with each; name one for its parameters.",
+                        s(tool=st("a tool name (optional)"))),
+        "run_tool": ("Run one operation of a local tool on the project's files (file: a project path, 'game', or a "
+                     "tool-output/... result). Only the parameters local_tools lists for it are used.",
+                     s(tool=st("tool", True), operation=st("operation", True), file=st("file"), file2=st("second file"),
+                       arch=st("architecture"), address=st("address (0x...)"), base=st("load address of a raw file"),
+                       count=it("instructions"), offset=st("byte offset into the file"), length=st("bytes"),
+                       hex=st("bytes in hex"), text=st("text, e.g. instructions or a symbol"), format=st("format"),
+                       microcode=st("N64 microcode"), what=st("what to list"), mode=st("thumb | arm"),
+                       width=it("pixels"), height=it("pixels"))),
     }
     if fork:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "

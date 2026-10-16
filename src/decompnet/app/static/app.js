@@ -2841,6 +2841,29 @@ function renderTools() {
       <p class="muted small">${esc(t.use)}</p>
       <div class="row">${!t.supported ? `<span class="muted small">not available for this computer</span>` : t.installed ? `<span class="ok-mark">✓ installed</span>` : `<button class="ghost small-btn" data-tc="${esc(t.id)}" data-prop="${t.license === "proprietary" ? 1 : ""}" type="button">Install</button>`}</div></div>`).join("");
   $("toolGrid").querySelectorAll("[data-tc]").forEach((b) => { b.onclick = () => { b.disabled = true; installToolchain(b.dataset.tc, !!b.dataset.prop).finally(() => { b.disabled = false; }); }; });
+  renderLocalTools();
+}
+
+/* The third-party tools in local-tools/: what each is, whether it's here, what agents can do with it. */
+const LT_STATE = { ready: "✓ ready", ghidra: "Ghidra extension", "not built": "not built here", failing: "doesn't work here yet" };
+function renderLocalTools() {
+  const all = S.st.local_tools || [];
+  $("localTools").hidden = !all.length;
+  $("localToolGrid").innerHTML = all.map((t) => `<div class="tool-card ${t.state === "ready" ? "ok" : ""}">
+      <div class="tc-top"><b>${esc(t.name)}</b><span class="chip-s">${esc(t.category.split(",")[0])}</span></div>
+      <p class="muted small">${t.agents.length ? `Agents can: ${t.agents.map((o) => esc(o.replace(/_/g, " "))).join(", ")}` : esc(t.people || t.why || "")}</p>
+      <div class="row"><span class="${t.state === "ready" ? "ok-mark" : "muted small"}" title="${esc(t.why)}">${LT_STATE[t.state] || esc(t.state)}</span><span class="grow"></span>
+        ${t.state === "not built" ? "" : `<button class="ghost small-btn" data-lt="${esc(t.name)}" type="button">Check</button>`}
+        ${t.repo ? `<a class="link small" href="${esc(t.repo)}" target="_blank" rel="noopener">source</a>` : ""}</div></div>`).join("");
+  $("localToolGrid").querySelectorAll("[data-lt]").forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = "Checking…";
+      try {
+        const r = await api("/api/localtools/test", { method: "POST", body: { tool: b.dataset.lt } });
+        toast(r.ok ? `${esc(b.dataset.lt)} works.` : `${esc(b.dataset.lt)}: its check failed.<br><code>${esc(r.log.slice(-300))}</code>`, r.ok ? "match" : "err");
+      } catch (e) { toast(esc(e.message), "err"); } finally { b.disabled = false; b.textContent = "Check"; }
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ settings page */
@@ -2970,6 +2993,7 @@ $("quitBtn").onclick = async () => {
   document.body.innerHTML = `<main class="view"><p class="muted">decomp.wtf has stopped. You can close this tab.</p></main>`;
 };
 
+applyTheme(savedTheme());  // the Light/Dark choice from Settings, kept across reloads
 loadNav();
 route();
 setTimeout(() => checkUpdate(false, true), 4000);

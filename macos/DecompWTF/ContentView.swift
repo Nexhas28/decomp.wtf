@@ -26,7 +26,11 @@ struct ContentView: View {
         case .starting:
             StartingView()
         case .running(let url):
-            WebView(url: url, controller: web, onQuit: { backend.pageQuit() })
+            if let api = backend.api {
+                MainSplitView(url: url, api: api, onQuit: { backend.pageQuit() })
+            } else {
+                WebView(url: url, controller: web, onQuit: { backend.pageQuit() })
+            }
         case .needsUV:
             SetupView(
                 icon: "shippingbox",
