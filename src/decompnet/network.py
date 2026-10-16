@@ -194,6 +194,12 @@ def _mismatch_text(summary: dict) -> str:
     return line
 
 
+def _refused_text(fn, what: str, why: str) -> str:
+    """What an agent is told when its exact result was not accepted as a match (see _record)."""
+    return (f"⚠ NOT ACCEPTED: {fn['name']} {what}, but the match was refused: {why}. The function stays open "
+            f"and your claim is kept: fix the cause and compile again.")
+
+
 def _action_advice(action, name: str, since: int, stale: str = "") -> str:
     """The policy's next action, as one appended agent-facing line."""
     lines = {
@@ -932,22 +938,27 @@ class Network:
                     "score": score, "matched": False}
 
         if self._hash_only(fn):
-            self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
-                         compiled=True, snapshot=snap,
-                         object_digest=cand.fingerprint() if matched_now else None,
-                         link_verdict=verdict is True)
+            refused = self._record(fn, agent, 0 if matched_now else None, source, ctx["version"], matched=matched_now,
+                                   compiled=True, snapshot=snap,
+                                   object_digest=cand.fingerprint() if matched_now else None,
+                                   link_verdict=verdict is True)
+            if matched_now and refused:
+                return {"text": _refused_text(fn, "matches the target fingerprint", refused), "score": 0,
+                        "matched": False}
             if matched_now:
                 return {"text": f"✅ MATCH! {fn['name']} matches the target fingerprint. Credited to {agent.name}; "
                                 f"your claim is released.", "score": 0, "matched": True}
             return {"text": "❌ No match. This is a hash-only project, so the coordinator can only say match / no match. "
                             f"For a scored diff, run `decompnet local diff <your-object.o> {fn['name']} <your.c>` "
                             "against your own lawful copy.", "score": None, "matched": False}
-        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap,
-                     object_digest=cand.fingerprint() if matched_now else None,
-                     link_verdict=verdict is True or d.bytes_match)
+        refused = self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, snapshot=snap,
+                               object_digest=cand.fingerprint() if matched_now else None,
+                               link_verdict=verdict is True or d.bytes_match)
 
         if scratch:
             head = f"(scratch — {fn['name']} was already matched) score {d.score}"
+        elif d.bytes_match and refused:
+            return {"text": _refused_text(fn, "is byte-identical to the target", refused), "score": 0, "matched": False}
         elif d.bytes_match:
             return {"text": f"✅ MATCH! {fn['name']} is byte-identical to the target ({fn['n_insns']} instructions). "
                             f"Credited to {agent.name}; your claim is released. Call claim_function for the next one.",
@@ -1205,10 +1216,13 @@ class Network:
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent", snapshot: dict | None = None,
                 stale_reason: str | None = None, object_digest: str | None = None,
-                link_verdict: bool | None = None):
+                link_verdict: bool | None = None) -> str | None:
         """Record one attempt. `stale_reason` marks the result historical: it is stored (with its snapshot)
         as search evidence but never updates best_score/status, never accepts a match and never writes a
         receipt (plan P1.4: a stale compilation cannot become a current match).
+
+        Returns why a requested match (`matched=True`) was NOT accepted, or None when it was accepted or
+        none was requested: callers must not tell an agent "matched" on a refused match.
 
         Receipt provenance (plan 18.4): `object_digest` is the candidate object's fingerprint, stored as
         candidate_object_digest. `link_verdict` says whether the judge had a linked verdict or a full-diff
@@ -1218,10 +1232,12 @@ class Network:
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         slug = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])["slug"]
+        requested, refused = matched, None
         if matched and self.acceptance_paused(slug):
             # Runbook 24.1 step 1, enforced for every ingress path (agents, permuter, jobs, twins):
             # retained as search evidence, never accepted while the project's acceptance is paused.
             matched = False
+            refused = "new acceptance is paused for this project"
         if matched and snapshot is None and stale_reason is None and not (
                 getattr(self, "fork_slug", None) and self.fork_slug(slug)):
             # Every ROM-project acceptance needs the dependency snapshot captured BEFORE the compile
@@ -1264,7 +1280,8 @@ class Network:
                      row_snap["compiler_digest"], row_snap["scorer_version"], row_snap["policy_version"], stale_reason))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if stale_reason is not None:
-                return  # historical only: no best/status/claim/receipt/epoch changes
+                # historical only: no best/status/claim/receipt/epoch changes
+                return (refused or f"the result is historical ({stale_reason})") if requested else None
             if matched and snapshot is not None:
                 # P1.4 step 3: verify the dependency epochs again inside the short acceptance transaction
                 # (the store is one connection under an RLock, so this read sees the open transaction).
@@ -1272,7 +1289,8 @@ class Network:
                     self, db.execute("SELECT * FROM projects WHERE id=?", (fn["project_id"],)).fetchone(), fn, snapshot)
                 if not current:
                     db.execute("UPDATE attempt_snapshots SET stale_reason=? WHERE attempt_id=?", (why, attempt_id))
-                    return  # became stale after the caller's check: historical only, never accepted
+                    # became stale after the caller's check: historical only, never accepted
+                    return f"the {why} while it was being accepted"
             # P4.6: retain every distinct source as a provenance-tagged candidate instead of letting the
             # latest draft overwrite the only copy; alternatives are never current-best unless rescored.
             self._note_candidate(db, fn, via, source, snapshot)
@@ -1309,6 +1327,7 @@ class Network:
                     # Refuse the match: a byte-identical build from a source with an
                     # uninitialised use is not finished work. Stay open and say why.
                     matched = False
+                    refused = f"the validity guard found {validity.describe(verdict)}"
                     self._flag_validity(db, fn, source, "match refused", verdict)
             if matched:
                 db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, "
@@ -1335,6 +1354,7 @@ class Network:
             self._report_escalation(fn["id"], True)
         if matched:
             self.on_match(self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"]), fn["id"], agent)
+        return refused if requested and not matched else None
 
     def _note_candidate(self, db, fn, origin: str, source: str, snapshot: dict | None) -> None:
         """P4.6: keep distinct sources as provenance-tagged alternatives (bounded per function). The

@@ -2359,9 +2359,9 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap, via=via,
-                         object_digest=cand.fingerprint() if d.bytes_match else None)
-            return {"matched": d.bytes_match, "score": d.score}
+            refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
+                                   via=via, object_digest=cand.fingerprint() if d.bytes_match else None)
+            return {"matched": d.bytes_match and not refused, "score": d.score}
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
@@ -2460,9 +2460,9 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
-                         object_digest=cand.fingerprint() if d.bytes_match else None)
-            return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
+            refused = self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
+                                   object_digest=cand.fingerprint() if d.bytes_match else None)
+            return "match" if d.bytes_match and not refused else "near" if d.percent >= 90 else "far"
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
