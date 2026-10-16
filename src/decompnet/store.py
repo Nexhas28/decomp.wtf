@@ -104,6 +104,7 @@ MIGRATIONS = [
     ("functions", "revision", "INTEGER NOT NULL DEFAULT 1"),   # split/merge/target change = new revision (Section 18.2)
     ("projects", "matched_epoch", "INTEGER NOT NULL DEFAULT 0"),  # incremented on every acceptance (P1.4 epochs)
     ("functions", "best_verified", "INTEGER NOT NULL DEFAULT 1"),  # 0: legacy best scored before snapshots; revalidate before trusting
+    ("agents", "bridge", "TEXT"),  # the bridge daemon's stable client id (same id = same identity across restarts)
 ]
 
 

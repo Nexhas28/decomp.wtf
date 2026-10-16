@@ -1941,24 +1941,33 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
             self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
 
-    def chat_agent(self, base: str) -> tuple[Agent, str]:
+    def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
         or base_2, base_3... when another session of the same agent is active right now (never base-2: that's the
-        name of a helper session, see local_agent)."""
+        name of a helper session, see local_agent). `client` is the bridge's stable id (its unix socket identity):
+        a bridge daemon that restarts with the same client id gets its ORIGINAL row back instead of a suffixed one
+        (the identity split-brain perf-test found), while two genuinely concurrent clients still get separate
+        identities."""
         base = re.sub(r"[^A-Za-z0-9_.-]+", "-", base).strip("-")[:30] or "chat"
         for n in range(1, 100):
             name = base if n == 1 else f"{base}_{n}"
-            row = self.store.one("SELECT id, origin, last_seen FROM agents WHERE name=?", name)
-            if row is None or (row["origin"] == "chat" and (row["last_seen"] or 0) < time.time() - 600):
+            row = self.store.one("SELECT id, origin, last_seen, bridge FROM agents WHERE name=?", name)
+            same_client = bool(client) and row is not None and row["bridge"] == client
+            if row is None or same_client or (row["origin"] == "chat" and (row["last_seen"] or 0) < time.time() - 600):
                 break
         else:
             raise NetworkError("too many chat sessions at once")
         if row is None:
             token = self.register_agent(name, "you", trusted=True, origin="chat")
+            if client:
+                with self.store.tx() as db:
+                    db.execute("UPDATE agents SET bridge=? WHERE id=(SELECT id FROM agents WHERE name=?)",
+                               (client, name))
         else:
             token = "dn_" + secrets.token_urlsafe(24)
             with self.store.tx() as db:
-                db.execute("UPDATE agents SET token_hash=?, last_seen=? WHERE id=?", (_hash_token(token), time.time(), row["id"]))
+                db.execute("UPDATE agents SET token_hash=?, last_seen=?, bridge=COALESCE(?, bridge) WHERE id=?",
+                           (_hash_token(token), time.time(), client or None, row["id"]))
         return self.authenticate(token), token
 
     def is_chat(self, agent: Agent) -> bool:

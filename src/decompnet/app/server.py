@@ -900,7 +900,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         data = await body(request)
         try:
-            agent, token = net.chat_agent(str(data.get("name") or "chat"))
+            agent, token = net.chat_agent(str(data.get("name") or "chat"), str(data.get("client") or ""))
         except NetworkError as e:
             return fail(e)
         return JSONResponse({"agent": agent.name, "token": token, "url": mcp_url})
