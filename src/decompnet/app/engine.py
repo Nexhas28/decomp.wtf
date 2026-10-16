@@ -820,6 +820,8 @@ class RomNetwork(Network):
         "- SDCC turns a call in tail position into `jp`; if the target does `call … ; ret`, give the "
         "call something to do afterwards (a following statement, or return a value).",
         "- There is no m2c draft for SM83: the target assembly is the specification.",
+        "- **Matches must come from C**: inline assembly (`__asm`), `__naked`, pragmas and `#include <…>` "
+        "are rejected by the source policy, exactly as on every other platform.",
     )
 
     def _extra_brief(self, fn, proj) -> list[str]:
