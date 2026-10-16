@@ -73,6 +73,8 @@ class State:
     improved: int = 0
     matched: int = 0
     current: str = ""
+    error: str = ""  # why it couldn't run (state "error"), e.g. the fleet lockdown refused its identity
+    refused: str = ""  # why the last match it found was not accepted
     started_at: float = field(default_factory=time.time)
     stop: threading.Event = field(default_factory=threading.Event)
 
@@ -84,6 +86,7 @@ class TurnStats:
     compiled: bool = False
     improved: bool = False
     infra: int = 0
+    refused: str = ""  # a match was found but _record refused it: the turn ends, the function stays open
 
 
 class Permuter:
@@ -175,7 +178,12 @@ class Permuter:
                        (policy.epoch, policy.version, now, fn["id"], policy.version))
 
     def _loop(self, slug: str, st: State) -> None:
-        agent, _ = self.net.local_agent("permuter")
+        try:
+            agent, _ = self.net.local_agent("permuter")
+        except NetworkError as e:  # the fleet lockdown refuses the identity: end with the reason, not silently
+            st.state, st.error, st.current = "error", str(e), ""
+            log.warning("permuter on %s: %s", slug, e)
+            return
         idle = 0
         try:
             while not st.stop.is_set():
@@ -262,6 +270,9 @@ class Permuter:
                     stats.infra += 1
                     return EvalOutcome(score=None, kind="evaluate_failure")
                 stats.compiled = True
+                if score == 0 and not res.get("matched"):  # identical, but the match was refused
+                    stats.refused = res.get("text") or "the match was refused"
+                    return EvalOutcome(score=None, kind="evaluate_failure")
                 if score < run.portfolio.best.score:
                     stats.improved = True
                 return EvalOutcome(score=score, kind="fork")
@@ -283,9 +294,12 @@ class Permuter:
             if verdict is not None:
                 score = 0 if verdict else max(1, score)
             if score < run.portfolio.best.score:
+                refused = self.net._record(fn, agent, score, source, ctx["version"], matched=comp.bytes_match,
+                                           via="permuter", snapshot=snap)
+                if comp.bytes_match and refused:  # not a match: never reported or counted as one
+                    stats.refused = refused
+                    return EvalOutcome(score=None, kind="evaluate_failure")
                 stats.improved = True
-                self.net._record(fn, agent, score, source, ctx["version"], matched=comp.bytes_match,
-                                 via="permuter", snapshot=snap)
             return EvalOutcome(score=score, bytes_match=comp.bytes_match, counts=dict(comp.counts),
                                object_digest=comp.candidate.normalised_fingerprint, kind="scored")
         return evaluate
@@ -374,6 +388,10 @@ class Permuter:
                 res = step(run, evaluator)
                 if res is None:
                     break  # step budget spent or already matched
+                if stats.refused:  # mutating further only finds the same refused match again
+                    st.refused = f"{fn['name']}: {stats.refused}"
+                    log.info("permuter: %s match refused: %s", fn["name"], stats.refused)
+                    break
                 if res.operator is not None:
                     st.variants += 1
                 if res.kind == "improving":
@@ -383,7 +401,7 @@ class Permuter:
                     st.matched += 1
                     log.info("permuter: %s matched", fn["name"])
                     break
-            if run.portfolio.best.score > 0 and self._turns_used(fn) < MAX_TURNS:
+            if run.portfolio.best.score > 0 and not stats.refused and self._turns_used(fn) < MAX_TURNS:
                 self._save_checkpoint(fn["id"], checkpoint_run(run))  # resume next turn (P5.5 step 7)
             else:
                 self._drop_checkpoint(fn["id"])

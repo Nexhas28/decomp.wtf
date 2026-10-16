@@ -2578,7 +2578,8 @@ function renderAutopilot(ov) {
   const twinsRunning = tw && tw.state === "running";
   box.classList.toggle("on", !!(running || twinsRunning));
   $("apBar").hidden = !running || ap.phase === "twins";
-  const perm = pm && (pm.tried || pm.state === "running")
+  const perm = pm && pm.state === "error" ? ` The permuter couldn't run: ${pm.error}.`
+    : pm && (pm.tried || pm.state === "running")
     ? ` The permuter ${pm.state === "running" ? `is rewriting near misses${pm.current ? ` (now ${pm.current})` : ""}` : "rewrote near misses"}: ${plural(pm.tried, "function")}, ${pm.matched} matched.` : "";
   const twinsDone = (ap && ap.twins) || (tw && tw.matched) || 0;
   if (running && ap.phase === "twins") {
@@ -2599,6 +2600,7 @@ function renderAutopilot(ov) {
     if (tw && tw.asm) parts.push(`${tw.asm.toLocaleString()} copies of assembly set aside (not for agents)`);
     if (ap && ap.tried) parts.push(`${ap.tried.toLocaleString()} machine drafts tried${ap.near ? `, ${ap.near} more 90%+ there` : ""}`);
     $("apSub").textContent = ap && ap.error ? `Autopilot couldn't run: ${ap.error}`
+      : tw && tw.error ? `Matching identical code couldn't run: ${tw.error}`
       : (parts.length ? parts.join(" · ") + ". " : "") + (ap && ap.no_drafts ? "" : "Run it again after agents add types and names: drafts get better.") + perm;
     $("apBtn").textContent = "Run again";
   } else {

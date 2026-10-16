@@ -2047,7 +2047,7 @@ class RomNetwork(Network):
         return self._overview(slug, proj) | {"last_activity": last, "autopilot": self.autopilot_status(slug),
                                              "permuter": self.permuter.status(proj["slug"]),
                                              "twins": None if twins is None else {
-                                                 k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
+                                                 k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm", "error")},
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
                                              "priority": self._open_priority(proj, cfg.get("priority", []))}
