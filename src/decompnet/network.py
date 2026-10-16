@@ -194,6 +194,82 @@ def _mismatch_text(summary: dict) -> str:
     return line
 
 
+# ---------------------------------------------------------------- diff evidence (what the diff calls for)
+# One bounded "Evidence" section per compile_and_diff result, chosen by the diff's class, so an agent
+# gets the tool output the diff calls for instead of a hint to go and call the tool itself.
+
+EVIDENCE_MAX_CHARS = 3000       # the whole section, whatever the tools wrote
+EVIDENCE_DRAFT_LINES = 60       # a second decompiler draft, at most
+EVIDENCE_SKELETON_LINES = 30    # the m2c draft's control-flow skeleton, at most
+EVIDENCE_SOURCE_CHARS = 1400    # a look-alike's matched source, at most
+EVIDENCE_STRUCTURE_COMPILES = 2  # drafts are shown on an agent's first compiles of a function only
+_EVIDENCE_CACHE_MAX = 512
+
+_C_STRUCTURE = re.compile(r"^\s*(?:\}?\s*(?:if|else|for|while|do|switch|case|default|return|goto|break|continue)\b"
+                          r"|[A-Za-z_]\w*\s*:\s*$|\w[\w\s\*]*\b[A-Za-z_]\w*\s*\([^;]*\)\s*\{?\s*$)")
+_C_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_C_KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "do", "else"}
+
+_RIZIN_ARCHES = {"mips": ("mips-be", "mips-le"), "ppc": ("ppc", "ppc"), "arm": ("arm", "arm"),
+                 "thumb": ("thumb", "thumb"), "x86": ("x86", "x86"), "aarch64": ("aarch64", "aarch64")}
+
+
+def diff_class(rows) -> str:
+    """What kind of mismatch a diff's rows show, worst first: 'structure' (instructions missing or extra:
+    the count or control flow is wrong), 'operand' (same shape, other operands or symbols: '|' and 'i'),
+    'register' (only registers, stack offsets or order: 'r', 's', 'o'), 'none' (every row reads the same)."""
+    marks = {m for m, _, _ in rows}
+    if "<" in marks or ">" in marks:
+        return "structure"
+    if "|" in marks or "i" in marks:
+        return "operand"
+    if marks & {"r", "s", "o"}:
+        return "register"
+    return "none"
+
+
+def triage_line(rows) -> str:
+    """One line saying what the diff calls for, from its class: the verdict before the detail."""
+    cls = diff_class(rows)
+    n_target = sum(1 for _, t, _ in rows if t)
+    n_yours = sum(1 for _, _, c in rows if c)
+    if cls == "structure":
+        missing = sum(1 for m, _, _ in rows if m == "<")
+        extra = sum(1 for m, _, _ in rows if m == ">")
+        return (f"triage: STRUCTURE — target {n_target} insns, yours {n_yours} ({missing} missing, {extra} extra): "
+                f"the control flow or the set of statements is wrong; fix the shape before any register tuning")
+    if cls == "operand":
+        n = sum(1 for m, _, _ in rows if m in ("|", "i"))
+        return (f"triage: OPERANDS — count matches, {n} operand/instruction diffs: a wrong symbol, constant, "
+                f"type width or struct field offset; the statement shape is right")
+    if cls == "register":
+        n = sum(1 for m, _, _ in rows if m in ("r", "s", "o"))
+        return f"triage: count matches, {n} register diffs: statement order/temporaries; don't change the logic"
+    return "triage: every instruction reads the same; only encodings differ"
+
+
+def c_structure_summary(source: str, max_lines: int = EVIDENCE_SKELETON_LINES) -> str:
+    """A C draft reduced to its control flow: a count line, then only the lines that shape it (branches,
+    loops, switches, returns, labels, calls), each clipped. What an agent compares two drafts by."""
+    lines = [ln.rstrip() for ln in source.splitlines()]
+    text = "\n".join(lines)
+    counts = {k: len(re.findall(rf"\b{k}\b", text)) for k in ("if", "else", "for", "while", "switch", "return", "goto")}
+    calls = sorted({c for c in _C_CALL.findall(text) if c not in _C_KEYWORDS})
+    head = ", ".join(f"{n} {k}" for k, n in counts.items() if n) or "straight-line code"
+    head += f"; calls: {', '.join(calls[:12])}{'…' if len(calls) > 12 else ''}" if calls else "; no calls"
+    kept = [ln.strip()[:100] for ln in lines if ln.strip() and (_C_STRUCTURE.match(ln) or _C_CALL.search(ln))]
+    if len(kept) > max_lines:
+        kept = kept[:max_lines] + [f"… {len(kept) - max_lines} more lines"]
+    return head + ("\n" + "\n".join(kept) if kept else "")
+
+
+def _cap_evidence(text: str, limit: int = EVIDENCE_MAX_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit("\n", 1)[0]
+    return cut + "\n… (evidence cut at %d characters)" % limit
+
+
 def _refused_text(fn, what: str, why: str) -> str:
     """What an agent is told when its exact result was not accepted as a match (see _record)."""
     return (f"⚠ NOT ACCEPTED: {fn['name']} {what}, but the match was refused: {why}. The function stays open "
@@ -375,6 +451,9 @@ class Network:
         # away as usual); every member may compile it and gets the credit for its own match.
         self.teams: dict[int, set[int]] = {}
         self._pause_lock = threading.Lock()
+        # (function id, revision, diff class) -> the tool output already gathered for it: a repeated
+        # compile with the same kind of diff re-runs no decompiler and no look-alike search.
+        self._evidence_cache: dict[tuple, str] = {}
 
     # ------------------------------------------------------------------ agents
 
@@ -837,13 +916,15 @@ class Network:
         lines += self._extra_brief(fn, proj)
         if fn["status"] != "matched":
             if fn["best_source"]:
+                triage = fn["best_triage"] if "best_triage" in fn.keys() else None
                 lines += ["", f"### Best attempt so far: score {fn['best_score']} by "
                               f"{self._agent_name(fn['best_agent_id'])} ({fn['attempts']} attempts total) — "
                               f"start from this"
                           + ("\n⚠ LEGACY BEST (unverified): this score predates snapshot verification "
                              "and may not reproduce under the current compiler/context — revalidate "
                              "before trusting it" if "best_verified" in fn.keys() and not fn["best_verified"]
-                             else ""), "```c", fn["best_source"].strip(), "```"]
+                             else "")
+                          + (f"\n{triage}" if triage else ""), "```c", fn["best_source"].strip(), "```"]
             elif fn["seed"]:
                 lines += ["", "### Machine-generated starting point (m2c: expect wrong types and names; "
                               "the context header helps)", "```c",
@@ -1027,7 +1108,120 @@ class Network:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
         with telemetry.span("attempt.render"):
             rendered = d.render()
-        return {"text": f"{head}\n{rendered}{mismatch}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
+        evidence = ""
+        if not scratch:
+            with telemetry.span("attempt.evidence"):
+                evidence = self._evidence(fn, proj, agent, d.rows, source)
+        return {"text": f"{head}\n{rendered}{mismatch}{warn}{evidence}{self.stall_note(fn['id'], agent.id)}",
+                "score": d.score, "matched": False}
+
+    # --------------------------------------------------------------- evidence
+
+    def _evidence(self, fn, proj, agent: Agent, rows, source: str = "") -> str:
+        """The "Evidence" section of a scored result: a triage line, then the tool output its class calls for.
+        Structure wrong (first compiles only): the m2c draft's skeleton and a second draft from rz-ghidra.
+        Operands wrong: the nearest matched look-alike's source. Registers only: the triage line alone.
+        Tool output is gathered once per (function, class) and cached; bounded to EVIDENCE_MAX_CHARS."""
+        cls = diff_class(rows)
+        if cls == "none":
+            return ""
+        triage = triage_line(rows)
+        with self.store.tx() as db:  # when this attempt is the function's best, its verdict opens the next brief
+            db.execute("UPDATE functions SET best_triage=? WHERE id=? AND best_source=?", (triage, fn["id"], source))
+        section = f"\n\n### Evidence\n{triage}"
+        if cls == "register":
+            return section
+        if cls == "structure":
+            n = self.store.one("SELECT COUNT(*) AS n FROM attempts WHERE function_id=? AND agent_id=? AND compiled=1",
+                               fn["id"], agent.id)["n"]
+            if n > EVIDENCE_STRUCTURE_COMPILES:
+                return section
+        key = (fn["id"], fn["revision"] if "revision" in fn.keys() else 1, cls)
+        body = self._evidence_cache.get(key)
+        if body is None:
+            try:
+                body = self._structure_evidence(fn, proj) if cls == "structure" else self._operand_evidence(fn, proj)
+            except Exception as e:  # evidence is a courtesy: never fail the compile result over it
+                body = f"(evidence unavailable: {type(e).__name__}: {str(e)[:200]})"
+            if len(self._evidence_cache) >= _EVIDENCE_CACHE_MAX:
+                self._evidence_cache.pop(next(iter(self._evidence_cache)))
+            self._evidence_cache[key] = body
+        return _cap_evidence(section + "\n" + body)
+
+    def _structure_evidence(self, fn, proj) -> str:
+        """Two independent readings of the function's structure: the m2c draft's skeleton and rz-ghidra's draft."""
+        parts = []
+        seed = (fn["seed"] or "").strip()
+        if seed:
+            parts += ["m2c draft, structure only:", "```c", c_structure_summary(seed), "```"]
+        else:
+            parts.append("no m2c draft for this function")
+        draft, why = self._second_draft(fn, proj)
+        if draft:
+            parts += [f"rz-ghidra draft (an independent reading; names and types are guesses, at most "
+                      f"{EVIDENCE_DRAFT_LINES} lines):", "```c", draft, "```"]
+        else:
+            parts.append(f"no second draft: {why}")
+        parts.append("Where the readings agree on branches and loops, trust that shape; where they differ, the "
+                     "target assembly decides.")
+        return "\n".join(parts)
+
+    def _second_draft(self, fn, proj) -> tuple[str | None, str]:
+        """rz-ghidra's decompilation of the function from the game file, through the local tools (the same
+        run_tool an agent could make), or (None, why not)."""
+        if getattr(self, "project_row", None) is None or getattr(self, "workspace", None) is None:
+            return None, "this coordinator has no local tools"
+        if fn["vram"] is None:
+            return None, "the function's load address isn't known"
+        pair = _RIZIN_ARCHES.get((proj["arch"] or "").lower())
+        if pair is None:
+            return None, f"rz-ghidra has no {proj['arch'] or 'unknown'} profile"
+        from .app import localtools  # app imports network: resolved here, never at import time
+
+        try:
+            state, why = localtools.status(localtools._tool("rz-ghidra"))
+        except NetworkError:
+            return None, "rz-ghidra isn't installed here (local_tools() lists what is)"
+        if state != "ready":
+            return None, f"rz-ghidra isn't usable here: {why}"
+        arch = pair[0] if proj["big_endian"] else pair[1]
+        base = fn["vram"] - (fn["rom_offset"] or 0)
+        out = localtools.run(self, proj["slug"], "rz-ghidra", "decompile", agent="evidence", file="game",
+                             arch=arch, address=hex(fn["vram"]), base=hex(base))
+        lines = out.splitlines()
+        if not lines or not lines[0].endswith(": ok"):
+            return None, (lines[0] if lines else "rz-ghidra gave no output")
+        body = []
+        for ln in lines[1:]:
+            if ln.startswith("Files written"):
+                break
+            if ln.strip() and not ln.startswith(("WARN", "ERROR", "INFO")):
+                body.append(ln.rstrip()[:120])
+        if not body:
+            return None, "rz-ghidra produced no code at that address"
+        if len(body) > EVIDENCE_DRAFT_LINES:
+            body = body[:EVIDENCE_DRAFT_LINES] + [f"… {len(body) - EVIDENCE_DRAFT_LINES} more lines"]
+        return "\n".join(body), ""
+
+    def _operand_evidence(self, fn, proj) -> str:
+        """The nearest matched look-alike (find_similar's first matched hit) with its source: the same operand
+        shape appears there, so its symbols, constants and field offsets are the ones to compare against."""
+        similar = getattr(self, "similar", None)
+        hits = similar(proj, fn, top=5) if similar is not None else []
+        for row, sim in hits:
+            if row["status"] != "matched":
+                continue
+            src = self.store.one("SELECT matched_source FROM functions WHERE id=?", row["id"])
+            src = (src["matched_source"] or "").strip() if src else ""
+            if not src:
+                continue
+            if len(src) > EVIDENCE_SOURCE_CHARS:
+                src = src[:EVIDENCE_SOURCE_CHARS].rsplit("\n", 1)[0] + "\n… (cut)"
+            return (f"nearest matched look-alike: {row['name']} ({sim * 100:.0f}% similar, {row['n_insns']} insns) — "
+                    f"the same operand shape appears here; compare its symbols, constants and field offsets:\n"
+                    f"```c\n{src}\n```")
+        return ("no matched look-alike yet (find_similar has nothing close): check each differing operand against "
+                "context.h names and the literal values in the target assembly")
 
     def stall_note(self, function_id: int, agent_id: int, after: int | None = None) -> str:
         """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
