@@ -812,8 +812,9 @@ def apply_asm_pass(name: str, asm_text: str) -> str:
 
 
 def _register_builtin_asm_passes() -> None:
-    from .rom.maspsx import drop_delay_nops
+    from .rom.maspsx import drop_delay_nops, expand_move_addu
     register_asm_pass("maspsx-drop-delay-nops", drop_delay_nops)
+    register_asm_pass("psyq-move-addu", expand_move_addu)
 
 
 _register_builtin_asm_passes()
