@@ -20,3 +20,25 @@ before inventing a trick.
 
 Calls into BIOS use `swi`; the project wraps them (`CpuSet`, `LZ77UnCompVram`...): use the wrappers The
 wrappers themselves (`swi n; bx lr`) are set aside as BIOS code: you won't be handed one.
+
+## Worked examples (typical for agbcc -O2; one change, then recompile)
+Extra `lsl`/`lsr` pair after arithmetic (`>` lsl r0,#16 / lsr r0,#16): a narrow local is truncating; the target keeps `int`.
+```
+> lsl r0,r0,#16 / > lsr r0,r0,#16          u16 sum;  ->  s32 sum;
+```
+Missing truncation (`<` lsl/asr #24): the target stores into an `s8`/`u8` and reloads it.
+```
+< lsl r0,r0,#24 / < asr r0,r0,#24          s32 v = x;  ->  s8 v = x;
+```
+Loop counter in `r4` vs `r5` (`r` across the loop): declaration or first-use order.
+```
+r add r5,#1  vs  add r4,#1                  int i; int n;  ->  int n; int i;
+```
+Extra `mov` copying a parameter (`>` mov r4,r0): the target uses the parameter directly; remove the local copy.
+```
+> mov r4,r0                                 s32 p = arg; use(p);  ->  use(arg);
+```
+Condition inverted (`|` bne vs beq with swapped blocks): early return vs one exit.
+```
+| beq L1  vs  bne L1                        if (a) { body } return;  ->  if (!a) return; body;
+```

@@ -28,3 +28,26 @@ don't write raw assembly.
 
 Typical patterns: `jtbl_` jump tables in .rodata for dense switches; overlays loaded at the same address
 (separate units); `D_800xxxxx` data and `func_800xxxxx` names for things nobody named yet.
+
+## Worked examples (typical for PSY-Q GCC 2.7.2/2.8.1; one change, then recompile)
+Full address built where the target uses `$gp` (`|` lui+lw vs one `lw ...($gp)`): drop `extern`.
+```
+| lui $v0,0x8001 / lw $v0,-0x4D88($v0)  vs  lw $v0,%gp_rel(D_8001B278)($gp)
+extern s32 D_8001B278;  ->  s32 D_8001B278;
+```
+Extra `nop` after a load (`>` nop): the target scheduled other work there; a second statement between the load and its use, or a temporary, usually moves it.
+```
+> lw $v0,0($a0) / > nop / addu ...         x = *p + 1;  ->  y = a + b; x = *p + 1;   (use the work that follows in the target)
+```
+Unsigned vs signed shift or compare (`|` srl vs sra, `sltu` vs `slt`):
+```
+| sra $v0,$v0,2  vs  srl $v0,$v0,2          s32 n;  ->  u32 n;
+```
+Magic multiply in the target (`lui 0x6666`, `mult`, `mfhi`): the original is a plain divide by a constant.
+```
+< lui $at,0x6666 / < mult / < mfhi           x * 0x66666667 >> 34  ->  x / 10
+```
+Struct field offsets off by a few bytes (`i` on loads/stores): an earlier field has the wrong size.
+```
+i lw $v0,0x14($a0)  vs  lw $v0,0x10($a0)     s32 a; s32 b; s32 c;  ->  s32 a; s32 b; (c is not there)
+```
