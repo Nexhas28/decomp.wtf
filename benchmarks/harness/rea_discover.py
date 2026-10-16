@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-REA_ROOT = Path("/Users/<user>/.local/lib/node_modules/rea-agents")
+REA_ROOT = Path(os.environ.get("REA_ROOT", Path.home() / ".local/lib/node_modules/rea-agents"))
 OUT = Path("/tmp/rea_tools_list.json")
 
 
@@ -31,10 +31,11 @@ def main():
     env = {
         "HOME": tempfile.mkdtemp(prefix="rea-discovery-home-"),
         "TMPDIR": tempfile.mkdtemp(prefix="rea-discovery-tmp-"),
-        "PATH": "/Users/<user>/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH": f"{Path.home() / '.local/bin'}:/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C",
     }
-    cmd = ["/Users/<user>/.local/bin/node", "scripts/rea.mjs", "mcp"]
+    node = os.environ.get("NODE", str(Path.home() / ".local/bin/node"))
+    cmd = [node, "scripts/rea.mjs", "mcp"]
     proc = subprocess.Popen(cmd, cwd=REA_ROOT, env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

@@ -10,7 +10,7 @@ Pinned artifact (P9.1)
 ----------------------
 * Package: ``rea-agents`` **6.4.0** (npm), mcpName ``io.github.morluto/rea``, upstream
   https://github.com/morluto/rea.
-* Location on this host: ``/Users/<user>/.local/lib/node_modules/rea-agents`` (the package
+* Location on this host: ``~/.local/lib/node_modules/rea-agents`` (the package
   ``bin`` is ``rea`` -> ``scripts/rea.mjs``; MCP mode is ``node scripts/rea.mjs mcp`` which loads
   ``dist/main.js`` and serves the stdio tool catalog).
 * Discovery method (2026-10-16): the *installed* package was driven once over stdio with MCP
@@ -150,7 +150,7 @@ REA_DISCOVERY = {
     "mcp_name": REA_MCP_NAME,
 }
 #: Default install location discovered on this host (override with ``command=``/``cwd=`` or $REA_ROOT).
-REA_ROOT = Path("/Users/<user>/.local/lib/node_modules/rea-agents")
+REA_ROOT = Path(os.environ.get("REA_ROOT", Path.home() / ".local/lib/node_modules/rea-agents"))
 #: Compatibility aliases used by the analysis package surface.
 REA_VERSION = REA_PACKAGE_VERSION
 REA_SERVER = REA_SERVER_NAME
@@ -257,7 +257,7 @@ class ReaSessionInvalidError(ReaProviderFailure):
 
 def discover() -> tuple[str, Path, str] | None:
     """(node binary, package root, entry script) for the pinned install, or None."""
-    node = "/Users/<user>/.local/bin/node"
+    node = os.environ.get("NODE", str(Path.home() / ".local/bin/node"))
     if not (REA_ROOT / REA_ENTRY).exists():
         node_alt = None
         for cand in ("/opt/homebrew/bin/node", "/usr/local/bin/node"):
