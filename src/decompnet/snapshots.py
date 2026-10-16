@@ -13,7 +13,7 @@ import time
 
 SCORER_VERSION = 1        # scoring.py, baseline-compatible-v1
 POLICY_VERSION = 1        # rom-function-policy-v1 (Section 18.4)
-SNAPSHOT_SCHEMA = 1
+SNAPSHOT_SCHEMA = 2
 
 
 def sha(data: bytes) -> str:
@@ -52,7 +52,13 @@ def compiler_digest(proj) -> str:
         return sha(json.dumps(json.loads(proj["config"]).get("compiler", {}), sort_keys=True).encode())
 
 
-def capture(fn, proj, ctx) -> dict:
+def symbol_table_digest(store, project_id: int) -> str:
+    """Symbol-resolution identity: the (address, name) rows the judge and renderer read for a project."""
+    rows = store.all("SELECT address, name FROM symbols WHERE project_id=? ORDER BY address, name", project_id)
+    return sha(json.dumps([[r["address"], r["name"]] for r in rows]).encode())
+
+
+def capture(fn, proj, ctx, symbols_digest: str = "") -> dict:
     """The snapshot recorded with an attempt, before compilation."""
     return {
         "schema": SNAPSHOT_SCHEMA,
@@ -63,6 +69,7 @@ def capture(fn, proj, ctx) -> dict:
         "context_digest": context_digest(ctx) if ctx else "",
         "target_digest": target_digest(fn),
         "compiler_digest": compiler_digest(proj),
+        "symbols_digest": symbols_digest,  # "" when the caller did not capture it; then it is not checked
         "scorer_version": SCORER_VERSION,
         "policy_version": POLICY_VERSION,
     }
@@ -84,8 +91,14 @@ def check_current(net, proj, fn, snap: dict) -> tuple[bool, str]:
         return False, "target changed"
     if compiler_digest(net.store.one("SELECT * FROM projects WHERE id=?", proj["id"])) != snap["compiler_digest"]:
         return False, "compiler profile changed"
+    if snap.get("symbols_digest") and symbol_table_digest(net.store, proj["id"]) != snap["symbols_digest"]:
+        return False, "symbols changed"
     ctx = net._context(proj["id"], fresh["unit"])
-    if ctx is None or ctx["version"] != snap["context_version"] or context_digest(ctx) != snap["context_digest"]:
+    if ctx is None:  # no context row now: only a snapshot captured without one still matches
+        changed = snap["context_version"] != 0 or snap["context_digest"] != ""
+    else:
+        changed = ctx["version"] != snap["context_version"] or context_digest(ctx) != snap["context_digest"]
+    if changed:
         return False, "context changed"
     if snap.get("scorer_version") != SCORER_VERSION or snap.get("policy_version") != POLICY_VERSION:
         return False, "scorer or policy changed"

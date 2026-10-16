@@ -69,6 +69,48 @@ def test_w01c_choose_is_deterministic_and_bounded(net):
     assert first == second and len(first) == 2
 
 
+def test_w01d_waiting_time_raises_priority(net):
+    """W-01 aging: the same function's priority and fairness component grow as its waiting time grows."""
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    with net.store.tx() as db:
+        db.execute("INSERT INTO attempts(function_id, agent_id, score, compiled, context_version, source, created_at) "
+                   "VALUES(4,1,NULL,0,1,'w',?)", (time.time(),))
+    priorities, fairness = [], []
+    for hours in (1, 10, 72):
+        with net.store.tx() as db:
+            db.execute("UPDATE attempts SET created_at=? WHERE function_id=4", (time.time() - hours * 3600,))
+        e = explain(net, net.store.one("SELECT * FROM functions WHERE id=4"), proj)
+        priorities.append(e["priority"])
+        fairness.append(e["components"]["fairness"]["value"])
+    assert fairness[0] < fairness[1] < fairness[2]
+    assert priorities[0] < priorities[1] < priorities[2]
+
+
+def test_w01e_long_waiting_function_is_eventually_picked(net):
+    """W-01 aging: a dominant near-match keeps winning while it stalls, but a long-waiting function
+    is picked within a bounded number of picks."""
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET boost=4, best_score=0, attempts=0 WHERE id=2")  # dominant near-match
+        db.execute("UPDATE functions SET boost=0, best_score=0, attempts=0 WHERE id=4")  # long-waiting
+        db.execute("INSERT INTO attempts(function_id, agent_id, score, compiled, context_version, source, created_at) "
+                   "VALUES(4,1,0,1,1,'w',?)", (time.time() - 72 * 3600,))
+    picks = []
+    for _ in range(60):
+        rows = [net.store.one("SELECT * FROM functions WHERE id=?", i) for i in (2, 4)]
+        chosen = choose(net, proj, rows, 1)[0]
+        if chosen["id"] == 4:
+            break
+        picks.append(chosen["id"])
+        with net.store.tx() as db:  # the dominant function stalls: each pick is a non-improving attempt
+            db.execute("INSERT INTO attempts(function_id, agent_id, score, compiled, context_version, source, "
+                       "created_at) VALUES(?,1,1000,1,1,'p',?)", (chosen["id"], time.time()))
+            db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (chosen["id"],))
+    else:
+        pytest.fail("the long-waiting function was never picked")
+    assert picks and len(picks) <= 40
+
+
 def test_w04_resource_budget_prevents_oversubscription():
     b = ResourceBudget({"compiler": 2, "external": 1})
     assert b.acquire("external") and not b.acquire("external")
@@ -82,6 +124,79 @@ def test_w04_resource_budget_prevents_oversubscription():
         assert not b.acquire("external")
         assert b.pressure()["used"]["external"] == 1
     assert b.pressure()["used"]["external"] == 0  # released on exit
+
+
+def test_w04_slot_waits_times_out_and_reports_pressure():
+    b = ResourceBudget({"compiler": 1})
+    assert b.limits["compiler"] == 1
+    with b.slot("compiler"):
+        assert b.pressure()["used"]["compiler"] == 1
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            with b.slot("compiler", timeout=0.1):
+                pass
+        assert time.monotonic() - started >= 0.09
+        with pytest.raises(TimeoutError):
+            with b.slot("compiler", timeout=0):
+                pass
+        assert b.pressure()["waiting"]["compiler"] == 0  # a timed-out wait does not linger
+    assert b.pressure()["used"]["compiler"] == 0
+    with pytest.raises(KeyError):
+        with b.slot("nope"):
+            pass
+    with b.slot("compiler", timeout=0):  # free again: no wait needed
+        pass
+
+
+def test_w04_default_compiler_limit_matches_the_old_slot_count():
+    import os
+
+    assert ResourceBudget().limits["compiler"] == max(2, (os.cpu_count() or 4) - 1)
+
+
+def test_w04_real_compiler_calls_respect_the_budget(monkeypatch):
+    """W-04 / P11.6: concurrent compile_source calls go through the global 'compiler' pool, so with a
+    limit of 1 they never overlap (and a waiting caller shows up in pressure())."""
+    import subprocess
+    import threading
+
+    from decompnet import compiler
+
+    monkeypatch.setattr(scheduler, "BUDGET", ResourceBudget({"compiler": 1}))
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0, "calls": 0, "waiting_seen": 0}
+    both_started = threading.Barrier(2)
+
+    def fake_exec(cfg, work, argv, timeout, cwd=None, *, snapshot=None, **stage):
+        with lock:
+            state["now"] += 1
+            state["calls"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.15)  # long enough for the other caller to reach the pool
+        with lock:
+            state["waiting_seen"] = max(state["waiting_seen"], scheduler.BUDGET.pressure()["waiting"]["compiler"])
+            state["now"] -= 1
+        (work / "func.o").write_bytes(b"obj")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(compiler, "_exec", fake_exec)
+    cfg = compiler.CompilerConfig(cmd=["cc", "{src}"], sandbox="none", cache=False)
+    results = []
+
+    def go(i):
+        both_started.wait(timeout=5)
+        results.append(compiler.compile_source(cfg, "", f"int f{i}(void) {{ return {i}; }}"))
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert len(results) == 2 and all(r.ok for r in results)
+    assert state["calls"] == 2
+    assert state["peak"] == 1  # never overlapped
+    assert state["waiting_seen"] == 1  # the second caller was queued behind the first
+    assert scheduler.BUDGET.pressure()["used"]["compiler"] == 0
 
 
 def test_w05_status_shows_verification_scope_and_origins(net):
@@ -139,7 +254,7 @@ def test_w02_new_evidence_regrants_a_bounded_retry_with_explicit_reason(net):
     with net.store.tx() as db:
         db.execute("INSERT INTO search_budgets(function_id, turns_used, max_turns, last_at) "
                    "VALUES(5, 4, 4, 0)")
-    net._record(fn5, alice, fn5["best_score"] - 1, "int func_005(void) { return 0; }", 1)
+    net._record(fn5, alice, int(fn5["best_score"] * 0.9), "int func_005(void) { return 0; }", 1)
     row = net.store.one("SELECT turns_used, max_turns, reset_reason FROM search_budgets WHERE function_id=5")
     assert row["turns_used"] == 0 and row["reset_reason"] == "better-source" and row["max_turns"] == 4
     ids = [f["id"] for f in Permuter(net).candidates(proj, limit=50)]

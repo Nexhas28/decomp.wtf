@@ -48,6 +48,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from . import telemetry
+
 try:
     import fcntl
 except ImportError:  # Windows: no cross-process directory leases (documented)
@@ -62,6 +64,8 @@ UNIT_PROLOGUE = '#include "context.h"\n#line 1 "func.c"\n'
 DEFAULT_MAX_BYTES = 512 << 20
 DEFAULT_MAX_AGE = 14 * 86400.0
 DEFAULT_TRANSIENT_RETRY = 2.0
+REQUESTS_MAX = 4096  # remembered request identities, for miss-reason classification
+STALE_PUT_AGE = 3600.0  # publish temp files older than this belong to no live writer
 
 # Environment variables that can change what a toolchain produces or how it resolves
 # inputs. Kept short on purpose: everything else is covered by explicit manifest
@@ -195,6 +199,23 @@ class CompilationKey:
     @property
     def dependencies(self) -> dict:
         return self.manifest["dependencies"]
+
+    @property
+    def request_id(self) -> str:
+        return request_identity(self.manifest)
+
+
+def request_identity(manifest: dict) -> str:
+    """Dependency-independent identity of "what was asked": the exact unit bytes plus the
+    toolchain invocation (argv with the staging root masked, resolved executable and its
+    digest, wrapper mode). The same request under changed include dirs, context header,
+    read-only paths or environment keeps this identity while its full key changes, which
+    is how a miss is told apart as "dependency changed" (P2.8)."""
+    comp = manifest["compiler"]
+    root = manifest["path_semantics"]["root"]
+    argv = [a.replace(root, "<root>") for a in comp["argv"]]
+    return sha(canonical({"unit": manifest["unit"], "argv": argv, "exe": comp["exe"],
+                          "exe_sha": comp["exe_sha"], "mode": comp["mode"]}))
 
 
 def _mini_mode(cfg) -> str:
@@ -334,6 +355,31 @@ def _make_readonly(dir_path: Path) -> None:
             pass
 
 
+def _tree_bytes(root: Path) -> int:
+    """Approximate on-disk size of a directory tree (file bytes plus a per-tree constant),
+    used to count include snapshots against the size quota."""
+    total = 512
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            try:
+                total += os.lstat(Path(dirpath) / name).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _remove_tree(path: Path) -> bool:
+    """Delete a read-only snapshot tree (its directories are 0o555, so they are made
+    writable first)."""
+    for dirpath, _dirnames, _filenames in os.walk(path):
+        try:
+            os.chmod(dirpath, 0o755)
+        except OSError:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
+    return not path.exists()
+
+
 @contextlib.contextmanager
 def dir_lease(work: Path, timeout: float = 120.0) -> Iterator[None]:
     """Cross-process lease on a deterministic staging dir. flock auto-releases on process
@@ -430,8 +476,10 @@ class CompileCache:
         self._pinned_snaps: dict[str, int] = {}
         self._transient: dict[str, tuple[float, Any]] = {}
         self._approx_bytes: float | None = None
+        self._requests: dict[str, str] = {}  # request identity -> last full key seen
         self.stats = {"hits": 0, "misses": 0, "puts": 0, "coalesced": 0,
-                      "quarantined": 0, "evicted": 0}
+                      "quarantined": 0, "evicted": 0,
+                      "misses_new": 0, "misses_dependency_changed": 0}
         self._init_layout()
 
     # -- layout ----------------------------------------------------------------
@@ -439,6 +487,11 @@ class CompileCache:
     def _init_layout(self) -> None:
         for sub in ("objects", "quarantine", "tmp", "snapshots", "work"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        for stale in (self.root / "tmp").glob("put-*"):  # publish temps left by crashed writers
+            with contextlib.suppress(OSError):
+                if now - stale.stat().st_mtime > STALE_PUT_AGE:
+                    stale.unlink()
         marker = self.root / "schema"
         if marker.exists() and marker.read_text(encoding="utf-8").strip() != str(CACHE_SCHEMA):
             # schema-versioned namespace: everything under an old schema is dead weight
@@ -453,25 +506,46 @@ class CompileCache:
 
     # -- reads ------------------------------------------------------------------
 
-    def get(self, key: str) -> Entry | None:
+    def _remember(self, request: str | None, key: str) -> None:
+        if request is None:
+            return
+        self._requests.pop(request, None)
+        self._requests[request] = key
+        while len(self._requests) > REQUESTS_MAX:
+            self._requests.pop(next(iter(self._requests)))
+
+    def _miss(self, key: str, request: str | None) -> None:
+        """Count a miss and its reason: "dependency-changed" when the same request identity
+        was last seen under a different full key, else "new-input" (P2.8, P0.3)."""
+        prev = self._requests.get(request) if request is not None else None
+        reason = "dependency-changed" if prev is not None and prev != key else "new-input"
+        self.stats["misses"] += 1
+        self.stats["misses_dependency_changed" if reason == "dependency-changed"
+                   else "misses_new"] += 1
+        self._remember(request, key)
+        telemetry.count(f"cache.miss.{reason}")
+
+    def get(self, key: str, *, request: str | None = None) -> Entry | None:
+        """`request` is the key's dependency-independent identity (`CompilationKey.request_id`);
+        when given, a miss is classified as new input or changed dependencies."""
         d = self._entry_dir(key)
         with self._lock:
             if not d.is_dir():
-                self.stats["misses"] += 1
+                self._miss(key, request)
                 return None
             try:
                 meta = json.loads((d / "entry.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 self._quarantine(key, "unreadable entry manifest")
-                self.stats["misses"] += 1
+                self._miss(key, request)
                 return None
             if meta.get("key") != key or meta.get("cache_schema") != CACHE_SCHEMA:
                 self._quarantine(key, "key or schema mismatch")
-                self.stats["misses"] += 1
+                self._miss(key, request)
                 return None
             if meta.get("manifest") is not None and sha(canonical(meta["manifest"])) != key:
                 self._quarantine(key, "manifest does not match its key")
-                self.stats["misses"] += 1
+                self._miss(key, request)
                 return None
             outcome = meta.get("outcome")
             if outcome == OUTCOME_SUCCESS:
@@ -479,11 +553,11 @@ class CompileCache:
                     payload = (d / "payload").read_bytes()
                 except OSError:
                     self._quarantine(key, "missing payload")
-                    self.stats["misses"] += 1
+                    self._miss(key, request)
                     return None
                 if sha(payload) != meta.get("payload_sha256"):
                     self._quarantine(key, "payload hash mismatch")
-                    self.stats["misses"] += 1
+                    self._miss(key, request)
                     return None
                 entry = Entry(key, True, outcome, payload, meta.get("log", ""),
                               meta.get("created", 0.0))
@@ -492,13 +566,15 @@ class CompileCache:
                 entry = Entry(key, False, outcome, None, meta.get("log", ""),
                               meta.get("created", 0.0))
             else:
-                self.stats["misses"] += 1
+                self._miss(key, request)
                 return None  # transient/unknown entries are never served
             try:
                 os.utime(d / "entry.json", None)  # LRU touch
             except OSError:
                 pass
             self.stats["hits"] += 1
+            self._remember(request, key)
+            telemetry.count("cache.hit")
             return entry
 
     # -- writes -----------------------------------------------------------------
@@ -512,31 +588,33 @@ class CompileCache:
         payload = payload or b""
         tmp = self.root / "tmp"
         tmp.mkdir(parents=True, exist_ok=True)
-        fd, pname = tempfile.mkstemp(dir=tmp, prefix="put-")
+        temps: list[str] = []  # temp files not yet renamed into place
         try:
+            fd, pname = tempfile.mkstemp(dir=tmp, prefix="put-")
+            temps.append(pname)
             with os.fdopen(fd, "wb") as f:
                 f.write(payload)
-        except BaseException:
-            os.unlink(pname)
-            raise
-        meta = {"key": key, "cache_schema": CACHE_SCHEMA, "ok": ok, "outcome": outcome,
-                "payload_sha256": sha(payload), "log": log, "created": time.time(),
-                "size": len(payload), "manifest": manifest}
-        fd2, mname = tempfile.mkstemp(dir=tmp, prefix="put-")
-        try:
+            meta = {"key": key, "cache_schema": CACHE_SCHEMA, "ok": ok, "outcome": outcome,
+                    "payload_sha256": sha(payload), "log": log, "created": time.time(),
+                    "size": len(payload), "manifest": manifest}
+            fd2, mname = tempfile.mkstemp(dir=tmp, prefix="put-")
+            temps.append(mname)
             with os.fdopen(fd2, "w", encoding="utf-8") as f:
                 json.dump(meta, f, sort_keys=True)
-        except BaseException:
-            os.unlink(mname)
-            raise
-        size = len(payload) + len(log.encode("utf-8", "replace")) + 512
-        with self._lock:
-            d = self._entry_dir(key)
-            d.mkdir(parents=True, exist_ok=True)
-            os.replace(pname, d / "payload")   # payload first: the manifest is the commit point
-            os.replace(mname, d / "entry.json")
-            self._approx_bytes = (self._approx_bytes or 0) + size
-            self.stats["puts"] += 1
+            size = len(payload) + len(log.encode("utf-8", "replace")) + 512
+            with self._lock:
+                d = self._entry_dir(key)
+                d.mkdir(parents=True, exist_ok=True)
+                os.replace(pname, d / "payload")   # payload first: the manifest is the commit point
+                temps.remove(pname)
+                os.replace(mname, d / "entry.json")
+                temps.remove(mname)
+                self._approx_bytes = (self._approx_bytes or 0) + size
+                self.stats["puts"] += 1
+        finally:
+            for leftover in temps:  # a failed publish must not leave its temp files behind
+                with contextlib.suppress(OSError):
+                    os.unlink(leftover)
         self._evict_if_needed()
 
     def _evict_if_needed(self) -> None:
@@ -597,7 +675,8 @@ class CompileCache:
         evicted = 0
         with self._lock:
             obj = self.root / "objects"
-            rows: list[tuple[str, float, float, int]] = []
+            # (kind, name, created, mtime, size); kind "o" = object entry, "s" = include snapshot
+            rows: list[tuple[str, str, float, float, int]] = []
             approx = 0.0
             if obj.is_dir():
                 for d in obj.iterdir():
@@ -617,37 +696,38 @@ class CompileCache:
                     except OSError:
                         mtime = created
                     approx += size
-                    rows.append((key, created or mtime, mtime, size))
-            self._approx_bytes = approx
-            rows.sort(key=lambda r: (r[2], r[0]))  # oldest first
-            kept = 0
-            for key, created, _mtime, size in rows:
-                if key in self._pinned:
-                    kept += 1
-                    continue
-                too_old = self.max_age is not None and (now - created) > self.max_age
-                too_many = self.max_entries is not None and kept + 1 > self.max_entries
-                too_big = self.max_bytes is not None and approx > self.max_bytes
-                if too_old or too_many or too_big:
-                    if self._delete_entry(key):
-                        approx -= size
-                        evicted += 1
-                    continue
-                kept += 1
-            self._approx_bytes = approx
-            # stale snapshots (age only; in-use snapshot builds are pinned by callers)
+                    rows.append(("o", key, created or mtime, mtime, size))
+            # include snapshots count against the same size quota; in-use ones are pinned
             snaps = self.root / "snapshots"
             if snaps.is_dir():
                 for d in snaps.iterdir():
-                    if d.name in self._pinned_snaps:
-                        continue
                     try:
-                        age = now - (d / "DONE").stat().st_mtime
+                        built = (d / "DONE").stat().st_mtime
                     except OSError:
                         continue
-                    if self.max_age is not None and age > self.max_age:
-                        shutil.rmtree(d, ignore_errors=True)
+                    size = _tree_bytes(d)
+                    approx += size
+                    rows.append(("s", d.name, built, built, size))
+            self._approx_bytes = approx
+            rows.sort(key=lambda r: (r[3], r[1]))  # oldest first
+            kept = 0
+            for kind, name, created, _mtime, size in rows:
+                if name in (self._pinned if kind == "o" else self._pinned_snaps):
+                    kept += kind == "o"
+                    continue
+                too_old = self.max_age is not None and (now - created) > self.max_age
+                too_many = kind == "o" and self.max_entries is not None \
+                    and kept + 1 > self.max_entries
+                too_big = self.max_bytes is not None and approx > self.max_bytes
+                if too_old or too_many or too_big:
+                    gone = self._delete_entry(name) if kind == "o" \
+                        else _remove_tree(self.root / "snapshots" / name)
+                    if gone:
+                        approx -= size
                         evicted += 1
+                    continue
+                kept += kind == "o"
+            self._approx_bytes = approx
             # staging and quarantine leftovers from crashed runs
             for sub in ("tmp", "quarantine"):
                 base = self.root / sub
@@ -744,6 +824,13 @@ class CompileCache:
         finally:
             self._detach(flight)
 
+    def in_flight(self, key: str) -> bool:
+        """True while a producer for `key` is still running. A waiter that timed out uses
+        this to avoid starting a second compile for the same key."""
+        with self._lock:
+            flight = self._flights.get(key)
+            return flight is not None and not flight.done
+
     def _detach(self, flight: _Flight) -> None:
         cancel_now = False
         with self._lock:
@@ -799,6 +886,8 @@ class CompileCache:
                     os.chmod(final, 0o555)  # the tree inside is read-only already
                 except OSError:
                     pass
+                # snapshots count against the size quota; the next put/evict enforces it
+                self._approx_bytes = (self._approx_bytes or 0) + _tree_bytes(final)
             except CacheBypass:
                 shutil.rmtree(tmp, ignore_errors=True)
                 raise
@@ -822,7 +911,9 @@ class CompileCache:
         total = s["hits"] + s["misses"]
         rate = f"{100 * s['hits'] / total:.1f}%" if total else "n/a"
         return (f"compile cache at {self.root}: {entries} entries, ~{approx or 0} bytes, "
-                f"{s['hits']} hits / {s['misses']} misses ({rate}), {s['puts']} puts, "
+                f"{s['hits']} hits / {s['misses']} misses ({rate}; "
+                f"{s['misses_new']} new-input, "
+                f"{s['misses_dependency_changed']} dependency-changed), {s['puts']} puts, "
                 f"{s['coalesced']} coalesced waiters, {s['quarantined']} quarantined, "
                 f"{s['evicted']} evicted; quotas: {self.max_bytes} bytes, "
                 f"{self.max_age}s age, {self.max_entries or '-'} entries")

@@ -28,6 +28,7 @@ Plan Phase 6 (PR-20/PR-21):
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import time
@@ -342,12 +343,17 @@ def size_bucket(length: int) -> int:
     return len(LENGTH_BUCKETS)
 
 
+def uses_windows(len_a: int, len_b: int) -> bool:
+    """Whether comparing sequences of these lengths uses bounded windows instead of the whole sequence."""
+    return max(len_a, len_b) > MAX_OPS
+
+
 def sequence_similarity(a: tuple[str, ...], b: tuple[str, ...]) -> float:
     """0..1 on the whole sequence. Short pairs are compared in full; long pairs use their whole-function
     summary (see Features) plus bounded anchored windows over head, middle and tail — never only a prefix."""
     if not a or not b:
         return 0.0
-    if max(len(a), len(b)) <= MAX_OPS:
+    if not uses_windows(len(a), len(b)):
         return SequenceMatcher(None, a, b, autojunk=False).ratio()
     parts = []
     for f in WINDOW_FRACTIONS:
@@ -386,11 +392,27 @@ def structure_similarity(a: Features, b: Features) -> float:
     return sum(parts.values()) / len(parts)
 
 
+def structural_rerank_enabled() -> bool:
+    """The structural term of the combined score is opt-in (DECOMPNET_STRUCTURAL_RERANK=1): it stays off
+    until it improves recall/precision on a held-out corpus (plan P6 exit gate)."""
+    return os.environ.get("DECOMPNET_STRUCTURAL_RERANK") == "1"
+
+
+def _has_operand_data(f: Features) -> bool:
+    """Whether operand-derived fields (categories, constants, calls, stack touches) were actually built. Widths
+    come from the mnemonic alone, so they do not count: mnemonic-only features have none of these."""
+    return bool(f.cats or f.constants or f.calls or f.stack)
+
+
 def _similarity(a: Features, b: Features) -> float:
-    """The combined 0..1 retrieval score: sequence, whole-function histogram, structure (P6.3)."""
+    """The combined 0..1 retrieval score (P6.3). Default: 0.6 * sequence + 0.4 * histogram cosine. With the
+    structural rerank enabled: 0.55 * sequence + 0.35 * cosine + 0.10 * structure. The structure term is
+    dropped (default weights used) when either side has no operand-level data. Weights sum to 1."""
     if not a.length or not b.length:
         return 0.0
-    return 0.55 * sequence_similarity(a.ops, b.ops) + 0.35 * a.cosine(b) + 0.10 * structure_similarity(a, b)
+    if structural_rerank_enabled() and _has_operand_data(a) and _has_operand_data(b):
+        return 0.55 * sequence_similarity(a.ops, b.ops) + 0.35 * a.cosine(b) + 0.10 * structure_similarity(a, b)
+    return 0.6 * sequence_similarity(a.ops, b.ops) + 0.4 * a.cosine(b)
 
 
 def score(a: list[str], b: list[str]) -> float:
@@ -402,8 +424,9 @@ def score(a: list[str], b: list[str]) -> float:
 
 def rank(target: list[str], candidates: dict[str, list[str]], top: int = 5, floor: float = 0.6) -> list[tuple[str, float]]:
     """The `top` candidates most similar to `target`, best first, at least `floor` similar. Whole-function:
-    the tails of long functions count. (Engine callers keep this signature; FeatureIndex.search adds
-    usability ranking and provenance.)"""
+    the tails of long functions count. Inputs are mnemonic lists only, so no operand data is available and
+    the structural term is never applied here, even with DECOMPNET_STRUCTURAL_RERANK=1 (default weights are
+    used). (Engine callers keep this signature; FeatureIndex.search adds usability ranking and provenance.)"""
     if len(target) < 4:  # tiny functions all look alike
         return []
     tf = Features.from_ops(tuple(target))
@@ -503,15 +526,17 @@ _ledger_lock = threading.Lock()
 
 
 def note_reuse(project_id: int, function_id: int, source_function_id: int | None = None,
-               route: str = "unknown", verified: bool = True) -> None:
+               route: str = "unknown", verified: bool = True, reuse_class: str | None = None) -> None:
     """Record that retrieval route `route` produced verified reuse for a function, and that its source is
-    available as a matched example. Never updates match state: the judge owns that (P6.5)."""
+    available as a matched example. `reuse_class` is the P10.5 acceptance class, when known. Never updates
+    match state: the judge owns that (P6.5)."""
     with _ledger_lock:
         _ledger.setdefault(project_id, []).append({
             "function_id": function_id,
             "source_function_id": source_function_id,
             "route": route,
             "verified": bool(verified),
+            "reuse_class": reuse_class,
             "at": time.time(),
         })
 
@@ -672,7 +697,6 @@ class FeatureIndex:
             scored.append((fid, sim))
         scored.sort(key=lambda t: -t[1])
         short = scored[:max(3 * top, 15)]
-        long = tf.length > MAX_OPS or any(self._entries[fid][2].length > MAX_OPS for fid, _ in short)
         matches = []
         for fid, sim in short:
             cf = self._entries[fid][2]
@@ -683,7 +707,7 @@ class FeatureIndex:
             elif fid in self._avail:  # acceptance feedback supplements what the caller knows (P6.5)
                 info = replace(info, source_available=True, provenance=info.provenance or "matched example")
             bonus, notes = _usability(info, target_info)
-            route = "windowed-sequence" if long else "full-sequence"
+            route = "windowed-sequence" if uses_windows(tf.length, cf.length) else "full-sequence"  # per pair
             why = "; ".join(x for x in [f"mnemonic histogram and {route} (similarity {sim:.2f})",
                                         info.verification_history, *notes] if x)
             matches.append(Match(key=fid, similarity=sim, rank_score=sim + bonus, why=why, route=route,
@@ -699,12 +723,13 @@ class FeatureIndex:
 
     # ---------------------------------------------------------------- acceptance feedback (P6.5)
 
-    def acceptance(self, fid, source_fid=None, route: str = "retrieval") -> None:
+    def acceptance(self, fid, source_fid=None, route: str = "retrieval", reuse_class: str | None = None) -> None:
         """After a verified match: mark the entry's source available and record which retrieval route
-        produced the reuse. Match state itself is never touched here (the judge owns it)."""
+        produced the reuse (and its P10.5 class, when given). Match state itself is never touched here
+        (the judge owns it)."""
         self._avail.add(fid)
         self._routes[fid] = route
-        note_reuse(self.project_id or 0, fid, source_fid, route)
+        note_reuse(self.project_id or 0, fid, source_fid, route, reuse_class=reuse_class)
 
     # ---------------------------------------------------------------- diagnostics (P6.2)
 

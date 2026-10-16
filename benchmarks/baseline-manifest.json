@@ -40,13 +40,18 @@
     "notes": "Each toolchain dir carries its own .decompnet-toolchain.json manifest (pinned versions). PSX GCC 2.7.2/2.8.1 and m2c are present on this host; GameCube/Wii (dtk) and IDO lanes are not installed here."
   },
   "ghidra": {
-    "status": "not-verified-on-this-host",
-    "notes": "Plan G-notes require the pinned Ghidra version and Java runtime to be recorded before Phase 7 admission work; recorded when Phase 7 starts."
+    "status": "verified-on-this-host 2026-10-16",
+    "version": "Ghidra 12.1.4",
+    "java_runtime": "openjdk 21.0.12.1 (Temurin)",
+    "notes": "Pinned Ghidra version and Java runtime recorded from the real-lane measurement run.",
+    "see": "benchmarks/real-lanes/ghidra-measure-2026-10-16.json"
   },
   "rea": {
-    "status": "local-checkout-suspected",
+    "status": "installed, admission verified; P9.8 comparison not measured (no admissible ET_EXEC MIPS artifact)",
+    "version": "6.4.0",
     "path_candidate": "/Users/<user>/dev/g8r-private/rea",
-    "notes": "Recorded artifact identity and MCP schema when Phase 9 starts."
+    "notes": "REA 6.4.0 capability gate rejects the ET_REL demo object; see the real-lanes comparison for the recorded admission result.",
+    "see": "benchmarks/real-lanes/rea-vs-ghidra-2026-10-16.json"
   },
   "baseline_tests": {
     "command": "PYTHONPATH=src .venv/bin/python -m pytest tests/ -q",

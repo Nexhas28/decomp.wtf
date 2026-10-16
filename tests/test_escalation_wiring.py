@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,17 +24,26 @@ from types import SimpleNamespace
 import pytest
 
 from decompnet import scoring, snapshots
-from decompnet.analysis import (CapabilityResult, EscalationInputs, EscalationPolicy, FunctionEvidence,
-                                ProviderResult)
-from decompnet.analysis.broker import Provider
+from decompnet.analysis import (Broker, CapabilityResult, EscalationInputs, EscalationPolicy, FunctionEvidence,
+                                ProviderResult, rea)
+from decompnet.analysis.broker import DirectGhidraProvider, Provider
 from decompnet.analysis.contracts import ProviderRequest
 from decompnet.elfobj import FunctionObj, extract_function
+from decompnet.forks import ghidra
 from decompnet.network import Network
 
 FIXTURE_C = "int add3(int a, int b, int c) { return a + b + c; }\n"
 STRUCTURAL_MISS = "int add3(int a, int b, int c) { a += 1; return a + b + c; }\n"
 NEAR_REGISTER = "int add3(int a, int b, int c) { int t = a + b; return t + c; }\n"
 CC = ["clang", "-target", "x86_64-unknown-linux-gnu", "-c", "-I{include}", "{src}", "-o", "{obj}"]
+
+
+@pytest.fixture(autouse=True)
+def no_default_providers(monkeypatch):
+    """Escalation tests register their own providers: neither a local Ghidra install nor the REA flag
+    may add providers behind their back (tests that cover the default wiring switch them on)."""
+    monkeypatch.setattr(ghidra, "available", lambda: False)
+    monkeypatch.delenv("DECOMPNET_REA_PROVIDER", raising=False)
 
 
 def make_network(tmp_path: Path, *, arch: str = "mips", config: str = "{}") -> Network:
@@ -328,3 +338,176 @@ def test_escalate_admission_failure_is_reported_not_swallowed(tmp_path):
     net.analysis_broker().register_provider(fake)
     out = net.escalate("add3")
     assert "unsupported language combo" in out
+
+
+def test_app_tools_reach_network_escalate_and_calibrate_profile(tmp_path, monkeypatch):
+    from decompnet.app import tools
+
+    net = make_network(tmp_path)
+    calls = []
+    monkeypatch.setattr(Network, "escalate", lambda self, function, **kw: calls.append(("escalate", function, kw)) or "esc")
+    monkeypatch.setattr(Network, "calibrate_profile",
+                        lambda self, project=None, **kw: calls.append(("calibrate", project, kw)) or "cal")
+    assert {"escalate_function", "calibrate_profile"} <= set(tools.tool_names(False))
+    assert tools.HANDLERS["escalate_function"](net, None, "fixture", function="add3", question="why?") == "esc"
+    assert tools.HANDLERS["escalate_function"](net, None, "fixture", function="add3") == "esc"
+    assert tools.HANDLERS["calibrate_profile"](net, None, "fixture") == "cal"
+    assert tools.HANDLERS["calibrate_profile"](net, None, "fixture", function="add3") == "cal"
+    assert calls == [
+        ("escalate", "add3", {"question": "why?", "project": "fixture"}),
+        ("escalate", "add3", {"question": None, "project": "fixture"}),
+        ("calibrate", "fixture", {"functions": None}),
+        ("calibrate", "fixture", {"functions": ["add3"]}),
+    ]
+
+
+# ---------------------------------------------------------------------------- default providers (P8/P9)
+
+def test_direct_ghidra_provider_is_registered_only_when_ghidra_is_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("DECOMPNET_CACHE_DIR", str(tmp_path / "cache"))
+    assert make_network(tmp_path).analysis_broker()._providers == {}  # fixture: Ghidra unavailable
+    (tmp_path / "b").mkdir()
+    monkeypatch.setattr(ghidra, "available", lambda: True)
+    providers = make_network(tmp_path / "b").analysis_broker()._providers
+    assert list(providers) == ["direct-ghidra"] and isinstance(providers["direct-ghidra"], DirectGhidraProvider)
+
+
+def test_a_failing_provider_setup_never_breaks_the_broker(tmp_path, monkeypatch):
+    def broken():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(ghidra, "available", broken)
+    monkeypatch.setenv("DECOMPNET_REA_PROVIDER", "1")
+    monkeypatch.setattr(rea, "available", broken)
+    broker = make_network(tmp_path).analysis_broker()
+    assert broker._providers == {}
+
+
+def test_rea_provider_is_off_by_default_and_needs_the_flag_and_rea(tmp_path, monkeypatch):
+    monkeypatch.setattr(rea, "available", lambda: True)
+    monkeypatch.setattr(rea, "ReaProvider", lambda: FakeProvider())
+    assert make_network(tmp_path).analysis_broker()._providers == {}  # flag unset
+    monkeypatch.setenv("DECOMPNET_REA_PROVIDER", "1")
+    (tmp_path / "b").mkdir()
+    assert list(make_network(tmp_path / "b").analysis_broker()._providers) == ["fake"]
+    monkeypatch.setattr(rea, "available", lambda: False)
+    (tmp_path / "c").mkdir()
+    assert make_network(tmp_path / "c").analysis_broker()._providers == {}  # flag on, REA missing
+
+
+# ---------------------------------------------------------------------------- outcome feedback and sessions
+
+def escalated(tmp_path: Path, **function_kwargs):
+    net = make_network(tmp_path, arch="mips")
+    fn = add_function(net, target=bytes([0x27, 0xbd, 0xff, 0xe0] * 4), **function_kwargs)
+    net.analysis_broker().register_provider(FakeProvider())
+    net.escalate("add3", budget={"wall_seconds": 5.0, "token_limit": 1000})
+    return net, fn
+
+
+def investigations_seen(broker) -> dict:
+    return broker.policy.rule_stats.get("investigate_function", {"investigations": 0, "improvements": 0})
+
+
+def bare_broker(tmp_path: Path, fake: FakeProvider, *, modules=("fixture",), **broker_kwargs):
+    broker = Broker(**broker_kwargs)
+    broker.register_provider(fake)
+    artifact = tmp_path / "art.bin"
+    artifact.write_bytes(bytes(16))
+    for module in modules:
+        broker.register_target(module, artifact, {}, mapping={"n": 1})
+    return broker, artifact
+
+
+def test_escalation_reports_improved_when_the_function_gets_a_better_score(tmp_path):
+    net, fn = escalated(tmp_path)
+    broker = net.analysis_broker()
+    assert investigations_seen(broker)["investigations"] == 0  # nothing is observed at proposal time
+    assert len(net._escalation_ids) == 1
+    net._record(fn, add_agent(net), 900, "int add3(void) { return 0; }", 1)
+    stats = investigations_seen(broker)
+    assert stats["investigations"] == 1 and stats["improvements"] == 1
+    assert broker.metrics_summary()["verified_improvements"] == 1
+    assert broker._metrics.records[-1].outcome.endswith(":improved")
+    assert net._escalation_ids == {}  # the entry is dropped once reported
+
+
+def test_escalation_without_a_better_score_keeps_waiting_then_reports_unimproved_on_release(tmp_path):
+    net, fn = escalated(tmp_path, best_score=500)
+    broker = net.analysis_broker()
+    alice = add_agent(net)
+    net._record(fn, alice, 900, "int add3(void) { return 1; }", 1)  # worse than the best: no improvement
+    assert investigations_seen(broker)["investigations"] == 0 and len(net._escalation_ids) == 1
+    with net.store.tx() as db:
+        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], alice.id, time.time(), time.time() + 3600))
+    net.release(alice, "add3", "")
+    stats = investigations_seen(broker)
+    assert stats["investigations"] == 1 and stats["improvements"] == 0
+    assert broker.metrics_summary()["verified_improvements"] == 0
+    assert broker._metrics.records[-1].outcome.endswith(":no_improvement")
+    assert net._escalation_ids == {}
+
+
+def test_report_outcome_is_once_per_investigation_and_unknown_ids_are_ignored(tmp_path):
+    broker, _ = bare_broker(tmp_path, FakeProvider())
+    inv = broker.propose_investigation("fixture::add3", "q?", None, snapshot="s1")
+    assert broker.report_outcome("no-such-investigation", True) is False
+    assert broker.report_outcome(inv.investigation_id, True) is True
+    assert broker.report_outcome(inv.investigation_id, False) is False
+    assert investigations_seen(broker)["investigations"] == 1
+
+
+def test_cold_start_is_true_only_for_the_call_that_started_the_session(tmp_path):
+    broker, _ = bare_broker(tmp_path, FakeProvider())
+    broker.propose_investigation("fixture::add3", "q?", None, snapshot="s1")
+    broker.propose_investigation("fixture::add3", "q?", None, snapshot="s1")  # session reused
+    broker.close_session(next(iter(broker.session_states())))
+    broker.propose_investigation("fixture::add3", "q?", None, snapshot="s1")  # a fresh session again
+    assert [r.cold_start for r in broker._metrics.records] == [True, False, True]
+
+
+def test_closing_a_busy_session_drains_it_then_closes(tmp_path):
+    started, release = threading.Event(), threading.Event()
+
+    def slow(request):
+        started.set()
+        release.wait(10)
+        return ProviderResult(status="ok", functions={})
+
+    fake = FakeProvider(evidence=slow)
+    broker, _ = bare_broker(tmp_path, fake)
+    results = {}
+    worker = threading.Thread(target=lambda: results.update(
+        first=broker.get_function_evidence("fixture::add3", ("calls",))))
+    worker.start()
+    try:
+        assert started.wait(10)
+        key, session = next(iter(broker._sessions.items()))
+        assert session.state == "ready"
+        assert broker.close_session(key) is True
+        assert session.state == "draining" and broker.session_states()[key]["state"] == "draining"
+        denied = broker.get_function_evidence("fixture::other", ("calls",))  # new requests are denied
+        assert denied.status == "denied"
+        assert fake.fetches == 1 and fake.closes == 0  # the in-flight request finishes before closing
+    finally:
+        release.set()
+        worker.join(10)
+    assert results["first"].status == "ok"
+    assert session.state == "closed" and fake.closes == 1
+    assert key not in broker.session_states()
+
+
+def test_per_project_session_quota_evicts_inside_the_project_only(tmp_path):
+    assert Broker(max_sessions=3).max_sessions_per_project == 3  # default: the global cap
+    fake = FakeProvider()
+    broker, artifact = bare_broker(tmp_path, fake, modules=("fixture", "other"), max_sessions=4,
+                                   max_sessions_per_project=1)
+    broker.get_function_evidence("fixture::add3", ("calls",))
+    broker.get_function_evidence("other::add3", ("calls",))
+    assert len(broker.session_states()) == 2
+    broker.register_target("fixture", artifact, {}, mapping={"n": 2})  # a second session for one project
+    broker.get_function_evidence("fixture::add3", ("calls",))
+    states = broker.session_states()
+    assert sorted(key.split(":")[0] for key in states) == ["fixture", "other"]
+    assert fake.opens == 3 and fake.closes == 1
+    assert any("project session quota" in d["reason"] for d in broker.denials())

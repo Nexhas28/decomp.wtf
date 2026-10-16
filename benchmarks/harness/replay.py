@@ -21,7 +21,9 @@ exercises the record path and is meant for synthetic databases).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -31,6 +33,69 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from decompnet.network import Network  # noqa: E402
+
+
+_SECRET_HINTS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
+
+
+def _decompnet_env() -> dict:
+    """The DECOMPNET_* environment this run saw; secret-looking values are redacted."""
+    return {k: ("<redacted>" if any(h in k for h in _SECRET_HINTS) else v)
+            for k, v in sorted(os.environ.items()) if k.startswith("DECOMPNET_")}
+
+
+def _feature_flags() -> dict:
+    """Optional features as the coordinator reads them from the environment (all off unless set)."""
+    return {"guided_search": os.environ.get("DECOMPNET_GUIDED_SEARCH", "0") == "1",
+            "rea_provider": os.environ.get("DECOMPNET_REA_PROVIDER") == "1",
+            "structural_rerank": os.environ.get("DECOMPNET_STRUCTURAL_RERANK") == "1",
+            "compile_cache": os.environ.get("DECOMPNET_COMPILE_CACHE") != "0"}
+
+
+def _provider_status() -> list[dict]:
+    """One row per optional provider: available true/false and why. Probes only; never starts one."""
+    rows = []
+
+    def add(provider: str, available: bool, reason: str) -> None:
+        rows.append({"provider": provider, "available": bool(available), "reason": reason})
+
+    try:
+        from decompnet.forks import ghidra
+        ok = ghidra.available()
+        add("ghidra", ok, "analyzeHeadless and a Java runtime found" if ok
+            else "analyzeHeadless and/or a Java runtime not found on this host")
+    except Exception as e:
+        add("ghidra", False, f"probe failed: {e}")
+    try:
+        from decompnet.analysis import rea
+        ok = rea.available()
+        why = "pinned REA install and node found" if ok else "pinned REA install or node not found"
+        if os.environ.get("DECOMPNET_REA_PROVIDER") != "1":
+            why += "; not enabled (DECOMPNET_REA_PROVIDER is not 1)"
+        add("rea", ok, why)
+    except Exception as e:
+        add("rea", False, f"probe failed: {e}")
+    try:
+        from decompnet.retrieval.bsim import toolchain_available
+        ok, why = toolchain_available()
+    except Exception as e:
+        ok, why = False, f"probe failed: {e}"
+    add("fid", ok, why)
+    add("bsim", ok, why)
+    return rows
+
+
+def _observed_receipts(net: Network, since_attempt_id: int) -> list[dict]:
+    """Verification receipts written for attempts recorded after `since_attempt_id` (this run's)."""
+    rows = net.store.all(
+        "SELECT r.*, f.name AS function FROM verification_receipts r "
+        "JOIN functions f ON f.id=r.function_id WHERE r.attempt_id > ? ORDER BY r.function_id",
+        since_attempt_id)
+    return [dict(r) for r in rows]
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
 
 
 @dataclass
@@ -172,6 +237,7 @@ def main() -> int:
         agent = type("A", (), {"id": row["id"], "name": row["name"], "owner": row["owner"],
                                "trusted": bool(row["trusted"])})()
 
+    first_attempt = net.store.one("SELECT COALESCE(MAX(id), 0) AS n FROM attempts")["n"]
     timings = Timings()
     with timings.span("replay") as whole:
         rows = replay(net, agent, args.project, attempts, args.stub, timings)
@@ -184,6 +250,23 @@ def main() -> int:
         "attempts_in": len(attempts),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    effective = {
+        "schema_version": 1, "run_id": run_id, "harness": Path(__file__).name,
+        "args": vars(args), "stub": args.stub,
+        "feature_flags": _feature_flags(), "env": _decompnet_env(),
+    }
+    (out / "effective-config.json").write_text(json.dumps(effective, indent=2, sort_keys=True) + "\n")
+    corpus = {
+        "schema_version": 1, "run_id": run_id, "kind": "fixed-input-replay", "project": args.project,
+        "attempts_file": Path(args.attempts).name,
+        "attempts_file_sha256": hashlib.sha256(Path(args.attempts).read_bytes()).hexdigest(),
+        "fixtures": [{"index": i, "name": e["function"], "expect": e.get("expect", ""),
+                      "source_sha256": hashlib.sha256(e["source"].encode("utf-8")).hexdigest()}
+                     for i, e in enumerate(attempts)],
+    }
+    (out / "corpus-manifest.json").write_text(json.dumps(corpus, indent=2, sort_keys=True) + "\n")
+    _write_jsonl(out / "verification-receipts.jsonl", _observed_receipts(net, first_attempt))
+    _write_jsonl(out / "provider-status.jsonl", _provider_status())
     (out / "attempts.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     (out / "stage-timings.jsonl").write_text(
         "\n".join(json.dumps({"name": s.name, "ms": round(1000 * (s.done - s.started), 3), "result": s.result})

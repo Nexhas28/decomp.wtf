@@ -12,8 +12,10 @@ through the existing lease/judge paths unchanged.
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 PRIORITY_VERSION = "priority-v1"
@@ -91,18 +93,23 @@ def choose(net, proj, candidates: list, limit: int = 1) -> list:
 @dataclass
 class ResourceBudget:
     """P11.6: one global account for optional workers so separately-tuned pools cannot oversubscribe
-    the host. Pools are advisory counters with hard limits; acquiring fails fast instead of queuing
-    unbounded work. The main compiler path and interactive actions are reserved first (documented
-    limits, not enforced throttles on the ordinary path)."""
+    the host. Pools are counters with hard limits; `acquire` fails fast instead of queuing unbounded
+    work, while `slot` waits (optionally with a timeout) for a free unit so the real call sites, the
+    compiler first of all, are held to the same account."""
 
     limits: dict
     _used: dict
+    _waiting: dict
     _lock: threading.Lock
+    _cond: threading.Condition
 
     def __init__(self, limits: dict | None = None):
-        self.limits = dict(limits or {"compiler": 4, "permuter": 1, "external": 1, "analysis": 1, "fork_build": 2})
+        self.limits = dict(limits or {"compiler": max(2, (os.cpu_count() or 4) - 1), "permuter": 1,
+                                      "external": 1, "analysis": 1, "fork_build": 2})
         self._used = {k: 0 for k in self.limits}
+        self._waiting = {k: 0 for k in self.limits}
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
 
     def acquire(self, pool: str) -> bool:
         with self._lock:
@@ -117,10 +124,35 @@ class ResourceBudget:
         with self._lock:
             if self._used.get(pool, 0) > 0:
                 self._used[pool] -= 1
+                self._cond.notify_all()
+
+    @contextmanager
+    def slot(self, pool: str, timeout: float | None = None):
+        """Hold one unit of `pool` for the body, waiting for a free unit first. Raises TimeoutError
+        if none frees up within `timeout` seconds (None waits indefinitely, 0 never waits)."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            if pool not in self.limits:
+                raise KeyError(f"unknown resource pool {pool!r}")
+            if self._used[pool] >= self.limits[pool]:
+                self._waiting[pool] += 1
+                try:
+                    while self._used[pool] >= self.limits[pool]:
+                        remaining = None if deadline is None else deadline - time.monotonic()
+                        if remaining is not None and remaining <= 0:
+                            raise TimeoutError(f"{pool} budget: no free slot within {timeout}s")
+                        self._cond.wait(remaining)
+                finally:
+                    self._waiting[pool] -= 1
+            self._used[pool] += 1
+        try:
+            yield
+        finally:
+            self.release(pool)
 
     def pressure(self) -> dict:
         with self._lock:
-            return {"limits": dict(self.limits), "used": dict(self._used)}
+            return {"limits": dict(self.limits), "used": dict(self._used), "waiting": dict(self._waiting)}
 
     def acquire_context(self, pool: str):
         class _Guard:

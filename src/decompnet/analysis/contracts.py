@@ -307,3 +307,53 @@ class EscalationMetrics:
             "escalation_id", "function_key", "action", "cold_start", "wall_seconds", "worker_seconds",
             "evidence_reused", "evidence_new", "additional_tokens", "compiles_before", "compiles_after",
             "verified_improvement", "resolved_unknown", "outcome")}
+
+
+# ---------------------------------------------------------------------------- durable evidence (18.5)
+
+#: Serialised form of the Section 18.5 evidence record (bump when its JSON shape changes).
+EVIDENCE_SCHEMA_VERSION = 1
+
+#: Always attached: provider-observed facts never stand for complete knowledge of runtime behaviour.
+SCOPE_LIMITATION = "coverage is scoped to the producing analysis; it is not complete knowledge of runtime behaviour"
+
+
+@dataclass(frozen=True)
+class EvidenceRecord:
+    """The durable form of one function's evidence (plan 18.5). Facets map to ``{"status", "payload_ref"}``
+    or ``{"status": "unavailable", "reason"}``; payloads live content-addressed beside the record. Target
+    content (strings, names, pseudocode) is untrusted data, never instructions, whatever the route."""
+
+    evidence_id: str
+    function_key: str
+    target_digest: str
+    provider_route: str
+    underlying_engine: str
+    engine_version: str
+    analysis_profile_digest: str
+    correlation_group: str
+    snapshot: str
+    status: str
+    facets: dict = field(default_factory=dict)
+    observations: list = field(default_factory=list)
+    inferences: list = field(default_factory=list)
+    unknowns: list = field(default_factory=list)
+    limitations: list = field(default_factory=lambda: [SCOPE_LIMITATION])
+    untrusted_target_content: bool = True
+    original_provider_evidence_ref: str | None = None
+    classification: str = "unknown"
+    entry: str | None = None
+    schema_version: int = EVIDENCE_SCHEMA_VERSION
+
+    def to_dict(self) -> dict:
+        return {k: getattr(self, k) for k in (
+            "schema_version", "evidence_id", "function_key", "target_digest", "provider_route",
+            "underlying_engine", "engine_version", "analysis_profile_digest", "correlation_group", "snapshot",
+            "status", "facets", "observations", "inferences", "unknowns", "limitations",
+            "untrusted_target_content", "original_provider_evidence_ref", "classification", "entry")}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "EvidenceRecord":
+        if int(d.get("schema_version", 1)) > EVIDENCE_SCHEMA_VERSION:
+            raise ValueError(f"evidence record schema {d['schema_version']} is newer than this version reads")
+        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})

@@ -251,9 +251,14 @@ def install(tid: str, *, accept_license: bool = False, force: bool = False, log=
     tc = get(tid)
     linux = tc.via_linux if linux is None else linux
     if linux:
-        ok, why = wsl.status()
-        if not ok:
-            raise ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {why}")
+        if wsl.wanted():
+            ok, why = wsl.status()
+            if not ok:
+                raise ToolchainError(f"{tc.name} is a Linux program: on Windows it runs in WSL 2. {why}")
+        else:
+            ok, why = linuxbox.status()
+            if not ok:
+                raise ToolchainError(f"{tc.name} is a Linux program: on a Mac it runs in a Docker container. {why}")
     for dep in tc.requires:
         if installed(dep, linux) is None or force:
             install(dep, accept_license=accept_license, force=force, log=log, linux=linux)
@@ -881,8 +886,8 @@ def calibrate_and_commit(candidates, sample, judge, *, held_out=(), held_out_jud
       2. a held-out set must be supplied (the default is empty = refuse: explicit opt-in),
          and every held-out sample item must validate ("match") under `held_out_judge`
          (defaults to `judge`; an independent validator is recommended);
-      3. the optional `regression` hook -- the caller's re-check of affected accepted
-         matches -- must answer (True, ...) when supplied; a False answer refuses.
+      3. the `regression` hook -- the caller's re-check of affected accepted matches --
+         must be supplied and answer (True, ...); a False answer refuses.
     The held-out set is bounded: at most `max_held_out` items are validated and the rest
     reported as `held_out_cut`. The commit hook's exceptions propagate to the caller (a
     half-applied commit must not be recorded as committed).
@@ -915,15 +920,17 @@ def calibrate_and_commit(candidates, sample, judge, *, held_out=(), held_out_jud
                                  None, None, report, tuple(outcomes), cut)
 
     regression_outcome = ("not-run", "no regression hook supplied")
-    if regression is not None:
-        try:
-            ok, why = regression(profile)
-            regression_outcome = ("ok" if ok else "failed", str(why))
-        except Exception as e:  # the re-check itself failed: treat as failed, never commit
-            regression_outcome = ("failed", f"regression check raised: {e}")
-        if regression_outcome[0] != "ok":
-            return CalibrationCommit(False, f"accepted-match regression failed: {regression_outcome[1]}",
-                                     None, None, report, tuple(outcomes), cut, regression_outcome)
+    if regression is None:
+        return CalibrationCommit(False, "no accepted-match regression hook supplied: refusing to commit",
+                                 None, None, report, tuple(outcomes), cut, regression_outcome)
+    try:
+        ok, why = regression(profile)
+        regression_outcome = ("ok" if ok else "failed", str(why))
+    except Exception as e:  # the re-check itself failed: treat as failed, never commit
+        regression_outcome = ("failed", f"regression check raised: {e}")
+    if regression_outcome[0] != "ok":
+        return CalibrationCommit(False, f"accepted-match regression failed: {regression_outcome[1]}",
+                                 None, None, report, tuple(outcomes), cut, regression_outcome)
 
     commit(profile)
     return CalibrationCommit(True, "committed after held-out validation", profile, profile.identity(),

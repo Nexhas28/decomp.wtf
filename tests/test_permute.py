@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from decompnet.app.permute import MAX_TURNS, Permuter, State
+from decompnet.app.permute import CHECKPOINT_LIMIT, MAX_TURNS, Permuter, State, TurnStats
 from decompnet.network import Agent, Network
+from decompnet.search import checkpoint_run, new_run
+from decompnet.search.policy import SEARCH_POLICY, SINGLE_TRAJECTORY_POLICY, active_policy
+from decompnet.toolchains import ToolchainError
 
 
 def make_project(net: Network, n_functions: int, near: float = 0.06) -> dict:
@@ -45,6 +49,13 @@ def exhaust(net: Network, ids: range, turns: int = MAX_TURNS) -> None:
 @pytest.fixture
 def net(tmp_path):
     return Network(tmp_path / "queue.db")
+
+
+@pytest.fixture(autouse=True)
+def guided_search(monkeypatch):
+    """The guided beam search is opt-in (plan P5 exit gate); the budget rows these tests build carry the
+    guided policy's version, so they run with it switched on. Tests of the default unset the variable."""
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
 
 
 def test_q01_exhausted_functions_cannot_hide_remaining_work(net):
@@ -210,3 +221,182 @@ def test_q06b_context_change_resets_budgets_for_the_unit(net):
         assert row["turns_used"] == 0 and row["reset_reason"] == "context-changed"
     row = net.store.one("SELECT turns_used FROM search_budgets WHERE function_id=3")
     assert row["turns_used"] == MAX_TURNS
+
+
+def test_default_policy_is_single_trajectory_unless_guided_search_is_enabled(net, monkeypatch):
+    """The guided beam search is opt-in: without DECOMPNET_GUIDED_SEARCH=1 the permuter charges and
+    stamps budgets under the single-trajectory policy (plan P5 exit gate)."""
+    make_project(net, 3)
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    monkeypatch.delenv("DECOMPNET_GUIDED_SEARCH", raising=False)
+    assert active_policy() is SINGLE_TRAJECTORY_POLICY
+    Permuter(net)._charge_turn(fn)
+    row = net.store.one("SELECT epoch, policy_version FROM search_budgets WHERE function_id=1")
+    assert row["epoch"] == SINGLE_TRAJECTORY_POLICY.epoch
+    assert row["policy_version"] == SINGLE_TRAJECTORY_POLICY.version
+    monkeypatch.setenv("DECOMPNET_GUIDED_SEARCH", "1")
+    assert active_policy() is SEARCH_POLICY
+
+
+def _reopen(net) -> Permuter:
+    """A fresh Permuter over the same database file, as after a restart."""
+    return Permuter(Network(net.store.conn.execute("PRAGMA database_list").fetchone()["file"]))
+
+
+def test_checkpoint_survives_restart_and_incompatible_snapshot_is_rejected(net, monkeypatch):
+    """A search-run checkpoint is persisted: a new Permuter resumes what a previous one saved, while a
+    different snapshot key rejects it (and deletes the row) so a fresh run starts instead (plan P1.2 item 8)."""
+    proj = make_project(net, 3)
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    policy = active_policy()
+    first = Permuter(net)
+    cp = checkpoint_run(new_run(policy, "saved-seed", "key-a", fn["best_source"], fn["best_score"]))
+    first._save_checkpoint(fn["id"], cp)
+    row = net.store.one("SELECT snapshot_key, policy_epoch FROM search_runs WHERE function_id=2")
+    assert (row["snapshot_key"], row["policy_epoch"]) == ("key-a", policy.epoch)
+
+    second = _reopen(net)
+    assert second.checkpoints == {}
+    monkeypatch.setattr(second, "_probe", lambda *a: pytest.fail("a compatible checkpoint must not start a fresh run"))
+    run = second._resume_or_start(proj, fn, None, policy, "new-seed", "key-a")
+    assert run.seed == "saved-seed" and run.snapshot_key == "key-a"
+    assert net.store.one("SELECT 1 FROM search_runs WHERE function_id=2") is not None
+
+    third = _reopen(net)
+    monkeypatch.setattr(third, "_probe", lambda *a: (None, "unknown", None))
+    run = third._resume_or_start(proj, fn, None, policy, "new-seed", "key-b")
+    assert run.seed == "new-seed" and run.snapshot_key == "key-b"
+    assert net.store.one("SELECT 1 FROM search_runs WHERE function_id=2") is None
+
+
+def test_checkpoint_rows_are_bounded_and_dropped_with_the_checkpoint(net):
+    """The search_runs table keeps at most CHECKPOINT_LIMIT rows (oldest updated_at first out), and
+    dropping a checkpoint deletes its row."""
+    make_project(net, 3)
+    perm = Permuter(net)
+    for fn_id in range(1, CHECKPOINT_LIMIT + 4):
+        perm._save_checkpoint(fn_id, {"snapshot_key": "k"})
+    ids = {r["function_id"] for r in net.store.all("SELECT function_id FROM search_runs")}
+    assert ids == set(range(4, CHECKPOINT_LIMIT + 4))
+    perm._drop_checkpoint(CHECKPOINT_LIMIT + 3)
+    assert net.store.one("SELECT 1 FROM search_runs WHERE function_id=?", CHECKPOINT_LIMIT + 3) is None
+    assert CHECKPOINT_LIMIT + 3 not in perm.checkpoints
+
+
+def test_p12_toolchain_failure_refunds_the_turn(net, monkeypatch):
+    """A turn that dies because the toolchain is missing consumes no search budget and counts as an
+    infrastructure failure (plan P1.2); the claim is still released."""
+    proj = make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    monkeypatch.setattr(net, "fork_slug", lambda slug: None, raising=False)
+
+    def no_toolchain(*args, **kwargs):
+        raise ToolchainError("no compiler installed")
+
+    monkeypatch.setattr(net, "_compile", no_toolchain)
+    with pytest.raises(ToolchainError):
+        Permuter(net)._permute(alice, proj, fn, State())
+    row = net.store.one("SELECT turns_used, compiled_turns, improved_turns, infra_failures FROM search_budgets "
+                        "WHERE function_id=2")
+    assert (row["turns_used"], row["compiled_turns"], row["improved_turns"], row["infra_failures"]) == (0, 0, 0, 1)
+    assert net.store.all("SELECT * FROM claims WHERE function_id=2") == []
+
+
+def test_p12_evaluate_failure_without_a_compile_is_refunded(net, monkeypatch):
+    """A turn with an infrastructure failure and nothing compiled is refunded (never below zero); a plain
+    compile error is not an infrastructure failure and keeps its charge."""
+    proj = make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    perm = Permuter(net)
+    stats = TurnStats()
+    run = SimpleNamespace(portfolio=SimpleNamespace(best=SimpleNamespace(score=2)))
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: SimpleNamespace(ok=False, obj=b""))
+    evaluate = perm._make_evaluator(alice, proj, fn, None, run, stats)
+    assert evaluate("int func_002(void) { return 0; }").kind == "compile_error"
+    assert not stats.compiled and stats.infra == 0
+    perm._charge_turn(fn)
+    perm._finish_turn(fn, stats)  # nothing compiled, nothing failed: the turn stands
+    assert net.store.one("SELECT turns_used FROM search_budgets WHERE function_id=2")["turns_used"] == 1
+    stats.infra += 1
+    perm._finish_turn(fn, stats)
+    row = net.store.one("SELECT turns_used, infra_failures FROM search_budgets WHERE function_id=2")
+    assert (row["turns_used"], row["infra_failures"]) == (0, 1)
+    perm._finish_turn(fn, stats)  # the refund never goes below zero
+    assert net.store.one("SELECT turns_used FROM search_budgets WHERE function_id=2")["turns_used"] == 0
+
+
+def test_p12_missing_toolchain_compile_result_is_infrastructure_and_refunded(net, monkeypatch):
+    """A missing toolchain comes back as a failed CompileResult, not an exception: it counts as an
+    infrastructure failure and the turn is refunded, while an ordinary compile error is neither."""
+    make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    perm = Permuter(net)
+    run = SimpleNamespace(portfolio=SimpleNamespace(best=SimpleNamespace(score=2)))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    logs = iter(["compiler not found: mwccpsp.exe", "error: expected ';'",
+                 "ToolchainError: gcc is gone", "toolchain not installed: run decompnet toolchain install x"])
+    monkeypatch.setattr(net, "_compile",
+                        lambda proj, header, source, fn=None: SimpleNamespace(ok=False, obj=None, log=next(logs)))
+    expected = [(1, "evaluate_failure"), (0, "compile_error"), (1, "evaluate_failure"), (1, "evaluate_failure")]
+    for infra, kind in expected:
+        stats = TurnStats()
+        out = perm._make_evaluator(alice, proj, fn, None, run, stats)("int func_002(void) { return 0; }")
+        assert (stats.infra, out.kind, stats.compiled) == (infra, kind, False)
+    stats = TurnStats(infra=1)
+    perm._charge_turn(fn)
+    perm._finish_turn(fn, stats)
+    row = net.store.one("SELECT turns_used, infra_failures FROM search_budgets WHERE function_id=2")
+    assert (row["turns_used"], row["infra_failures"]) == (0, 1)
+
+
+def _routed_checkpoint(fn, counts: dict, coverage: str) -> dict:
+    return checkpoint_run(new_run(active_policy(), "seed", "key", fn["best_source"], fn["best_score"],
+                                  counts=counts, coverage=coverage))
+
+
+def test_p54_call_reference_and_literal_mismatches_leave_the_queue_with_a_reason(net):
+    """A function whose persisted routing decision says call/global-reference ('prototype/context first') or
+    literal/data with complete-but-empty structured evidence needs context work, not mutation: it is skipped
+    by candidates() and its budget row says 'needs-context'. Register mismatches and unknown evidence stay."""
+    proj = make_project(net, 5)
+    perm = Permuter(net)
+    fns = {i: net.store.one("SELECT * FROM functions WHERE id=?", i) for i in range(1, 6)}
+    perm._save_checkpoint(1, _routed_checkpoint(fns[1], {"operand": 5, "call_reference": 5}, "complete"))
+    perm._save_checkpoint(2, _routed_checkpoint(fns[2], {}, "complete"))
+    perm._save_checkpoint(3, _routed_checkpoint(fns[3], {"register": 3}, "complete"))
+    perm._save_checkpoint(4, _routed_checkpoint(fns[4], {}, "unknown"))
+    assert [f["id"] for f in perm.candidates(proj, limit=20)] == [3, 4, 5]
+    for i in (1, 2):
+        row = net.store.one("SELECT reset_reason, turns_used FROM search_budgets WHERE function_id=?", i)
+        assert row["reset_reason"] == "needs-context" and row["turns_used"] == 0
+    assert net.store.one("SELECT 1 FROM search_budgets WHERE function_id IN (3, 4, 5)") is None
+    # a restart keeps it, and a material reset (new context) lifts it
+    fresh = _reopen(net)
+    assert [f["id"] for f in fresh.candidates(proj, limit=20)] == [3, 4, 5]
+    with net.store.tx() as db:
+        db.execute("UPDATE search_budgets SET reset_reason='context-changed' WHERE function_id=1")
+    assert [f["id"] for f in fresh.candidates(proj, limit=20)] == [1, 3, 4, 5]
+
+
+def test_p12_evaluate_failure_is_counted_and_compiled_turns_are_not_refunded(net, monkeypatch):
+    """An object the evaluator cannot read counts as an infrastructure failure, but a turn in which
+    something compiled keeps its charge and is counted in compiled_turns."""
+    proj = make_project(net, 3)
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    perm = Permuter(net)
+    stats = TurnStats()
+    run = SimpleNamespace(portfolio=SimpleNamespace(best=SimpleNamespace(score=2)))
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: SimpleNamespace(ok=True, obj=b""))
+    monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (None, None, []))
+    assert perm._make_evaluator(alice, proj, fn, None, run, stats)("int func_002(void) { return 0; }").kind \
+        == "evaluate_failure"
+    assert stats.compiled and stats.infra == 1
+    perm._charge_turn(fn)
+    perm._finish_turn(fn, stats)
+    row = net.store.one("SELECT turns_used, compiled_turns, improved_turns, infra_failures FROM search_budgets "
+                        "WHERE function_id=2")
+    assert (row["turns_used"], row["compiled_turns"], row["improved_turns"], row["infra_failures"]) == (1, 1, 0, 0)

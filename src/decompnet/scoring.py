@@ -22,7 +22,9 @@ Phase 3 additions (plan P3.1-P3.4, tests S-01..S-07):
   ROM linking or required literal/data checks. Callers that link the candidate (rom/match.py)
   override the verdict, and the summary's `verification.function_link_match` stays
   "unverified" until a caller supplies a link verdict. A cheap identity check may rule a
-  match out, but the candidate is still scored for search.
+  match out, but the candidate is still scored for search. The textual alignment is skipped only
+  when the caller passes an authoritative `verdict=True` to `score_only()` and the fingerprints
+  agree.
 
 - Alternative alignment algorithms are version-gated through `register_aligner()`: the
   baseline version cannot be overwritten, and nothing changes ranking without an explicit
@@ -61,6 +63,11 @@ COUNT_PENALTIES = {
     "reorder": PENALTY_REORDER,
 }
 
+# Informational counts reported next to the penalised ones (P5.4). Each is a subset of a penalised count
+# and adds no penalty of its own, so the counts still reconcile exactly with COUNT_PENALTIES:
+# "call_reference" operand mismatches are call targets or global/relocated symbol references.
+INFORMATIONAL_COUNTS = {"call_reference": "operand"}
+
 _CS = {
     ("x86_64", False): (capstone.CS_ARCH_X86, capstone.CS_MODE_64),
     ("x86", False): (capstone.CS_ARCH_X86, capstone.CS_MODE_32),
@@ -80,7 +87,9 @@ _REG = re.compile(
     r"|cr\d|lr|pc|ip|sb|sl|d\d+|s\d+)$"  # ppc / arm
 )
 _NUM = re.compile(r"^-?(0x[0-9a-f]+|\d+)$", re.I)
-_STACK = re.compile(r"\b(rsp|rbp|esp|ebp|\$?sp|\$?fp|r1)\b")
+# direct call instructions (call targets, P5.4 call/global reference differences)
+_CALL_MNEMONICS = frozenset({"call", "jal", "jals", "jalx", "bl", "bla", "blx"})
+_STACK =re.compile(r"\b(rsp|rbp|esp|ebp|\$?sp|\$?fp|r1)\b")
 _TOKEN = re.compile(r"[\w.$<>+@-]+|\S")
 
 # Versioned preparation components (P3.1 cache key; S-06).
@@ -362,14 +371,28 @@ def _classify(a: Insn, b: Insn) -> tuple[int, str]:
     return PENALTY_OPERAND, "i"
 
 
+def _is_call_reference(a: Insn, b: Insn) -> bool:
+    """Whether an operand mismatch between two aligned instructions is a call-target or global/relocated
+    symbol reference difference (P5.4). Conservative: anything not clearly one stays a plain "operand".
+    Relocated on both sides with different symbols (same symbol and a different addend or other operand
+    is not a reference difference), or an unrelocated direct call whose targets are both plain addresses."""
+    if a.relocs and b.relocs:
+        return {r.symbol for r in a.relocs} != {r.symbol for r in b.relocs}
+    if a.relocs or b.relocs or a.mnemonic != b.mnemonic or a.mnemonic not in _CALL_MNEMONICS:
+        return False
+    return bool(_NUM.match(a.operands.strip()) and _NUM.match(b.operands.strip()))
+
+
 # -------------------------------------------------------------- alignment core
 # The comparison core is shared by diff() and score_only(): one scorer, two consumers (P3.2).
 
 
-def _sequence_opcodes_v1(t_ins, c_ins):
-    """Baseline alignment: difflib over mnemonic sequences. The versioned unit behind S-07."""
-    sm = difflib.SequenceMatcher(a=[i.mnemonic for i in t_ins], b=[i.mnemonic for i in c_ins], autojunk=False)
-    return sm.get_opcodes()
+def _sequence_opcodes_v1(t_ins, c_ins, t_seq=None, c_seq=None):
+    """Baseline alignment: difflib over mnemonic sequences. The versioned unit behind S-07. The prepared
+    targets' cached sequences are used when given (P3.1); otherwise they are built from the instructions."""
+    a = t_seq if t_seq is not None else [i.mnemonic for i in t_ins]
+    b = c_seq if c_seq is not None else [i.mnemonic for i in c_ins]
+    return difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes()
 
 
 _ALIGNERS = {ALIGNMENT_VERSION: _sequence_opcodes_v1}
@@ -394,16 +417,27 @@ def _resolve_aligner(version: str | None):
     return fn
 
 
+def _align(version: str, t: PreparedTarget, c: PreparedTarget):
+    """Run the versioned aligner over two prepared targets. The baseline reuses their cached mnemonic
+    sequences; registered alternatives keep the (target insns, candidate insns) contract."""
+    fn = _resolve_aligner(version)
+    if fn is _sequence_opcodes_v1:
+        return fn(t.insns, c.insns, t.mnemonic_sequence, c.mnemonic_sequence)
+    return fn(t.insns, c.insns)
+
+
 def _compare(t_ins, c_ins, *, want_rows: bool, opcodes) -> tuple[int, int, list | None, dict]:
     """The single scoring core: (score, max_score, rows-or-None, counts). score is the pre-verdict
     alignment penalty; callers apply `_finalise` for the bytes_match rule. `counts` uses the P3.4
-    summary keys and reconciles exactly with the penalties in COUNT_PENALTIES."""
+    summary keys and reconciles exactly with the penalties in COUNT_PENALTIES; `call_reference` is an
+    informational subset of `operand` (no penalty of its own)."""
     max_score = max(1, len(t_ins)) * PENALTY_INSERTION
     rows: list | None = [] if want_rows else None
     score = 0
     missing: Counter[str] = Counter()
     extra: Counter[str] = Counter()
-    counts = {"register": 0, "stack_offset": 0, "operand": 0, "insertion": 0, "deletion": 0, "reorder": 0}
+    counts = {"register": 0, "stack_offset": 0, "operand": 0, "insertion": 0, "deletion": 0, "reorder": 0,
+              "call_reference": 0}
     for op, a0, a1, b0, b1 in opcodes:
         if op == "equal":
             for a, b in zip(t_ins[a0:a1], c_ins[b0:b1]):
@@ -415,6 +449,8 @@ def _compare(t_ins, c_ins, *, want_rows: bool, opcodes) -> tuple[int, int, list 
                     counts["stack_offset"] += 1
                 elif mark == "i":
                     counts["operand"] += 1
+                    if _is_call_reference(a, b):
+                        counts["call_reference"] += 1
                 if rows is not None:
                     rows.append((mark, a.text, b.text))
             continue
@@ -568,7 +604,7 @@ def mismatch_summary(counts: dict, *, bytes_match: bool, score: int,
     obs.extend(observations or [])
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
-        "counts": {k: counts.get(k, 0) for k in COUNT_PENALTIES},
+        "counts": {k: counts.get(k, 0) for k in (*COUNT_PENALTIES, *INFORMATIONAL_COUNTS)},
         "observations": obs,
         "hypotheses": list(hypotheses or []),
         "coverage": {"status": coverage},
@@ -601,7 +637,7 @@ class Comparison:
         """The display rows, built on first demand by re-running the shared core (same inputs, same
         aligner: the result is the score's exact row form)."""
         if self._rows is None:
-            opcodes = _resolve_aligner(self.alignment_version)(self.target.insns, self.candidate.insns)
+            opcodes = _align(self.alignment_version, self.target, self.candidate)
             score, max_score, rows, _ = _compare(self.target.insns, self.candidate.insns, want_rows=True,
                                                  opcodes=opcodes)
             if rows is None or _finalise(score, self.bytes_match) != self.score or max_score != self.max_score:
@@ -622,13 +658,25 @@ def render_diff(result: DiffResult | Comparison, context: int = 2, max_rows: int
 
 
 def score_only(target: FunctionObj, candidate: FunctionObj, *, policy: str | None = None,
-               alignment_version: str | None = None) -> Comparison:
+               alignment_version: str | None = None, verdict: bool | None = None) -> Comparison:
     """Numeric score, compact mismatch counts and verification metadata — no display rows (P3.2/P3.4).
-    The scoring algorithm is exactly diff()'s; the target side comes from the prepared cache."""
+    The scoring algorithm is exactly diff()'s; the target side comes from the prepared cache.
+
+    `verdict` is an authoritative verification result supplied by the caller (for example a linked
+    ROM match). Only when it is True and the normalised fingerprints are equal is the textual alignment
+    skipped (P3.3). A fingerprint match alone never skips anything: without a verdict the candidate is
+    always aligned and scored."""
     t = prepare(target, policy)
     c = prepare(candidate, policy)
     version = ALIGNMENT_VERSION if alignment_version is None else alignment_version
-    opcodes = _resolve_aligner(version)(t.insns, c.insns)
+    if verdict is True and t.normalised_fingerprint == c.normalised_fingerprint:
+        _resolve_aligner(version)  # an unknown alignment version is still rejected
+        counts = {k: 0 for k in (*COUNT_PENALTIES, *INFORMATIONAL_COUNTS)}
+        return Comparison(score=0, max_score=max(1, t.n_insns) * PENALTY_INSERTION, bytes_match=True,
+                          counts=counts,
+                          summary=mismatch_summary(counts, bytes_match=True, score=0, function_link_match="exact"),
+                          target=t, candidate=c, alignment_version=version)
+    opcodes = _align(version, t, c)
     score, max_score, _, counts = _compare(t.insns, c.insns, want_rows=False, opcodes=opcodes)
     bytes_match = t.normalised_fingerprint == c.normalised_fingerprint
     final = _finalise(score, bytes_match)
@@ -644,7 +692,7 @@ def diff(target: FunctionObj, candidate: FunctionObj, *, policy: str | None = No
     t = prepare(target, policy)
     c = prepare(candidate, policy)
     version = ALIGNMENT_VERSION if alignment_version is None else alignment_version
-    opcodes = _resolve_aligner(version)(t.insns, c.insns)
+    opcodes = _align(version, t, c)
     score, max_score, rows, _ = _compare(t.insns, c.insns, want_rows=True, opcodes=opcodes)
     bytes_match = t.normalised_fingerprint == c.normalised_fingerprint
     return DiffResult(score=_finalise(score, bytes_match), max_score=max_score, rows=rows, bytes_match=bytes_match)

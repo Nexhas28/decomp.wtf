@@ -13,6 +13,9 @@ Covered here:
 - V-07 per-unit header edit re-tests only that unit's matched set (fork stub)
 - V-08 an unrelated unit's match does not conflict a per-unit edit (scoped epochs)
 - X-01 forged / genuine remote results (mocked collab ingress) are re-verified locally
+- A-01..A-03 _record itself enforces snapshot safety for every caller (stale inside the acceptance
+  transaction, no snapshot on a ROM project); budget resets are material and capped; revalidation
+  only restores trust for a reproduced best
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import pytest
 
 from decompnet import snapshots
 from decompnet.app.engine import RomNetwork
-from decompnet.network import Network
+from decompnet.network import MAX_BUDGET_RESETS, Network
 
 FP = "9f86d081884c7d659a2feaa0c55cd015a3bf4f1b2b0b822cd15d6c15b0f00a08"  # fixture fingerprint
 
@@ -412,3 +415,200 @@ def test_x01_remote_best_that_really_matches_is_accepted_locally(rnet, monkeypat
     assert fresh["status"] == "matched"
     assert rnet.store.one("SELECT * FROM verification_receipts WHERE function_id=1") is not None
     assert rnet.store.one("SELECT matched_epoch FROM projects WHERE id=1")["matched_epoch"] == 1
+
+
+# ----------------------------------------------------------------------------- _record contract
+
+def test_record_rejects_a_snapshot_that_went_stale_before_the_acceptance_transaction(net, alice):
+    """The caller's snapshot was current when it looked, but the header moved before _record's own
+    transaction: _record re-checks inside the transaction and stores the attempt as historical."""
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    snap = snapshot_of(net, fn)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                   "VALUES(1,2,'int f(void); int changed;',NULL,'m',0,'')")
+    net._record(fn, alice, 0, "int f(void) { return 1; }", 1, matched=True, compiled=True, snapshot=snap)
+    fresh = net.store.one("SELECT * FROM functions WHERE id=1")
+    assert fresh["status"] == "open" and fresh["matched_source"] is None and fresh["best_score"] is None
+    assert net.store.one("SELECT stale_reason FROM attempt_snapshots WHERE function_id=1")["stale_reason"] \
+        == "context changed"
+    assert net.store.one("SELECT * FROM verification_receipts WHERE function_id=1") is None
+    assert net.store.one("SELECT matched_epoch FROM projects WHERE id=1")["matched_epoch"] == 0
+    assert net.store.one("SELECT COUNT(*) AS n FROM attempts WHERE function_id=1")["n"] == 1  # kept as evidence
+
+
+def test_record_refuses_a_match_without_a_snapshot_for_a_rom_project(net, alice):
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    net._record(fn, alice, 0, "int f(void) { return 1; }", 1, matched=True, compiled=True)
+    fresh = net.store.one("SELECT * FROM functions WHERE id=1")
+    assert fresh["status"] == "open" and fresh["matched_source"] is None
+    assert net.store.one("SELECT stale_reason FROM attempt_snapshots WHERE function_id=1")["stale_reason"] \
+        == "no snapshot captured before compile"
+    assert net.store.one("SELECT * FROM verification_receipts WHERE function_id=1") is None
+    assert net.store.one("SELECT matched_epoch FROM projects WHERE id=1")["matched_epoch"] == 0
+
+
+def test_record_accepts_a_snapshotless_match_in_a_fork_project(net, alice, monkeypatch):
+    """A fork's build judges the match itself, so the snapshot rule applies to ROM projects only."""
+    monkeypatch.setattr(net, "fork_slug", lambda project: project, raising=False)
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    net._record(fn, alice, 0, "int f(void) { return 1; }", 1, matched=True, compiled=True)
+    assert net.store.one("SELECT status FROM functions WHERE id=1")["status"] == "matched"
+    assert net.store.one("SELECT * FROM verification_receipts WHERE function_id=1") is not None
+
+
+def _budget(net, turns_used: int = 2, lifetime_resets: int = 0) -> None:
+    with net.store.tx() as db:
+        db.execute("INSERT OR REPLACE INTO search_budgets(function_id, epoch, turns_used, max_turns, lifetime_resets) "
+                   "VALUES(1, '', ?, 4, ?)", (turns_used, lifetime_resets))
+
+
+def _budget_row(net):
+    return net.store.one("SELECT turns_used, reset_reason, lifetime_resets FROM search_budgets WHERE function_id=1")
+
+
+def test_small_improvement_does_not_reset_the_budget(net, alice):
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_score=1000, best_source='int f(void) { return 0; }' WHERE id=1")
+    _budget(net)
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    net._record(fn, alice, 990, "int f(void) { return 2; }", 1, snapshot=snapshot_of(net, fn))  # only 1% better
+    assert net.store.one("SELECT best_score FROM functions WHERE id=1")["best_score"] == 990  # still the new best
+    row = _budget_row(net)
+    assert row["turns_used"] == 2 and row["reset_reason"] is None and row["lifetime_resets"] == 0
+    net._record(fn, alice, 900, "int f(void) { return 3; }", 1, snapshot=snapshot_of(net, fn))  # >5% better
+    row = _budget_row(net)
+    assert row["turns_used"] == 0 and row["reset_reason"] == "better-source" and row["lifetime_resets"] == 1
+
+
+def test_budget_resets_are_capped_for_the_functions_lifetime(net, alice):
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_score=1000, best_source='int f(void) { return 0; }' WHERE id=1")
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    score = 1000
+    for i in range(MAX_BUDGET_RESETS + 1):
+        _budget(net, lifetime_resets=i)  # i resets already used
+        score = int(score * 0.9)  # every step is a material improvement
+        net._record(fn, alice, score, f"int f(void) {{ return {i + 10}; }}", 1, snapshot=snapshot_of(net, fn))
+        row = _budget_row(net)
+        if i < MAX_BUDGET_RESETS:
+            assert row["turns_used"] == 0 and row["lifetime_resets"] == i + 1
+        else:
+            assert row["turns_used"] == 2 and row["lifetime_resets"] == MAX_BUDGET_RESETS  # cap reached: no reset
+    assert net.store.one("SELECT best_score FROM functions WHERE id=1")["best_score"] == score  # still recorded
+
+
+def test_revalidate_bests_keeps_an_unreproduced_best_unverified(net, monkeypatch):
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET best_score=5, best_source='int f(void) { return 9; }', best_verified=0 "
+                   "WHERE id=1")
+    stub_compile_eval(net, monkeypatch, cand=ForgedCand())
+    out = net.revalidate_bests("fixture")
+    assert "NOT reproduced" in out
+    assert net.store.one("SELECT best_verified FROM functions WHERE id=1")["best_verified"] == 0
+    assert "not reproduced" in net.store.one("SELECT text FROM notes WHERE function_id=1")["text"]
+    stub_compile_eval(net, monkeypatch)  # reproduces: the trust flag is restored
+    net.revalidate_bests("fixture")
+    assert net.store.one("SELECT best_verified FROM functions WHERE id=1")["best_verified"] == 1
+
+
+# ----------------------------------------------------------------------------- P3.4 agent summary
+
+def scored_fixture(net, monkeypatch, code: bytes):
+    """Give f1 real target bytes (the scored path) and make the compile yield a candidate with `code`."""
+    from decompnet.elfobj import FunctionObj
+
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET target=?, fingerprint=NULL WHERE id=1", (b"\x03\xe0\x00\x08",))
+    cand = FunctionObj("f1", "mips", False, code, [])
+    stub_compile_eval(net, monkeypatch, cand=cand)
+    return cand
+
+
+def test_mismatch_text_lists_only_nonzero_counts_with_schema_and_coverage():
+    from decompnet import scoring
+    from decompnet.network import _mismatch_text
+
+    summary = scoring.mismatch_summary({"register": 4, "stack_offset": 2}, bytes_match=False, score=10,
+                                       hypotheses=["a spill differs"])
+    assert _mismatch_text(summary) == (
+        f"mismatch summary (schema v{scoring.SUMMARY_SCHEMA_VERSION}, coverage complete): "
+        "register 4, stack_offset 2\nhypotheses: a spill differs")
+    clean = _mismatch_text(scoring.mismatch_summary({}, bytes_match=False, score=1))
+    assert "operand" not in clean and "no instruction-level differences" in clean and "hypotheses" not in clean
+
+
+def test_a_scored_miss_carries_the_structured_mismatch_summary_and_keeps_the_score(net, alice, monkeypatch):
+    import re
+
+    from decompnet import scoring
+
+    cand = scored_fixture(net, monkeypatch, b"\x00\x00\x00\x00\x03\xe0\x00\x08")  # an extra leading nop
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    out = net.attempt(alice, "f1", "int f(void) { return 1; }")
+    assert out["matched"] is False
+    assert out["score"] == scoring.diff(net._target_obj(fn, net.store.one("SELECT * FROM projects WHERE id=1")),
+                                        cand).score  # the summary never changes the score
+    assert re.search(rf"mismatch summary \(schema v{scoring.SUMMARY_SCHEMA_VERSION}, coverage complete\): "
+                     r"[a-z_]+ \d+(, [a-z_]+ \d+)*", out["text"])
+    assert "insertion 1" in out["text"]
+
+
+def test_attempt_path_records_snapshot_validate_render_and_persist_spans_when_telemetry_is_on(net, alice, monkeypatch):
+    from decompnet import telemetry
+
+    telemetry.enable(True)
+    try:
+        telemetry.clear()
+        scored_fixture(net, monkeypatch, b"\x00\x00\x00\x00\x03\xe0\x00\x08")  # a scored miss: render + persist
+        assert net.attempt(alice, "f1", "int f(void) { return 1; }")["matched"] is False
+        scored_fixture(net, monkeypatch, b"\x03\xe0\x00\x08")  # an exact match: the validity guard runs
+        assert net.attempt(alice, "f1", "int f(void) { return 2; }")["matched"] is True
+        names = set(telemetry.snapshot()["stage_ms"])
+        assert {"attempt.snapshot", "attempt.validate", "attempt.render", "attempt.persist"} <= names
+    finally:
+        telemetry.enable(False)
+        telemetry.clear()
+
+
+def test_a_hash_only_miss_and_an_exact_match_carry_no_mismatch_summary(net, alice, monkeypatch):
+    stub_compile_eval(net, monkeypatch, cand=ForgedCand())
+    assert "mismatch summary" not in net.attempt(alice, "f1", "int f(void) { return 1; }")["text"]
+    stub_compile_eval(net, monkeypatch)
+    out = net.attempt(alice, "f1", "int f(void) { return 2; }")
+    assert out["matched"] is True and "mismatch summary" not in out["text"]
+
+
+# ----------------------------------------------------------------------------- 18.4 receipts
+
+def test_hash_only_match_receipt_stores_the_object_digest_and_an_unverified_link(net, alice, monkeypatch):
+    stub_compile_eval(net, monkeypatch)
+    assert net.attempt(alice, "f1", "int f(void) { return 1; }")["matched"] is True
+    r = net.store.one("SELECT * FROM verification_receipts WHERE function_id=1")
+    assert r["candidate_object_digest"] == FP
+    assert r["object_match"] == "fingerprint" and r["function_link_match"] == "unverified"
+
+
+def test_scored_match_receipt_stores_the_object_digest_and_an_exact_link(net, alice, monkeypatch):
+    cand = scored_fixture(net, monkeypatch, b"\x03\xe0\x00\x08")
+    assert net.attempt(alice, "f1", "int f(void) { return 1; }")["matched"] is True
+    r = net.store.one("SELECT * FROM verification_receipts WHERE function_id=1")
+    assert r["candidate_object_digest"] == cand.fingerprint()
+    assert r["object_match"] == "exact" and r["function_link_match"] == "exact"
+
+
+def test_record_without_a_link_verdict_is_unverified_only_when_told_so(net, alice):
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    net._record(fn, alice, 0, "int f(void) { return 1; }", 1, matched=True, compiled=True,
+                snapshot=snapshot_of(net, fn), object_digest="abc", link_verdict=False)
+    r = net.store.one("SELECT * FROM verification_receipts WHERE function_id=1")
+    assert r["candidate_object_digest"] == "abc" and r["function_link_match"] == "unverified"
+
+
+# ----------------------------------------------------------------------------- P4.1 calibration
+
+def test_calibrate_profile_reports_and_never_changes_the_project_profile(net):
+    before = net.store.one("SELECT config FROM projects WHERE id=1")["config"]
+    out = net.calibrate_profile("fixture")  # the fixture has no open function with target bytes and a draft
+    assert "nothing to calibrate" in out and "Nothing was changed" in out
+    assert net.store.one("SELECT config FROM projects WHERE id=1")["config"] == before

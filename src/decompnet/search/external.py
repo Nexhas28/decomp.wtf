@@ -28,11 +28,13 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import scheduler
 from .policy import SEARCH_POLICY, SearchPolicy, SearchPolicyError, parse_policy
 
 UPSTREAM = {
     "repo": "https://github.com/simonlindholm/decomp-permuter",
-    "revision": "pinned-at-adoption (record the exact commit in deployment manifests; see plan P5.7 step 1)",
+    "revision": "8556c81d80d1c1af98a858c8f4dc951357f29139",
+    "pinned_on": "2026-10-16",
     "notices": "no upstream code vendored; the adapter only drives the CLI contract",
 }
 
@@ -96,8 +98,11 @@ def run(exe: str, workdir: Path, *, timeout: float = 300) -> ExternalRun:
         return ExternalRun(status="busy", log="another external permuter run is active")
     try:
         try:
-            proc = subprocess.run([exe], cwd=workdir, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=timeout)
+            with scheduler.BUDGET.slot("external", timeout=0):
+                proc = subprocess.run([exe], cwd=workdir, capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=timeout)
+        except TimeoutError:  # the global 'external' budget is held elsewhere: same as another active run
+            return ExternalRun(status="busy", log="the external permuter budget is in use")
         except subprocess.TimeoutExpired:
             return ExternalRun(status="timeout", seconds=time.monotonic() - started,
                                log=f"exceeded {timeout:.0f}s")

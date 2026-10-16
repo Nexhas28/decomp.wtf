@@ -205,7 +205,10 @@ def test_structural_versus_register_only_routing():
     assert decl.kind == "context_repair" and decl.details["declarations"] == ["missing declaration foo"]
     lit = p.decide(EscalationInputs(m2c_tried=True, data_literal_mismatch=True))
     assert lit.kind == "data_literal_check"
-    cal = p.decide(EscalationInputs(m2c_tried=True, compiler_profile_confidence=0.2))
+    calib = EscalationPolicy()
+    for name in ("g::a", "g::b"):
+        calib.decide(EscalationInputs(function_key=name, m2c_tried=True, compiler_profile_confidence=0.2))
+    cal = calib.decide(EscalationInputs(function_key="g::c", m2c_tried=True, compiler_profile_confidence=0.2))
     assert cal.kind == "profile_calibration"
     rel = p.decide(EscalationInputs(m2c_tried=True, attempts=6))
     assert rel.kind == "release_cooldown"
@@ -213,6 +216,19 @@ def test_structural_versus_register_only_routing():
     eager = EscalationPolicy(attempts_before_analysis=1)
     assert eager.decide(EscalationInputs(m2c_tried=True, attempts=1,
                                          mismatch=_mismatch({"insertion": 1}, 100))).kind == "investigate_function"
+
+
+def test_profile_calibration_needs_three_distinct_low_confidence_functions():
+    p = EscalationPolicy()
+    one = EscalationInputs(function_key="g::f", m2c_tried=True, compiler_profile_confidence=0.2)
+    assert p.decide(one).kind == "none"  # a single function alone does not trigger calibration
+    assert p.decide(one).kind == "none"  # the same function reporting again is still one function
+    q = EscalationPolicy()
+    for name in ("g::a", "g::b"):
+        assert q.decide(EscalationInputs(function_key=name, m2c_tried=True,
+                                         compiler_profile_confidence=0.2)).kind == "none"
+    third = q.decide(EscalationInputs(function_key="g::c", m2c_tried=True, compiler_profile_confidence=0.2))
+    assert third.kind == "profile_calibration"
 
 
 # ---------------------------------------------------------------------------- A-04

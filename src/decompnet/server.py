@@ -146,6 +146,25 @@ def build_server(net: Network, *, public_url: str, open_registration: bool = Fal
         return await run(net.release, agent_of(ctx), function, notes, project)
 
     @mcp.tool()
+    async def escalate_function(ctx: Context, function: str, question: str | None = None,
+                                project: str | None = None) -> str:
+        """When stalled on a function: ask for a focused, budget-capped investigation (decompiler evidence and
+        ranked hypotheses). Optional; says so plainly when no analysis provider is available.
+
+        Args:
+            question: what you want to know about the function (optional)
+        """
+        agent_of(ctx)
+        return await run(lambda: net.escalate(function, question=question, project=project))
+
+    @mcp.tool()
+    async def calibrate_profile(ctx: Context, function: str | None = None, project: str | None = None) -> str:
+        """Check whether the project's compiler settings fit: a bounded calibration over a few open functions
+        that have a draft (or just `function`), reported as text. Nothing is changed."""
+        agent_of(ctx)
+        return await run(lambda: net.calibrate_profile(project, functions=[function] if function else None))
+
+    @mcp.tool()
     async def get_function(ctx: Context, function: str, project: str | None = None) -> str:
         """Read-only view of any function: target assembly, status, matched source (if matched),
         best attempt and notes. Useful for studying matched callers/callees and the codebase's style."""
@@ -277,7 +296,8 @@ def build_server(net: Network, *, public_url: str, open_registration: bool = Fal
             agent = await anyio.to_thread.run_sync(bearer, request)
             body = await request.json()
             out = await anyio.to_thread.run_sync(jobs.submit, net, agent, str(body.get("project", "")),
-                                                 str(body.get("function", "")), str(body.get("source", "")))
+                                                 str(body.get("function", "")), str(body.get("source", "")),
+                                                 body.get("snapshot"))  # to_thread.run_sync takes no kwargs for func
         except NetworkError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         except ValueError:

@@ -62,7 +62,7 @@ def test_candidate_retention_is_bounded(net, alice):
 def test_alternatives_reports_snapshot_freshness(net, alice):
     fn = net.store.one("SELECT * FROM functions WHERE id=1")
     proj = net.store.one("SELECT * FROM projects WHERE id=1")
-    snap = snapshots.capture(fn, proj, ctx(net, fn))
+    snap = snapshots.capture(fn, proj, ctx(net, fn), symbols_digest=snapshots.symbol_table_digest(net.store, proj["id"]))
     net._record(fn, alice, 10, "int func_001(void) { return 1; }", 1, via="agent", snapshot=snap)
     out = net.alternatives("func_001")
     assert "agent (current-snapshot)" in out

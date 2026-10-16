@@ -20,8 +20,10 @@ from pathlib import Path
 import pytest
 
 from decompnet.analysis import rea
-from decompnet.analysis.broker import Broker, DirectGhidraProvider, ProviderError
-from decompnet.analysis.contracts import Budget, ProviderRequest
+from decompnet.analysis.broker import (Broker, DirectGhidraProvider, Provider, ProviderError,
+                                       independent_sources)
+from decompnet.analysis.contracts import (Budget, CapabilityResult, FunctionEvidence,
+                                          ProviderRequest, ProviderResult)
 from decompnet.analysis.rea import (DOS_COM_MAX_BYTES, PINNED_TOOLS, ReaMCPClient, ReaProvider,
                                     elf_header_info, mips_lane_admission, parse_tool_result,
                                     raw_matrix_admission, validate_evidence_envelope,
@@ -31,7 +33,7 @@ from decompnet.forks.ghidra import TargetProfile
 # ---------------------------------------------------------------- shared helpers
 
 FAKE_SERVER = r'''
-import json, os, select, sys, hashlib
+import json, os, select, signal, sys, hashlib
 
 SCENARIO = os.environ.get("REA_SCENARIO", "default")
 VERSION = "6.4.1" if SCENARIO == "wrong-version" else "6.4.0"
@@ -227,6 +229,11 @@ while True:
                                          "structuredContent": error_projection("cancelled"),
                                          "isError": True}})
                         break
+            elif SCENARIO == "kill-mid-request":
+                os.kill(os.getpid(), signal.SIGKILL)
+            elif SCENARIO == "malformed-output":
+                sys.stdout.write("{this is not json\n")
+                sys.stdout.flush()
             elif SCENARIO == "oversize":
                 send({"jsonrpc": "2.0", "id": msg["id"], "result": is_error_result(
                     error_projection("resource_constraint",
@@ -259,6 +266,9 @@ while True:
                               "limitations": ["fake"]}
             send({"jsonrpc": "2.0", "id": msg["id"], "result": tool_result(
                 evidence("read_function_instructions", normalized, "f1", digest))})
+        elif name == "export_evidence_bundle" and SCENARIO == "block-export":
+            open(os.path.join(os.getcwd(), "blocking"), "w").close()
+            pending_block = (msg["id"], name)
         else:
             send({"jsonrpc": "2.0", "id": msg["id"], "result": is_error_result(
                 error_projection("unsupported", f"fake server has no {name}"))})
@@ -1011,7 +1021,161 @@ def test_e09_missing_function_is_failed_not_empty(fake, elf_artifact):
         provider.close_session("s1", handle)
 
 
+# ---------------------------------------------------------------- P9.7 provider failure handling
+
+def test_p97_killed_sidecar_mid_request_fails_session_and_leaves_no_child(fake, elf_artifact):
+    factory, state_dir = fake("kill-mid-request")
+    provider = factory()
+    profile = admitted(provider, elf_artifact)
+    handle = provider.open_session("s1", profile)
+    proc = handle["client"].proc
+    try:
+        with pytest.raises(rea.ReaProviderFailure, match="exited|closed stdout|transport failure"):
+            provider.fetch("s1", handle, make_request(artifact=str(elf_artifact)), None)
+        assert "analyze_function" in (state_dir / "calls.log").read_text()  # it died mid-request
+        assert handle["cache"] == {}                # nothing from the dead request is kept as complete
+        # the dead session is never used half-valid: the next request fails clearly too
+        with pytest.raises(rea.ReaProviderFailure):
+            provider.fetch("s1", handle, make_request(artifact=str(elf_artifact)), None)
+        assert handle["cache"] == {}
+    finally:
+        provider.close_session("s1", handle)
+        provider.close_session("s1", handle)  # idempotent
+    assert proc.poll() is not None              # no live child process remains
+    assert handle["client"].proc is None
+
+
+def test_p97_malformed_mcp_output_fails_session_and_leaves_no_child(fake, elf_artifact):
+    factory, _ = fake("malformed-output")
+    provider = factory()
+    profile = admitted(provider, elf_artifact)
+    handle = provider.open_session("s1", profile)
+    proc = handle["client"].proc
+    try:
+        with pytest.raises(rea.ReaProviderFailure, match="malformed JSON"):
+            provider.fetch("s1", handle, make_request(artifact=str(elf_artifact)), None)
+        assert handle["cache"] == {}                # garbage output never becomes cached evidence
+    finally:
+        provider.close_session("s1", handle)
+    assert proc.poll() is not None                  # the still-running sidecar was terminated
+    # a well-formed JSON-RPC reply whose text part is not JSON is a failed outcome, never success
+    outcome = parse_tool_result({"result": {"content": [{"type": "text", "text": "not json{"}]}},
+                                "analyze_function")
+    assert not outcome.ok and outcome.is_error and "malformed" in outcome.diagnostic
+    assert outcome.value is None
+
+
+def test_p97_cancelled_export_is_a_failure_and_leaves_no_child(fake, tmp_path):
+    factory, state_dir = fake("block-export")
+    provider = factory()
+    client = ReaMCPClient(provider.command, cwd=provider.cwd, env=provider.env,
+                          start_timeout=30.0)
+    client.start()
+    proc = client.proc
+    export_path = tmp_path / "bundle.json"
+    cancel = threading.Event()
+    results = {}
+
+    def run():
+        results["outcome"] = client.call("export_evidence_bundle", {"path": str(export_path)},
+                                         cancel=cancel, deadline=time.monotonic() + 30.0)
+
+    t = None
+    try:
+        client.initialize()
+        t = threading.Thread(target=run)
+        t.start()
+        assert wait_for(lambda: (state_dir / "blocking").exists())
+        cancel.set()
+        t.join(10)
+        assert not t.is_alive()
+        outcome = results["outcome"]
+        assert not outcome.ok and outcome.is_error
+        assert "cancelled" in outcome.diagnostic
+        assert outcome.value is None and not outcome.recovery_ref  # no partial export reported
+        assert (state_dir / "cancel_ack").exists()                 # the server saw the cancel
+        assert not export_path.exists()                            # no half-written bundle
+    finally:
+        if t is not None and t.is_alive():
+            cancel.set()
+            t.join(5)
+        client.close()
+        client.close()  # idempotent
+    assert proc.poll() is not None
+
+
+def test_p97_spawn_failure_raises_provider_failure_and_leaves_no_session(tmp_path, elf_artifact):
+    missing = tmp_path / "no-such-rea-binary"
+    provider = ReaProvider(command=[str(missing)], cwd=tmp_path,
+                           env={"PATH": os.environ.get("PATH", ""), "LANG": "C"}, host_os="darwin")
+    profile = admitted(provider, elf_artifact)
+    with pytest.raises(rea.ReaProviderFailure):
+        provider.open_session("s1", profile)
+    assert provider._sessions == {}                 # no half-open session is registered
+
+
 # ---------------------------------------------------------------- engine correlation (A-04)
+
+class _SameEngineProvider(Provider):
+    """A minimal provider that reports a fixed engine; stands in for one route over that engine."""
+
+    def __init__(self, name, engine):
+        self.name = name
+        self.engine = engine
+
+    def capabilities(self, target_profile, artifact=None):
+        return CapabilityResult(True, self.name, (), profile={"kind": "executable", "auto": False})
+
+    def open_session(self, session_key, profile):
+        return {"session": session_key}
+
+    def close_session(self, session_key, handle):
+        pass
+
+    def fetch(self, session_key, handle, request, cancel):
+        functions = {}
+        for name in request.functions:
+            key = f"{request.inputs['module']}::{name}"
+            functions[key] = FunctionEvidence(
+                function_key=key, provider=self.name, engine=self.engine, correlation_group="",
+                snapshot=request.snapshot, status="ok", coverage={"pseudocode": "ok"},
+                views={"pseudocode": {"status": "ok", "text": f"int {name}(void) {{}}"}}, entry=0x1000)
+        return ProviderResult(status="ok", functions=functions, wall_seconds=0.01)
+
+    def refresh(self, session_key, scope, new_snapshot):
+        return 0
+
+    def flush(self, session_key, *, view_invalidated, reason):
+        pass
+
+
+def test_rea_and_direct_routes_share_one_correlation_group(tmp_path, elf_artifact):
+    engine = ReaProvider(host_os="darwin").engine
+    broker = Broker()
+    direct = _SameEngineProvider("direct-ghidra", engine)
+    via_rea = _SameEngineProvider("rea-ghidra", engine)
+    other = _SameEngineProvider("older-ghidra", "ghidra-0.0.1")
+    for p in (direct, via_rea, other):
+        broker.register_provider(p)
+    broker.register_target("mod1", elf_artifact, make_profile(), provider="direct-ghidra")
+    try:
+        b_direct = broker.get_function_evidence("mod1::f1", ("pseudocode",), provider="direct-ghidra")
+        b_rea = broker.get_function_evidence("mod1::f1", ("pseudocode",), provider="rea-ghidra")
+        b_other = broker.get_function_evidence("mod1::f1", ("pseudocode",), provider="older-ghidra")
+        assert b_direct.status == "ok" and b_rea.status == "ok"
+        assert b_direct.provider == "direct-ghidra" and b_rea.provider == "rea-ghidra"
+        assert b_direct.correlation_group and b_direct.correlation_group == b_rea.correlation_group
+        assert independent_sources(b_direct.correlation_group, b_rea.correlation_group) is False
+        # a different engine IS an independent source
+        assert independent_sources(b_direct.correlation_group, b_other.correlation_group) is True
+        # new evidence is counted once per group: three requests, two underlying evidence identities
+        assert broker.metrics_summary()["new_evidence_groups"] == 2
+    finally:
+        for key in list(broker.session_states()):
+            session = broker._sessions.get(key)
+            if session is not None:
+                session.close()
+
 
 def test_engine_correlation_matches_direct_ghidra(tmp_path):
     direct = DirectGhidraProvider(cache_dir=tmp_path / "ghidra-cache")

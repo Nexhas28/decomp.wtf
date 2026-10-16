@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -12,8 +13,8 @@ from pathlib import Path
 
 from . import scoring, seeds, toolchains, wsl
 from .compiler import CompilerConfig, compile_source
-from .elfobj import extract_function, list_functions
-from .store import Store
+from .elfobj import extract_function, function_locations, list_functions
+from .store import Store, hex_entry
 
 
 # A project may only be imported with a declared lawful basis for sharing its code.
@@ -49,6 +50,184 @@ def check_legal(cfg: dict) -> dict:
 def load_config(root: Path) -> dict:
     with open(root / "project.toml", "rb") as f:
         return tomllib.load(f)
+
+
+# ---------------------------------------------------------------- configuration schema (plan 18.9)
+
+class ConfigError(ProjectRejected):
+    """A governed config block holds an unknown key, a value of the wrong type or an unsafe value."""
+
+
+def _bool(v):
+    return None if isinstance(v, bool) else "must be true or false"
+
+
+def _str(v):
+    return None if isinstance(v, str) and v.strip() else "must be a non-empty string"
+
+
+def _opt_str(v):
+    return None if v is None or (isinstance(v, str) and v.strip()) else "must be a non-empty string"
+
+
+def _choice(*allowed):
+    return lambda v: None if v in allowed else f"must be one of {', '.join(allowed)}"
+
+
+def _int(lo):
+    return lambda v: (None if isinstance(v, int) and not isinstance(v, bool) and v >= lo
+                      else f"must be an integer >= {lo}")
+
+
+def _opt_int(v):
+    return None if v is None or (isinstance(v, int) and not isinstance(v, bool)) else "must be an integer"
+
+
+def _opt_number(v):
+    return (None if v is None or (isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0)
+            else "must be a number >= 0")
+
+
+def _routes(v):
+    from .retrieval.registry import ROUTE_KINDS
+
+    if v is None:
+        return None
+    if not isinstance(v, list) or not v or len(set(v)) != len(v) or any(r not in ROUTE_KINDS for r in v):
+        return f"must be a non-empty list of distinct routes from {', '.join(ROUTE_KINDS)}"
+    return None
+
+
+def _holdout(v):
+    return (None if isinstance(v, bool) or (isinstance(v, list) and all(isinstance(x, str) for x in v))
+            else "must be true/false or a list of function names")
+
+
+#: The governed blocks of project.toml: section -> key -> (default, validator, env override or None, read).
+#: ``read`` is True when the runtime reads the key (from the project or through its env override) and False when
+#: the key is declared but has no runtime reader yet; the effective-configuration diagnostic says so.
+#: Defaults follow what this checkout actually does: guided search, structural rerank, analysis, REA and the
+#: optional retrieval routes stay off until measured (RECHECK-2026-10-16). An env override is the variable
+#: that governs the behaviour today; when set it wins over the project value.
+CONFIG_SCHEMA: dict[str, dict[str, tuple]] = {
+    "matching": {
+        "verification_policy": ("project_default", _str, None, False),
+        "compile_cache": (True, _bool, None, False),
+        "batch_compile_once": (True, _bool, None, False),
+        "prepared_target_cache": (True, _bool, None, False),
+        "score_only_permuter": (True, _bool, None, False),
+    },
+    "search": {
+        "policy": ("single_v1", _choice("single_v1", "guided_v1"),
+                   ("DECOMPNET_GUIDED_SEARCH", lambda e: "guided_v1" if e == "1" else "single_v1"), True),
+        "structural_rerank": (False, _bool, ("DECOMPNET_STRUCTURAL_RERANK", lambda e: e == "1"), True),
+        "seed": (None, _opt_int, None, False),
+        "portfolio_size": (4, _int(1), None, False),
+        "allow_exploratory_mutations": (True, _bool, None, False),
+        "global_resource_budget": ("host_profile", _str, None, False),
+    },
+    "analysis": {
+        "enabled": (False, _bool, None, False),
+        "route": ("direct_ghidra", _choice("direct_ghidra", "rea"), None, False),
+        "escalation_policy": ("structural_stall_v1", _str, None, False),
+        "capability_manifest": (None, _opt_str, None, False),
+        "persist_observations": (True, _bool, None, False),
+        "persist_live_database": (False, _bool, None, False),
+        "allow_target_byte_mutation": (False, _bool, None, False),
+    },
+    "rea": {
+        "enabled": (False, _bool, ("DECOMPNET_REA_PROVIDER", lambda e: e == "1"), True),
+        "artifact": (None, _opt_str, None, False),
+        "schema_digest": (None, _opt_str, None, False),
+        "read_only": (True, _bool, None, False),
+    },
+    "retrieval": {
+        "exact_twins": (True, _bool, None, False),
+        "lightweight_structure": (True, _bool, None, False),
+        "function_id_retrieval": (False, _bool, None, True),
+        "bsim_retrieval": (False, _bool, None, True),
+        "external_queries": (False, _bool, None, True),
+        "route_order": (None, _routes, None, True),
+        "bsim_max_cold_cost": (None, _opt_number, None, True),
+        "holdout": (False, _holdout, None, True),
+    },
+}
+
+#: Values that are never allowed, whatever else is configured: the target is evidence, not something to edit,
+#: and REA is only ever admitted read-only (plan 18.9, P9).
+FORBIDDEN_VALUES = {
+    ("analysis", "allow_target_byte_mutation"): (True, "analysis must never mutate target bytes"),
+    ("rea", "read_only"): (False, "REA is only admitted read-only"),
+}
+
+
+def validate_config(cfg: dict) -> list[str]:
+    """Validate the governed blocks (matching, search, analysis, rea, retrieval) of a project config.
+
+    Raises :class:`ConfigError` for an unknown key inside a governed block (a typo must not silently enable
+    or disable a gated route), a wrong type, or a forbidden value. Top-level keys stay free-form (ROM and
+    fork configs carry many); the returned warnings name the ones this schema does not govern."""
+    errors: list[str] = []
+    for section, keys in CONFIG_SCHEMA.items():
+        block = cfg.get(section)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            errors.append(f"[{section}] must be a table")
+            continue
+        for key in sorted(set(block) - set(keys)):
+            errors.append(f"unknown key {section}.{key} (known: {', '.join(keys)})")
+        for key, value in block.items():
+            if key in keys and (problem := keys[key][1](value)):
+                errors.append(f"{section}.{key} {problem}")
+            forbidden = FORBIDDEN_VALUES.get((section, key))
+            if forbidden and value == forbidden[0] and isinstance(value, bool):
+                errors.append(f"{section}.{key} = {str(value).lower()} is refused: {forbidden[1]}")
+    rea = cfg.get("rea") if isinstance(cfg.get("rea"), dict) else {}
+    if rea.get("enabled") is True and not (rea.get("artifact") and rea.get("schema_digest")):
+        errors.append("rea.enabled needs a pinned rea.artifact and rea.schema_digest")
+    if errors:
+        raise ConfigError("invalid project configuration:\n  " + "\n  ".join(errors))
+    warnings = []
+    analysis = cfg.get("analysis") or {}
+    if analysis.get("persist_live_database") is True:
+        warnings.append("analysis.persist_live_database keeps a live analysis database on disk")
+    return warnings
+
+
+def effective_config(cfg: dict, env=None) -> dict:
+    """The effective-configuration diagnostic: for every governed key, the value that applies and where it
+    came from (default, project or env). Validates first, so an invalid config never gets a diagnostic."""
+    import os
+
+    env = os.environ if env is None else env
+    warnings = validate_config(cfg)
+    out: dict = {}
+    for section, keys in CONFIG_SCHEMA.items():
+        block = cfg.get(section) or {}
+        out[section] = {}
+        for key, (default, _, override, _read) in keys.items():
+            value, source = default, "default"
+            if key in block:
+                value, source = block[key], "project"
+            if override and env.get(override[0]) is not None:
+                env_value = override[1](env[override[0]])
+                if source == "project" and env_value != value:
+                    warnings.append(f"{section}.{key}: project says {value!r}, {override[0]} makes it {env_value!r}")
+                value, source = env_value, f"env:{override[0]}"
+            out[section][key] = {"value": value, "source": source}
+    return {"sections": out, "warnings": warnings}
+
+
+def format_effective_config(diag: dict) -> str:
+    lines = []
+    for section, keys in diag["sections"].items():
+        lines.append(f"[{section}]")
+        for key, item in keys.items():
+            note = "" if CONFIG_SCHEMA[section][key][3] else "  declared, not yet read at runtime"
+            lines.append(f"  {key} = {json.dumps(item['value'])}  ({item['source']}){note}")
+    lines += [f"warning: {w}" for w in diag["warnings"]]
+    return "\n".join(lines)
 
 
 def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
@@ -206,6 +385,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
     root = root.resolve()
     cfg = load_config(root)
     check_legal(cfg)
+    for warning in validate_config(cfg):
+        log(f"warning: {warning}")
     slug = cfg["slug"]
     target = cfg["target"]
 
@@ -220,8 +401,14 @@ def import_project(store: Store, root: Path, log=print) -> int:
     funcs = []
     seen: dict[str, str] = {}
     arch, big_endian = None, False
+    identity: dict[str, tuple] = {}  # name -> (artifact sha256, section, section offset), plan 18.2
     for obj in objects:
         data = obj.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        try:
+            located = function_locations(data)
+        except Exception:
+            located = {}
         for name in list_functions(data):
             if name in cfg.get("exclude", []):
                 continue
@@ -230,6 +417,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
                                       f"add one of them to `exclude` in project.toml")
             seen[name] = obj.name
             unit = obj.stem
+            section, offset = located.get(name, (None, None))
+            identity[name] = (digest, section, offset)
             fn = extract_function(data, name)
             arch, big_endian = fn.arch, fn.big_endian
             insns = scoring.disassemble(fn)
@@ -291,5 +480,14 @@ def import_project(store: Store, root: Path, log=print) -> int:
                    WHERE functions.status != 'matched'""",
                 (pid, name, len(fn.code), n_insns, target_bytes, relocs, asm, seed, fn.fingerprint(), unit),
             )
+            row = db.execute("SELECT f.id, f.status, i.recorded_by FROM functions f LEFT JOIN function_identity i "
+                             "ON i.function_id = f.id WHERE f.project_id=? AND f.name=?", (pid, name)).fetchone()
+            # a matched function keeps its old target, so it keeps the identity it was matched under
+            if row["status"] != "matched" or row["recorded_by"] != "import":
+                digest, section, offset = identity[name]
+                Store.record_identity(db, row["id"], artifact_sha256=digest, module_id="main", unit_id=unit,
+                                      address_space=f"object:{unit}",
+                                      entry_kind="section_offset" if section else "unknown",
+                                      entry=hex_entry(offset), section=section)
     log(f"project {slug!r}: {len(funcs)} functions ({arch})")
     return pid

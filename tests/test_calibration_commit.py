@@ -66,12 +66,22 @@ def test_held_out_validation_passes_commits_once():
         lambda p, a, d, h: {"verdict": "match" if "-O2" in p.flags else "wrong",
                             "score": 1.0, "evidence": ""},
         held_out=[("ha", "hd", "hh"), ("hb", "hd", "hh")], held_out_judge=match_judge(),
-        commit=calls.append)
+        regression=lambda p: (True, "no affected matches"), commit=calls.append)
     assert report.committed and calls == [candidates[1]]
     assert report.profile == candidates[1]
     assert report.identity == candidates[1].identity()
     assert [r.verdict for r in report.held_out] == ["match", "match"]
+    assert report.regression == ("ok", "no affected matches")
+
+
+def test_no_regression_hook_refuses_to_commit():
+    calls = []
+    report = toolchains.calibrate_and_commit(
+        [make_profile()], [("asm", "data", "header")], match_judge(),
+        held_out=[("ha", "hd", "hh")], held_out_judge=match_judge(), commit=calls.append)
+    assert not report.committed and "regression hook" in report.reason
     assert report.regression == ("not-run", "no regression hook supplied")
+    assert calls == []
 
 
 def test_held_out_disagreement_refuses():
@@ -149,7 +159,7 @@ def test_held_out_validation_is_bounded():
     report = toolchains.calibrate_and_commit(
         [make_profile()], [("asm", "data", "header")], match_judge(),
         held_out=[(f"h{i}", "d", "h") for i in range(5)], held_out_judge=held_judge,
-        max_held_out=2, commit=lambda p: None)
+        max_held_out=2, regression=lambda p: (True, "ok"), commit=lambda p: None)
     assert report.committed and len(calls) == 2 and report.held_out_cut == 3
 
 
@@ -159,7 +169,8 @@ def test_commit_hook_exceptions_propagate():
     with pytest.raises(RuntimeError, match="commit failed halfway"):
         toolchains.calibrate_and_commit(
             [make_profile()], [("asm", "data", "header")], match_judge(),
-            held_out=[("ha", "hd", "hh")], held_out_judge=match_judge(), commit=boom)
+            held_out=[("ha", "hd", "hh")], held_out_judge=match_judge(),
+            regression=lambda p: (True, "ok"), commit=boom)
 
 
 def test_sample_judge_and_held_out_judge_are_independent():

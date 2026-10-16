@@ -74,6 +74,26 @@ def test_check_current_detects_each_dependency_class(net):
     assert not ok and "context changed" in why
 
 
+def test_check_current_accepts_project_without_context(net):
+    """A project with no context row at capture time and still none now is not a context change."""
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    with net.store.tx() as db:
+        db.execute("DELETE FROM context_versions WHERE project_id=1")
+    assert ctx(net, fn) is None
+    snap = snapshots.capture(fn, proj, None)
+    assert snap["context_version"] == 0 and snap["context_digest"] == ""
+    ok, why = snapshots.check_current(net, proj, fn, snap)
+    assert ok and not why
+
+    # a context appearing after capture is a change
+    with net.store.tx() as db:
+        db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                   "VALUES(1,1,'int func_xxx(void);',NULL,'m',0,'')")
+    ok, why = snapshots.check_current(net, proj, fn, snap)
+    assert not ok and "context changed" in why
+
+
 def test_attempt_records_its_snapshot(net, alice, monkeypatch):
     """A recorded attempt carries the dependency snapshot it was compiled under (P1.3)."""
     fn = net.store.one("SELECT * FROM functions WHERE id=1")
@@ -130,3 +150,24 @@ def test_snapshots_and_receipts_survive_restart(net, alice):
     assert reopened.store.one("SELECT * FROM verification_receipts WHERE function_id=1") is not None
     assert reopened.store.one("SELECT matched_epoch FROM projects WHERE id=1")["matched_epoch"] == 1
     assert len(reopened.store.all("SELECT * FROM attempt_snapshots")) == 1
+
+
+def test_symbol_rename_after_capture_is_detected(net):
+    """A captured symbols digest goes stale when a symbol is renamed; a snapshot without one is not checked."""
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    with net.store.tx() as db:
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(1,'D_1',4096,0,'data')")
+    digest = snapshots.symbol_table_digest(net.store, 1)
+    snap = snapshots.capture(fn, proj, ctx(net, fn), symbols_digest=digest)
+    assert snap["symbols_digest"] == digest
+    legacy = snapshots.capture(fn, proj, ctx(net, fn))
+    ok, why = snapshots.check_current(net, proj, fn, snap)
+    assert ok and not why
+
+    with net.store.tx() as db:
+        db.execute("UPDATE symbols SET name='D_2' WHERE project_id=1 AND name='D_1'")
+    ok, why = snapshots.check_current(net, proj, fn, snap)
+    assert not ok and "symbols changed" in why
+    ok, why = snapshots.check_current(net, proj, fn, legacy)
+    assert ok and not why

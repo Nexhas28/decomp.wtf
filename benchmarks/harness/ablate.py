@@ -21,7 +21,8 @@ program. Example (run from the repo root):
       -e DECOMPNET_TOOLCHAINS=/tc -e PYTHONPATH=/w/src \
       python:3.12-bookworm bash -c "pip install -q capstone pyelftools && \
         python3 /w/benchmarks/harness/ablate.py --db /bench/results/psx-ablation/app.db \
-          --project-root /proj --run-id psx-ablation/run-001"
+          --project-root /proj --run-id psx-ablation/run-001 \
+          --results-root /bench/results --no-resource-limits"
 
 Safety and honesty rules this file lives by:
 
@@ -31,11 +32,12 @@ Safety and honesty rules this file lives by:
   starts from the SAME recorded initial state, so one policy's improvement cannot
   change another policy's starting point. ("matched" here means the search found a
   byte-identical candidate, judged by the same scoring core, on the copy.)
-* `prlimit` is disabled inside this harness process: the coordinator's per-compile
-  resource caps (`prlimit --as=2147483648`) make qemu-emulated i386 toolchains fail
-  with "Unable to find a guest_base" on this arm64 Docker host, and the harness
-  only compiles project-recorded sources on a disposable copy. Documented
-  deviation; production compiles keep their caps.
+* The coordinator's per-compile resource limits (`prlimit`) stay ON by default. They are
+  disabled inside this harness process only when `--no-resource-limits` is passed: the caps
+  (`prlimit --as=2147483648`) make qemu-emulated i386 toolchains fail with "Unable to find
+  a guest_base" on arm64 Docker hosts, and the harness only compiles project-recorded
+  sources on a disposable copy. The choice is recorded in manifest.json, summary.json and
+  effective-config.json (`prlimit_disabled`); production compiles keep their caps.
 * Deterministic seeds; per-function variant order is shuffled by a seeded RNG to
   reduce warm-host bias; a global timebox marks unfinished work as censored
   instead of omitting it (plan 21.2/21.3).
@@ -46,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import random
 import shutil
@@ -89,6 +92,69 @@ def _git_commit() -> str:
                               capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
     except Exception:
         return "unknown"
+
+
+_SECRET_HINTS = ("TOKEN", "SECRET", "PASSWORD", "KEY")
+
+
+def _decompnet_env() -> dict:
+    """The DECOMPNET_* environment this run saw; secret-looking values are redacted."""
+    return {k: ("<redacted>" if any(h in k for h in _SECRET_HINTS) else v)
+            for k, v in sorted(os.environ.items()) if k.startswith("DECOMPNET_")}
+
+
+def _feature_flags() -> dict:
+    """Optional features as the coordinator reads them from the environment (all off unless set)."""
+    return {"guided_search": os.environ.get("DECOMPNET_GUIDED_SEARCH", "0") == "1",
+            "rea_provider": os.environ.get("DECOMPNET_REA_PROVIDER") == "1",
+            "structural_rerank": os.environ.get("DECOMPNET_STRUCTURAL_RERANK") == "1",
+            "compile_cache": os.environ.get("DECOMPNET_COMPILE_CACHE") != "0"}
+
+
+def _provider_status() -> list[dict]:
+    """One row per optional provider: available true/false and why. Probes only; never starts one."""
+    rows = []
+
+    def add(provider: str, available: bool, reason: str) -> None:
+        rows.append({"provider": provider, "available": bool(available), "reason": reason})
+
+    try:
+        from decompnet.forks import ghidra
+        ok = ghidra.available()
+        add("ghidra", ok, "analyzeHeadless and a Java runtime found" if ok
+            else "analyzeHeadless and/or a Java runtime not found on this host")
+    except Exception as e:
+        add("ghidra", False, f"probe failed: {e}")
+    try:
+        from decompnet.analysis import rea
+        ok = rea.available()
+        why = "pinned REA install and node found" if ok else "pinned REA install or node not found"
+        if os.environ.get("DECOMPNET_REA_PROVIDER") != "1":
+            why += "; not enabled (DECOMPNET_REA_PROVIDER is not 1)"
+        add("rea", ok, why)
+    except Exception as e:
+        add("rea", False, f"probe failed: {e}")
+    try:
+        from decompnet.retrieval.bsim import toolchain_available
+        ok, why = toolchain_available()
+    except Exception as e:
+        ok, why = False, f"probe failed: {e}"
+    add("fid", ok, why)
+    add("bsim", ok, why)
+    return rows
+
+
+def _observed_receipts(net, since_attempt_id: int) -> list[dict]:
+    """Verification receipts written for attempts recorded after `since_attempt_id` (this run's)."""
+    rows = net.store.all(
+        "SELECT r.*, f.name AS function FROM verification_receipts r "
+        "JOIN functions f ON f.id=r.function_id WHERE r.attempt_id > ? ORDER BY r.function_id",
+        since_attempt_id)
+    return [dict(r) for r in rows]
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8")
 
 
 @dataclass
@@ -312,6 +378,9 @@ def main() -> int:
     ap.add_argument("--timebox", type=float, default=1140.0, help="global wall clock budget in seconds (19 min default)")
     ap.add_argument("--per-run-wall", type=float, default=300.0, help="wall cap per variant")
     ap.add_argument("--results-root", required=True, help="writeable results root, e.g. the host benchmarks/results path mounted into the container")
+    ap.add_argument("--no-resource-limits", action="store_true",
+                    help="disable the per-compile prlimit caps for this run (default: caps stay on); "
+                         "needed for qemu-emulated i386 toolchains on arm64 Docker hosts")
     args = ap.parse_args()
 
     results_root = Path(args.results_root)
@@ -326,18 +395,21 @@ def main() -> int:
         "per_run_wall_s": args.per_run_wall, "python": sys.version.split()[0],
         "platform": platform.platform(), "machine": platform.machine(),
         "capstone": getattr(__import__("capstone"), "__version__", "unknown"),
-        "prlimit_disabled": True, "started_utc": _now_utc(),
+        "prlimit_disabled": bool(args.no_resource_limits), "started_utc": _now_utc(),
         "policies": {"guided": SEARCH_POLICY.to_dict(),
                      "baseline": SearchPolicy(id="baseline", version=1, beam=1, max_steps=args.max_steps).to_dict()},
     }
 
-    # the coordinator's per-compile prlimit caps break qemu-emulated i386 toolchains on this
-    # arm64 Docker host; this harness compiles project-recorded sources on a disposable copy.
-    _real_which = shutil.which
-    compiler.shutil.which = lambda name: None if name == "prlimit" else _real_which(name)
+    # the coordinator's per-compile prlimit caps stay on unless --no-resource-limits is passed: they
+    # break qemu-emulated i386 toolchains on arm64 Docker hosts, and this harness compiles
+    # project-recorded sources on a disposable copy.
+    if args.no_resource_limits:
+        _real_which = shutil.which
+        compiler.shutil.which = lambda name: None if name == "prlimit" else _real_which(name)
 
     net = RomNetwork(args.db, Path(args.project_root))
     proj = net._project(args.project_slug)
+    first_attempt = net.store.one("SELECT COALESCE(MAX(id), 0) AS n FROM attempts")["n"]
     row = net.store.one("SELECT COUNT(*) FILTER (WHERE status='matched') AS matched, "
                         "COUNT(*) FILTER (WHERE status='open') AS open FROM functions WHERE project_id=?",
                         proj["id"])
@@ -414,6 +486,14 @@ def main() -> int:
               "policies": run_meta["policies"],
               "seeded": "per (function id, policy id-version)"}
     (run_dir / "corpus-manifest.json").write_text(json.dumps(corpus, indent=2, sort_keys=True), encoding="utf-8")
+    effective = {"schema_version": 1, "run_id": args.run_id, "harness": run_meta["harness"],
+                 "args": vars(args), "prlimit_disabled": run_meta["prlimit_disabled"],
+                 "feature_flags": _feature_flags(), "env": _decompnet_env(),
+                 "policies": run_meta["policies"]}
+    (run_dir / "effective-config.json").write_text(json.dumps(effective, indent=2, sort_keys=True), encoding="utf-8")
+    # this harness makes no DB writes, so no match is accepted here; any receipt it did observe is listed
+    _write_jsonl(run_dir / "verification-receipts.jsonl", _observed_receipts(net, first_attempt))
+    _write_jsonl(run_dir / "provider-status.jsonl", _provider_status())
     _write_report(run_dir, summary)
     print(f"done: {len(sample)} functions -> {run_dir}")
     print(json.dumps(summary["totals"], indent=2))

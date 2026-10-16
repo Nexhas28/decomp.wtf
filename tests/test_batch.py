@@ -4,6 +4,8 @@ as attempt(). Stub-based: no compiler needed."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from decompnet.app.engine import RomNetwork
@@ -92,6 +94,34 @@ def test_c02_incompatible_contexts_partition(net, alice, stubs):
                            "\n".join(f"int func_00{i}(void) {{ return {i}; }}" for i in range(1, 7)))
     assert "6 of 6 matched (2 compiles for 6 functions)" in out
     assert len(stubs["calls"]) == 2
+
+
+def test_c02c_different_compiler_profiles_never_share_a_compile(net, alice, stubs):
+    """Plan P2.2: the group key is the complete compilation identity, so a function pinned to another
+    compiler profile gets its own compile, called with that function so its profile is used."""
+    with net.store.tx() as db:
+        cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=1").fetchone()["config"])
+        cfg["compiler_profiles"] = {"other": {"toolchain": "gcc-2.8.1-psx", "flags": ["-O1"]}}
+        cfg["compiler_functions"] = {"func_002": "other"}
+        db.execute("UPDATE projects SET config=? WHERE id=1", (json.dumps(cfg),))
+    seen = []
+    net._compile = lambda proj, header, source, fn=None: (seen.append(fn["name"] if fn is not None else None)
+                                                          or FakeResult())
+    out = net.attempt_many(alice, ["func_001", "func_002", "func_003"],
+                           "\n".join(f"int func_00{i}(void) {{ return {i}; }}" for i in range(1, 4)))
+    assert "3 of 3 matched (2 compiles for 3 functions)" in out
+    assert sorted(seen) == ["func_001", "func_002"]  # one compile per profile, each given its function
+
+
+def test_c02d_partial_claim_failure_releases_this_batchs_claims(net, alice, stubs):
+    """A batch that fails part-way through claiming must not leave the claims it already took."""
+    bob = net.authenticate(net.register_agent("bob"))
+    net.claim(bob, function="func_003")
+    with pytest.raises(NetworkError, match="claimed by bob"):
+        net.attempt_many(alice, ["func_001", "func_002", "func_003"], "int x;")
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims WHERE agent_id=?", alice.id)["n"] == 0
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims WHERE function_id=3")["n"] == 1  # bob's is untouched
+    assert stubs["calls"] == []
 
 
 def test_c02b_batch_respects_claim_ownership(net, alice, stubs):

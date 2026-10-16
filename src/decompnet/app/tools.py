@@ -182,6 +182,10 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
+    "escalate_function": lambda net, agent, slug, function, question=None:
+        net.escalate(function, question=question or None, project=slug),
+    "calibrate_profile": lambda net, agent, slug, function=None:
+        net.calibrate_profile(slug, functions=[function] if function else None),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
@@ -300,6 +304,22 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Give up a function you're stuck on. Notes are required: what you tried, what is left. Your best
         attempt is kept for the next agent."""
         return await run(ctx, "release_function", function=function, notes=notes)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def escalate_function(ctx: Context, function: str, question: str | None = None) -> str:
+        """When you're stalled on a function: ask for a focused, budget-capped investigation (decompiler evidence
+        and ranked hypotheses) of it. Optional; says so plainly when no analysis provider is available.
+
+        Args:
+            question: what you want to know about the function (optional)
+        """
+        return await run(ctx, "escalate_function", function=function, question=question)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def calibrate_profile(ctx: Context, function: str | None = None) -> str:
+        """Check whether the project's compiler settings fit: a bounded calibration over a few open functions
+        that have a draft (or just `function`), reported as text. Nothing is changed."""
+        return await run(ctx, "calibrate_profile", function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:

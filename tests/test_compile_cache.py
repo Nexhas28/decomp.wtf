@@ -391,6 +391,112 @@ def test_C12_quota_eviction_never_deletes_in_use_payloads(tmp_path):
     assert c2.get("old") is None and c2.get("kept") is not None       # age eviction skips in-use
 
 
+# ------------------------------------------------ P2.8: diagnostics and snapshot quota
+
+def test_miss_reasons_new_input_vs_changed_dependencies(tmp_path):
+    from decompnet import telemetry
+
+    cfg = make_cfg(tmp_path)
+    k_a = key_of(cfg)
+    k_b = key_of(cfg, header=HEADER + "\n")      # same request, different context header
+    k_c = key_of(cfg, source=SOURCE + " ")       # different request
+    assert k_a.digest != k_b.digest
+    assert k_a.request_id == k_b.request_id != k_c.request_id
+
+    c = ccache.CompileCache(tmp_path / "c")
+    was_enabled = telemetry.enabled()
+    telemetry.enable(True)
+    telemetry.clear()
+    try:
+        assert c.get(k_a.digest, request=k_a.request_id) is None      # first sight: new input
+        c.put(k_a.digest, ok=True, outcome=ccache.OUTCOME_SUCCESS, payload=b"OBJ", log="",
+              manifest=k_a.manifest)
+        assert c.get(k_a.digest, request=k_a.request_id).payload == b"OBJ"
+        assert c.get(k_b.digest, request=k_b.request_id) is None      # same request, new dependencies
+        assert c.get(k_c.digest, request=k_c.request_id) is None      # new input
+        counters = telemetry.snapshot()["counters"]
+    finally:
+        telemetry.clear()
+        telemetry.enable(was_enabled)
+    assert counters == {"cache.hit": 1, "cache.miss.new-input": 2,
+                        "cache.miss.dependency-changed": 1}
+    assert c.stats["hits"] == 1 and c.stats["misses"] == 3
+    assert c.stats["misses_new"] == 2 and c.stats["misses_dependency_changed"] == 1
+    text = c.diagnose()
+    assert "2 new-input" in text and "1 dependency-changed" in text and "bytes" in text
+
+
+def test_snapshots_count_against_the_size_quota(tmp_path):
+    inc = tmp_path / "inc"
+    inc.mkdir()
+    (inc / "big.h").write_bytes(b"/" * 4000)
+    key = key_of(make_cfg(tmp_path, include_dirs=(str(inc),)))
+    c = ccache.CompileCache(tmp_path / "c", max_bytes=3000, max_age=None)
+    c.ensure_snapshot(key)
+    snap = tmp_path / "c" / "snapshots" / key.dep_digest
+    assert (snap / "DONE").exists()
+
+    c.pin_snapshot(key.dep_digest)   # in use: never evicted, even over quota
+    assert c.evict() == 0 and snap.exists()
+    c.unpin_snapshot(key.dep_digest)
+    assert c.evict() == 1 and not snap.exists()   # read-only tree is removed for real
+
+    # objects and snapshots share one quota; the oldest unpinned item goes first
+    c2 = ccache.CompileCache(tmp_path / "c2", max_bytes=5000, max_age=None)
+    c2.ensure_snapshot(key)
+    snap2 = tmp_path / "c2" / "snapshots" / key.dep_digest
+    old = time.time() - 100
+    os.utime(snap2 / "DONE", (old, old))
+    c2.put("a", ok=True, outcome=ccache.OUTCOME_SUCCESS, payload=b"A" * 600, log="")
+    assert not snap2.exists()                    # snapshot (oldest) evicted to fit the quota
+    assert c2.get("a") is not None
+
+
+def test_in_flight_is_true_only_while_the_producer_runs(tmp_path):
+    c = ccache.CompileCache(tmp_path / "c")
+    started, release = threading.Event(), threading.Event()
+
+    def producer():
+        started.set()
+        release.wait(10)
+        return "OBJ"
+
+    t = threading.Thread(target=lambda: c.get_or_run("k", producer))
+    t.start()
+    assert started.wait(10)
+    assert c.in_flight("k") and not c.in_flight("other")
+    release.set()
+    t.join(15)
+    _wait_until(lambda: not c.in_flight("k"), 10)
+
+
+def test_waiter_timeout_while_producer_runs_does_not_start_a_second_compile(tmp_path, monkeypatch):
+    cfg = make_cfg(tmp_path)
+    run = FakeRun(monkeypatch, hold=threading.Event())
+    cache = ccache.cache_for_dir(Path(cfg.cache_dir))
+    digest = key_of(cfg).digest
+    first: list = []
+    producer = threading.Thread(target=lambda: first.append(compile_source(cfg, HEADER, SOURCE)))
+    producer.start()
+    assert run.hold.wait(10), "producer never started"
+    assert cache.in_flight(digest)
+
+    real = ccache.CompileCache.get_or_run
+    monkeypatch.setattr(ccache.CompileCache, "get_or_run",
+                        lambda self, key, producer, **kw: real(self, key, producer, **{**kw, "wait_timeout": 0.05}))
+    waiter = compile_source(cfg, HEADER, SOURCE)
+    assert not waiter.ok and waiter.obj is None and waiter.log.startswith("timeout")
+    assert len(run.calls) == 1                       # no second compiler execution
+    assert cache.transient_get(digest) is None       # the waiter's timeout is not recorded ...
+    assert cache.get(digest) is None                 # ... or cached as a failure
+
+    run.release.set()
+    producer.join(15)
+    assert first and first[0].ok
+    assert len(run.calls) == 1
+    assert cache.get(digest).outcome == ccache.OUTCOME_SUCCESS
+
+
 # ---------------------------------------------------------- bypass / rollback knobs
 
 def test_bypass_when_the_key_cannot_be_described(tmp_path, monkeypatch):

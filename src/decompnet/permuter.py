@@ -792,7 +792,7 @@ def _op_while_for(analysis: Analysis, rng: random.Random):
     return new, (Span.single(st.line, span[0], span[1]),)
 
 
-@_op("register_toggle", RESTRICTED,
+@_op("register_toggle", EXPLORATORY,
      "toggle the `register` storage hint; a pure code-generation hint in C, added only when the address "
      "is never taken")
 def _op_register_toggle(analysis: Analysis, rng: random.Random):
@@ -1227,7 +1227,12 @@ class LocalScorer:
         return scoring.diff(self.target, cand).score if cand else None
 
 
-def search(job: dict, seconds: float, on_improvement, log=print, seed: int | None = None) -> tuple[int, str]:
+def search(job: dict, seconds: float, on_improvement, log=print, seed: int | str | None = None,
+           plateau: float = 0.02, policy=None) -> tuple[int, str]:
+    if policy is None:
+        from .search.policy import active_policy  # imported here: search.policy imports this module
+        policy = active_policy()
+    weights = dict(policy.base_weights)
     rng = random.Random(seed)
     scorer = LocalScorer(job, log)
     best_src = cur_src = job["source"]
@@ -1237,7 +1242,8 @@ def search(job: dict, seconds: float, on_improvement, log=print, seed: int | Non
         return job["best_score"], best_src
     deadline, tries = time.monotonic() + seconds, 0
     while time.monotonic() < deadline and best > 0:
-        cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
+        cand = mutate(cur_src if rng.random() < 1 - policy.restart_from_best else best_src, rng,
+                      policy=dict(weights))
         if cand is None:
             continue
         tries += 1
@@ -1248,7 +1254,7 @@ def search(job: dict, seconds: float, on_improvement, log=print, seed: int | Non
             best, best_src = s, cand
             log(f"  try {tries}: score {s}")
             on_improvement(s, cand)
-        if s <= cur or rng.random() < 0.02:  # mostly downhill, occasionally sideways to escape plateaus
+        if s <= cur or rng.random() < plateau:  # mostly downhill, occasionally sideways to escape plateaus
             cur, cur_src = s, cand
     log(f"  {tries} variants tried, best {best}")
     return best, best_src
@@ -1275,18 +1281,30 @@ def worker(server: str, token: str, minutes_per_job: float = 10, max_jobs: int =
             time.sleep(300)
             continue
         log(f"job: {job['project']}/{job['function']} (best score {job['best_score']}, {job['toolchain']})")
+        plateau, policy = 0.02, None
+        if job.get("policy") is not None:
+            from .search.policy import SearchPolicyError, parse_policy  # imported here: search.policy imports this module
+            try:
+                policy = parse_policy(job["policy"])
+                plateau = policy.plateau
+            except SearchPolicyError as e:
+                log(f"  skipped: this worker can't run the job's search policy ({e})")
+                done += 1
+                time.sleep(60)  # the same job may come straight back; don't hammer the coordinator
+                continue
         submitted = {"best": job["best_score"]}
 
         def report(score: int, source: str) -> None:
             if score < submitted["best"]:
                 verdict = _api(server, token, "/api/jobs/submit",
-                               {"project": job["project"], "function": job["function"], "source": source})
+                               {"project": job["project"], "function": job["function"], "source": source,
+                                "snapshot": job.get("snapshot")})
                 log(f"  submitted score {score}: coordinator says {verdict}")
                 if verdict.get("accepted"):
                     submitted["best"] = verdict.get("score", score)
 
         try:
-            search(job, minutes_per_job * 60, report, log)
+            search(job, minutes_per_job * 60, report, log, seed=job.get("seed"), plateau=plateau, policy=policy)
         except toolchains.ToolchainError as e:
             log(f"  skipped: {e}")
         done += 1

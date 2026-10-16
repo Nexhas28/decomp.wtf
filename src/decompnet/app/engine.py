@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from .. import compiler_profiles as profiles
-from .. import retrieval, scoring, seeds, similarity, snapshots, toolchains
+from .. import retrieval, scoring, seeds, similarity, snapshots, telemetry, toolchains
 from ..elfobj import FunctionObj
 from ..network import Agent, Network, NetworkError, _fragment_like, _hash_token, config_from
 from ..rom import detect, match, split
@@ -184,6 +184,14 @@ def _lockdown_refuses(name: str, db_path: Path | str | None = None) -> str | Non
     return (f"refusing to create a new agent identity {name!r}: this machine is in fleet lockdown "
             f"(a runaway swarm was spawning worker agents). Existing identities still work. To allow it, "
             f"add the name to allowed_agents in <DECOMP_HOME>/.decomp/settings.json or set lockdown to false.")
+
+
+def _file_sha256(path: Path) -> str | None:
+    """sha256 of an imported ROM file (its Section 18.2 artifact digest), or None when it is not on disk."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 class RomNetwork(Network):
@@ -538,6 +546,7 @@ class RomNetwork(Network):
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]) + (GP_NOTE if res.gp else ""),
                                                   None, "basic types", now, ""))
+            self.store.record_rom_identities(db, pid, hashlib.sha256(picked.data).hexdigest())
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
         return slug
@@ -583,6 +592,7 @@ class RomNetwork(Network):
                            (pid, name, f.vram, len(f.code), "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
+            self.store.record_rom_identities(db, pid, _file_sha256(workdir / picked.filename))
             self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
         log(f"ready: {len(fns)} functions to decompile")
         return slug
@@ -652,6 +662,7 @@ class RomNetwork(Network):
                            (pid, name, f.vram, f.size, "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
+            self.store.record_rom_identities(db, pid, _file_sha256(workdir / picked.filename))
             self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
         if matchable:
             log(f"ready: {len(fns)} functions to decompile with SDCC/GBDK-2020 ({gb_build.TOOLCHAIN})")
@@ -919,39 +930,60 @@ class RomNetwork(Network):
                       "Your code is linked at this function's address and must reproduce the ROM bytes exactly."]
         return lines
 
-    def _rom_ops(self, proj) -> dict[tuple[int, int], list[str]]:
-        """(vram, size) -> mnemonics of every function, cached (renames keep addresses; splits change sizes)."""
-        cache = self._ops.setdefault(proj["id"], {})
-        rows = self.store.all("SELECT vram, size, target FROM functions WHERE project_id=? AND target IS NOT NULL", proj["id"])
-        live = set()
-        for r in rows:
-            key = (r["vram"], r["size"])
-            live.add(key)
-            if key not in cache:
-                cache[key] = (similarity.thumb_mnemonics(r["target"], r["vram"] or 0) if proj["arch"] == "arm" else
-                              similarity.mips_mnemonics(r["target"], bool(proj["big_endian"]), r["vram"] or 0))
-        for key in set(cache) - live:
-            del cache[key]
-        return cache
-
     def similar(self, proj, fn, top: int = 5) -> list[tuple[dict, float]]:
-        """Functions whose instructions look like `fn`'s, matched ones first: [(row, similarity)]."""
+        """Functions whose instructions look like `fn`'s, matched ones first: [(row, similarity)].
+        Uses the shared per-project feature index (P6.2): features are built once per function revision and
+        target digest, so a repeated query rebuilds nothing."""
         if fn["target"] is None:
             return []
-        ops = self._rom_ops(proj)
-        me = (fn["vram"], fn["size"])
-        if me not in ops:
+        index = retrieval.feedback.similarity_index(self, proj)
+        arch = proj["arch"] or "mips"
+        mode = "big" if proj["big_endian"] else "little"
+        rows = {r["id"]: r for r in self.store.all(
+            "SELECT id, name, vram, size, n_insns, status, best_score, target, relocs, rom_offset, fingerprint, "
+            "revision, unit, (matched_source IS NOT NULL AND matched_source != '') AS has_source "
+            "FROM functions WHERE project_id=?", proj["id"])}
+        me = rows.get(fn["id"])
+        if me is None or not me["target"]:
             return []
-        cands = {f"{v}:{n}": o for (v, n), o in ops.items() if (v, n) != me}
-        rows = {(r["vram"], r["size"]): r for r in self.store.all(
-            "SELECT name, vram, size, n_insns, status, best_score FROM functions WHERE project_id=?", proj["id"])}
-        out = []
-        for key, sim in similarity.rank(ops[me], cands, top=top * 2):
-            v, n = (int(x) for x in key.split(":"))
-            if (v, n) in rows:
-                out.append((rows[(v, n)], sim))
-        out.sort(key=lambda x: (x[0]["status"] != "matched", -x[1]))
-        return out[:top]
+        for fid, r in rows.items():
+            if not r["target"]:
+                continue
+            try:  # a function that cannot be disassembled simply stays out of the index
+                index.features_for(fid, r["revision"], snapshots.target_digest(r), arch, mode, r["target"],
+                                   addr=r["vram"] or 0)
+            except Exception:
+                continue
+        try:
+            if index.features(fn["id"]).length < 4:  # tiny functions all look alike
+                return []
+        except KeyError:
+            return []
+        verified = {r["function_id"] for r in self.store.all(
+            "SELECT v.function_id FROM verification_receipts v JOIN functions f ON f.id=v.function_id "
+            "WHERE f.project_id=?", proj["id"])}
+        cfg = self.cfg(proj)
+        per_function = bool(cfg.get("compiler_ranges") or cfg.get("compiler_functions"))
+
+        def compiler_of(r) -> str | None:
+            if not per_function:
+                return None
+            try:
+                return json.dumps(profiles.effective_compiler(cfg, r), sort_keys=True)
+            except Exception:
+                return None
+
+        infos = {fid: similarity.CandidateInfo(
+                     key=fid, source_available=r["status"] == "matched" and bool(r["has_source"]),
+                     verified=fid in verified, compiler_profile=compiler_of(r))
+                 for fid, r in rows.items() if fid != fn["id"]}
+        target_info = similarity.CandidateInfo(key=fn["id"], compiler_profile=compiler_of(me))
+        ranked = [(rows[m.key], m.similarity, m.rank_score)
+                  for m in index.search(fn["id"], arch, mode, top=top * 2, infos=infos, target_info=target_info)
+                  if m.key in rows]
+        # matched first, then the usability-adjusted rank (P6.4), then raw similarity
+        ranked.sort(key=lambda x: (x[0]["status"] != "matched", -x[2], -x[1]))
+        return [(row, sim) for row, sim, _ in ranked[:top]]
 
     def find_similar(self, project: str | None, function: str, limit: int = 5) -> str:
         if (fork := self.fork_slug(project)):
@@ -1639,39 +1671,52 @@ class RomNetwork(Network):
         # ROM path: resolve, claim and snapshot every function first, then compile each compatible group once.
         self._require_budget(agent)
         groups: dict[tuple, list] = {}
-        for name in names:
-            fn = self._function(name, project)
-            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-            now = time.time()
-            with self.store.tx() as db:  # the same claim bookkeeping as attempt(): renew yours, never another's
-                self._expire_claims(db)
-                claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
-                scratch = fn["status"] == "matched"
-                if not scratch:
-                    if claim is None:
-                        # claims held by this agent on OTHER functions of this batch are expected (claim_many
-                        # pre-claims the batch); a claim outside the batch is the usual single-function conflict
-                        held = db.execute("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id "
-                                          "WHERE c.agent_id=?", (agent.id,)).fetchall()
-                        if any(h["name"] not in names for h in held):
-                            raise NetworkError("you hold another claim; release it before working on a different function")
-                        db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
-                        self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
-                    elif claim["agent_id"] != agent.id:
-                        raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
-                    else:
-                        db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
-            ctx = self._context(proj["id"], fn["unit"])
-            snap = snapshots.capture(fn, proj, ctx)
-            # Complete compilation identity for grouping: project, context version and exact header content.
-            # Incompatible requests land in different groups instead of sharing a compile (plan C-02).
-            groups.setdefault((proj["id"], ctx["version"], ctx["header"]), []).append(
-                (fn, proj, ctx, snap, scratch))
+        inserted: list[int] = []  # claims THIS batch created: released again if the batch cannot start
+        try:
+            for name in names:
+                fn = self._function(name, project)
+                proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+                now = time.time()
+                with self.store.tx() as db:  # the same claim bookkeeping as attempt(): renew yours, never another's
+                    self._expire_claims(db)
+                    claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                    scratch = fn["status"] == "matched"
+                    if not scratch:
+                        if claim is None:
+                            # claims held by this agent on OTHER functions of this batch are expected (claim_many
+                            # pre-claims the batch); a claim outside the batch is the usual single-function conflict
+                            held = db.execute("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id "
+                                              "WHERE c.agent_id=?", (agent.id,)).fetchall()
+                            if any(h["name"] not in names for h in held):
+                                raise NetworkError("you hold another claim; release it before working on a different function")
+                            db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                            self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+                            inserted.append(fn["id"])
+                        elif claim["agent_id"] != agent.id:
+                            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+                        else:
+                            db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+                ctx = self._context(proj["id"], fn["unit"])
+                snap = snapshots.capture(fn, proj, ctx, symbols_digest=snapshots.symbol_table_digest(self.store, proj["id"]))
+                # Complete compilation identity for grouping: project, context version, exact header content and
+                # the function's effective compiler profile. Incompatible requests land in different groups
+                # instead of sharing a compile (plan C-02, P2.2).
+                compiler_id = json.dumps(profiles.effective_compiler(self.cfg(proj), fn), sort_keys=True, default=str)
+                groups.setdefault((proj["id"], ctx["version"], ctx["header"], compiler_id), []).append(
+                    (fn, proj, ctx, snap, scratch))
+        except NetworkError:
+            if inserted:
+                with self.store.tx() as db:
+                    for fid in inserted:
+                        db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fid, agent.id))
+            raise
 
         compiles = 0
         for _, items in groups.items():
             fn0, proj0, ctx0, _, _ = items[0]
-            result = self._compile(proj0, ctx0["header"], source)
+            with telemetry.span("batch.compile", functions=len(items)):
+                result = self._compile(proj0, ctx0["header"], source, fn0)
+            telemetry.count("batch.compiler_invocations")
             compiles += 1
             if not result.ok:  # a shared compile error: report once per function, keep per-function records
                 for fn, proj, ctx, snap, scratch in items:
@@ -1764,7 +1809,8 @@ class RomNetwork(Network):
             self._record(fn, agent, local, source, ctx["version"], compiled=result.ok and cand is not None,
                          via="room", snapshot=snap, stale_reason=why)
         elif matched_now:
-            self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap)
+            self._record(fn, agent, 0, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap,
+                         object_digest=cand.fingerprint())
         elif local is not None and (fn["best_score"] is None or local < fn["best_score"]):
             self._record(fn, agent, local, source, ctx["version"], compiled=True, via="room", snapshot=snap)
         else:
@@ -1843,7 +1889,8 @@ class RomNetwork(Network):
                 score = d.score
         ok, why = snapshots.check_current(self, proj, fn, snap)
         if matched_now and ok:
-            self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap)
+            self._record(fn, agent, score, source, ctx["version"], matched=True, compiled=True, via="room", snapshot=snap,
+                         object_digest=cand.fingerprint())
         else:
             self._record(fn, agent, score, source, ctx["version"], matched=False,
                          compiled=result.ok and cand is not None, via="room", snapshot=snap,
@@ -2225,7 +2272,10 @@ class RomNetwork(Network):
             if state["stop"].is_set():
                 return
             try:
-                outcome = try_one(agent, proj, fid)
+                if try_one == self._autopilot_one and self._autopilot_retrieval(agent, proj, fid):
+                    outcome = "match"  # a retrieved candidate was verified (off unless the project enables a route)
+                else:
+                    outcome = try_one(agent, proj, fid)
             except Exception:  # one odd function must not stop the rest
                 outcome = "fail"
             state["tried"] += 1
@@ -2277,7 +2327,7 @@ class RomNetwork(Network):
         except Exception as e:  # feedback must never break the accepted match
             logging.getLogger("decomp.wtf").info("acceptance feedback: %s", e)
 
-    def try_quietly(self, agent, proj, fn, source: str) -> dict:
+    def try_quietly(self, agent, proj, fn, source: str, via: str = "agent") -> dict:
         """Judge one candidate for a function nobody holds (autopilot's tries): held only while it compiles,
         recorded as an attempt like any other. {"matched", "score"}."""
         now = time.time()
@@ -2288,6 +2338,7 @@ class RomNetwork(Network):
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
         try:
             ctx = self._context(proj["id"], fn["unit"])
+            snap = snapshots.capture(fn, proj, ctx)
             result = self._compile(proj, ctx["header"], source, fn)
             if not result.ok:
                 return {"matched": False, "score": None}
@@ -2297,11 +2348,77 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
+            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap, via=via,
+                         object_digest=cand.fingerprint() if d.bytes_match else None)
             return {"matched": d.bytes_match, "score": d.score}
         finally:
             with self.store.tx() as db:
                 db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
+
+    # ------------------------------------------- retrieval candidates into compile-and-verify (P10.2/P10.3)
+
+    def _retrieval_source(self, candidate, registry, proj) -> str:
+        """The C a retrieval candidate carries, or "" when none is accessible: the candidate's own source,
+        else the file its reference-registry entry permits (a local path, absolute or under the project
+        root). Evidence-only candidates and URLs yield nothing: no fabricated or fetched C."""
+        own = getattr(candidate, "source", None)
+        if isinstance(own, str) and own.strip():
+            return own
+        location = getattr(candidate, "source_location", "") or ""
+        if not location:
+            entry_id = getattr(candidate, "entry_id", "") or getattr(getattr(candidate, "sidecar", None), "entry_id", "")
+            entry = registry.get(entry_id) if entry_id else None
+            location = entry.source_location if entry is not None and entry.usable() else ""
+        if not location or "://" in location:
+            return ""
+        path = Path(location)
+        if not path.is_absolute():
+            path = Path(proj["root"] or "") / path
+        try:
+            return path.read_text(errors="replace")[:200_000] if path.is_file() else ""
+        except OSError:
+            return ""
+
+    def verify_retrieval_candidates(self, agent, proj, fn, limit: int = 2) -> list:
+        """Send the top `limit` retrieval candidates that carry accessible source through the same quiet
+        judge as try_quietly (held only while compiling, snapshot captured before the compile, recorded
+        via='retrieval:<route>'). Retrieval only suggests: the compile-and-diff verdict decides.
+        [{"route", "candidate", "matched", "score"}]; [] when the project's retrieval routes are off."""
+        config = config_from(proj)
+        if not (config.function_id_retrieval or config.bsim_retrieval):
+            return []
+        registry = self.load_reference_sources(proj["id"])
+        out, tried = [], set()
+        for hit in self.retrieval_candidates(fn, proj["slug"]):
+            if len(out) >= max(0, int(limit)):
+                break
+            source = self._retrieval_source(hit["candidate"], registry, proj)
+            digest = snapshots.sha(source.encode()) if source else ""
+            if not source or digest in tried:
+                continue
+            tried.add(digest)
+            result = self.try_quietly(agent, proj, fn, source, via=f"retrieval:{hit['route']}")
+            out.append({"route": hit["route"], "candidate": hit["candidate"],
+                        "matched": result["matched"], "score": result["score"]})
+            if result["matched"]:
+                break
+        return out
+
+    def _autopilot_retrieval(self, agent, proj, fid: int) -> bool:
+        """Autopilot's retrieval step for one function, only when its project enables a retrieval route.
+        True when a retrieved candidate matched. Never raises: a failure falls through to the drafts."""
+        try:
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", proj["id"])
+            config = config_from(proj)
+            if not (config.function_id_retrieval or config.bsim_retrieval):
+                return False
+            fn = self.store.one("SELECT * FROM functions WHERE id=?", fid)
+            if fn is None or fn["status"] != "open":
+                return False
+            return any(r["matched"] for r in self.verify_retrieval_candidates(agent, proj, fn))
+        except Exception as e:
+            logging.getLogger("decomp.wtf").info("autopilot retrieval: %s", e)
+            return False
 
     def _autopilot_one(self, agent, proj, fid: int) -> str:
         """match | near | far | fail | skip, for one function's draft."""
@@ -2315,7 +2432,8 @@ class RomNetwork(Network):
         try:
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
             ctx = self._context(proj["id"], fn["unit"])
-            data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
+            snap = snapshots.capture(fn, proj, ctx)
+            data_asm ="\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
             res = seeds.draft(self._asm_text(fn, proj), fn["name"], profiles.effective_compiler(self.cfg(proj), fn)["toolchain"],
                               context_header=ctx["header"], data_asm=data_asm, valid=True)
             draft = res.text
@@ -2331,7 +2449,8 @@ class RomNetwork(Network):
             d = scoring.diff(self._target_obj(fn, proj), cand)
             if verdict is not None:
                 d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
-            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match)
+            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, snapshot=snap,
+                         object_digest=cand.fingerprint() if d.bytes_match else None)
             return "match" if d.bytes_match else "near" if d.percent >= 90 else "far"
         finally:
             with self.store.tx() as db:

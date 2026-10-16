@@ -235,6 +235,13 @@ def list_functions(data: bytes) -> list[str]:
     return list(_function_symbols(ELFFile(BytesIO(data))))
 
 
+def function_locations(data: bytes) -> dict[str, tuple[str, int]]:
+    """name -> (section name, section-relative offset) of every function in a relocatable object: its
+    identity there (plan 18.2), since an unlinked object has no virtual address."""
+    elf = ELFFile(BytesIO(data))
+    return {name: (elf.get_section(shndx).name, off) for name, (shndx, off, _) in _function_symbols(elf).items()}
+
+
 def function_from_payload(data: bytes, name: str) -> FunctionObj | None:
     """A candidate the Game Boy lane produced: a magic-tagged JSON payload rather than an ELF object
     (SM83 has no ELF toolchain in this pipeline — see rom/gb_build.py)."""

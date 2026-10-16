@@ -18,11 +18,13 @@ Retrieval never touches match state: every candidate goes through compile_and_di
 
 from __future__ import annotations
 
+import itertools
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from decompnet import snapshots
+from decompnet import scoring, snapshots, telemetry
 from decompnet.app.engine import RomNetwork
 from decompnet.network import NetworkError, config_from
 from decompnet.retrieval import BsimIndex, FunctionIdIndex, Registry, digest
@@ -150,6 +152,120 @@ def test_flags_on_without_admitted_corpus_stays_disabled_with_reason(net, monkey
     assert "usable" in out  # the admission reason is shown
     assert "REQUIRES VERIFICATION" not in out
     assert net.retrieval_candidates(net.store.one("SELECT * FROM functions WHERE id=1"), "fixture") == []
+
+
+# ----------------------------------------------------------------------------- verification (P10.2/P10.3 step 6)
+
+class _Compiled:
+    ok = True
+    log = ""
+    obj = b"obj"
+
+
+def stub_judge(net, monkeypatch, score=40):
+    """The compile/evaluate/diff judge stubbed (no toolchain): a non-matching verdict, so the attempt is
+    recorded without touching match state. Returns the sources that reached the compiler."""
+    compiled: list = []
+    monkeypatch.setattr(net, "_compile", lambda proj, header, source, fn=None: (compiled.append(source) or _Compiled()))
+    monkeypatch.setattr(net, "_evaluate", lambda fn, proj, obj: (object(), None, []))
+    monkeypatch.setattr(net, "_target_obj", lambda fn, proj: object())
+    monkeypatch.setattr(scoring, "diff", lambda target, cand: scoring.DiffResult(score, 100, [], False))
+    return compiled
+
+
+def write_reference_source(net, tmp_path, text="int f(void) { return 1; }\n"):
+    """The registry entry's permitted source file, under the project root."""
+    path = tmp_path / "liba" / "liba-1" / "src.c"
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET root=? WHERE id=1", (str(tmp_path),))
+    return text
+
+
+def test_verify_retrieval_candidates_does_nothing_when_retrieval_is_off(net, monkeypatch, tmp_path):
+    seed_indexes(net, monkeypatch)
+    write_reference_source(net, tmp_path)
+    compiled = stub_judge(net, monkeypatch)
+    agent = net.authenticate(net.register_agent("alice"))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    assert net.verify_retrieval_candidates(agent, proj, fn) == []
+    assert compiled == []
+    assert net.store.one("SELECT COUNT(*) AS n FROM attempts")["n"] == 0
+
+
+def test_verify_retrieval_candidates_sends_a_candidate_through_the_judge(net, monkeypatch, tmp_path):
+    enable_retrieval(net, {"function_id_retrieval": True})
+    seed_indexes(net, monkeypatch)
+    text = write_reference_source(net, tmp_path)
+    compiled = stub_judge(net, monkeypatch)
+    agent = net.authenticate(net.register_agent("alice"))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    out = net.verify_retrieval_candidates(agent, proj, fn)
+    assert compiled == [text]
+    assert [(r["route"], r["matched"], r["score"]) for r in out] == [("function_id", False, 40)]
+    assert out[0]["candidate"].is_match is False
+    attempt = net.store.one("SELECT id, via, source FROM attempts WHERE function_id=1")
+    assert attempt["via"] == "retrieval:function_id" and attempt["source"] == text
+    # the snapshot was captured before the compile, and the claim was held only while compiling
+    assert net.store.one("SELECT COUNT(*) AS n FROM attempt_snapshots WHERE attempt_id=?", attempt["id"])["n"] == 1
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
+    assert net.store.one("SELECT status FROM functions WHERE id=1")["status"] == "open"
+
+
+def test_verify_retrieval_candidates_skips_candidates_without_accessible_source(net, monkeypatch, tmp_path):
+    enable_retrieval(net, {"function_id_retrieval": True})
+    seed_indexes(net, monkeypatch)  # the registry's source file is never written
+    compiled = stub_judge(net, monkeypatch)
+    agent = net.authenticate(net.register_agent("alice"))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    fn = net.store.one("SELECT * FROM functions WHERE id=1")
+    assert net.retrieval_candidates(fn, "fixture")  # there is a candidate, but no C to compile
+    assert net.verify_retrieval_candidates(agent, proj, fn) == []
+    assert compiled == []
+
+
+def test_autopilot_retrieval_step_runs_only_when_a_route_is_enabled(net, monkeypatch):
+    agent = net.authenticate(net.register_agent("alice"))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+    calls: list = []
+    monkeypatch.setattr(net, "verify_retrieval_candidates",
+                        lambda agent, proj, fn, limit=2: (calls.append(fn["name"]) or [{"matched": False}]))
+    assert net._autopilot_retrieval(agent, proj, 1) is False
+    assert calls == []  # off by default: never consulted
+    enable_retrieval(net, {"bsim_retrieval": True})
+    assert net._autopilot_retrieval(agent, proj, 1) is False  # consulted, nothing matched
+    assert calls == ["f1"]
+
+
+# ----------------------------------------------------------------------------- BSim cost (P10.3 step 7)
+
+def test_bsim_records_build_and_query_timings(monkeypatch):
+    ticks = itertools.count()
+    monkeypatch.setattr(bsim_module, "time", SimpleNamespace(monotonic=lambda: next(ticks) * 0.5))
+    registry = make_registry()
+    index = BsimIndex(registry)
+    index.add(bsim_sig("a", LINES_A, calls=1), sidecar("good", "liba-1"))
+    assert index.build_seconds == 0.5
+    index.query(bsim_sig("t", LINES_A, calls=1))
+    stats = index.stats()
+    assert stats["queries"] == 1 and stats["query_seconds_total"] == 0.5
+    assert stats["query_seconds_mean"] == 0.5 and stats["build_seconds"] == 0.5 and stats["signatures"] == 1
+
+
+def test_bsim_stages_appear_in_telemetry():
+    index = BsimIndex(make_registry())
+    telemetry.enable()
+    try:
+        telemetry.clear()
+        index.add(bsim_sig("a", LINES_A, calls=1), sidecar("good", "liba-1"))
+        index.query(bsim_sig("t", LINES_A, calls=1))
+        stages = telemetry.snapshot()["stage_ms"]
+    finally:
+        telemetry.enable(False)
+    assert stages["retrieval.bsim.build"]["n"] == 1 and stages["retrieval.bsim.query"]["n"] == 1
 
 
 # ----------------------------------------------------------------------------- persistence

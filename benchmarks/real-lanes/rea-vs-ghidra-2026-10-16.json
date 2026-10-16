@@ -1,0 +1,258 @@
+{
+  "artifact": "projects/demo-n64/target/game.o",
+  "artifact_note": "ELF32 big-endian MIPS, e_type=1 (ET_REL relocatable). Only ELF file under projects/, benchmarks/, tests/, src/ (scanned).",
+  "artifact_sha256": "18f86e05c9fc900412a6a1ca3facfd769fc0aa76bd0241bdf99e5f90a092e914",
+  "commands": {
+    "direct": "/usr/bin/time -l .venv/bin/python rea_vs_ghidra.py --route direct --out direct.json --cache cache-direct-<fresh epoch>   (PYTHONPATH=src)",
+    "rea": "/usr/bin/time -l .venv/bin/python rea_vs_ghidra.py --route rea --out rea.json --cache cache-rea   (PYTHONPATH=src)",
+    "runner": "bash scratchpad/run_bench.sh (sequential: rea route then direct route, each under /usr/bin/time -l)",
+    "script_location": "scratchpad/rea_vs_ghidra.py and scratchpad/run_bench.sh (kept outside the project; /tmp path avoided per session rules)"
+  },
+  "date": "2026-10-16",
+  "direct": {
+    "raw": {
+      "artifact": "/Users/shanemcgovern/dev/decomp.wtf-dev/projects/demo-n64/target/game.o",
+      "artifact_bytes": 3160,
+      "artifact_sha256": "18f86e05c9fc900412a6a1ca3facfd769fc0aa76bd0241bdf99e5f90a092e914",
+      "cache_dir": "/private/tmp/claude-501/-Users-shanemcgovern-dev-decomp-wtf-dev/beff58e7-8b69-498b-b988-9bd9e9a4b785/scratchpad/cache-direct-1792149692",
+      "engine": "ghidra-12.1.4",
+      "function": "clamp_s32",
+      "phases": {
+        "capabilities": {
+          "ok": true,
+          "result": {
+            "profile": {
+              "analysis_options": [],
+              "auto": false,
+              "bits": 32,
+              "boundaries": [],
+              "compiler_spec": null,
+              "detected": {
+                "class": 32,
+                "encoding": "big",
+                "format": "elf",
+                "type": "unknown"
+              },
+              "endian": "big",
+              "kind": "object",
+              "language_id": "MIPS:BE:32:default",
+              "loader": "Elf",
+              "memory_map": [],
+              "metadata": [],
+              "mode": "",
+              "processor": "mips",
+              "symbols": []
+            },
+            "provider": "direct-ghidra",
+            "reasons": [
+              "no memory map provided: file-offset/vaddr coordinates will be unknown"
+            ],
+            "supported": true
+          },
+          "wall_seconds": 0.0
+        },
+        "close_session": {
+          "ok": true,
+          "wall_seconds": 0.0
+        },
+        "first_query_cold": {
+          "ok": true,
+          "result": {
+            "denied_reason": "",
+            "diagnostics": [],
+            "functions": {
+              "game::clamp_s32": {
+                "classification": "normal",
+                "correlation_group": "",
+                "coverage": {
+                  "blocks": "unknown",
+                  "calls": "unknown",
+                  "instructions": "unknown",
+                  "pcode": "unknown",
+                  "pseudocode": "ok",
+                  "references": "unknown",
+                  "types": "unknown"
+                },
+                "diagnostics": [],
+                "engine": "ghidra-12.1.4",
+                "entry": 65536,
+                "instruction_items": 0,
+                "provider": "direct-ghidra",
+                "pseudocode_len": 176,
+                "pseudocode_sha256": "b70af4d76206d51f3ef98a385d40bd83397c3a36dccbf10358c07a92aeab2251",
+                "pseudocode_status": "ok",
+                "pseudocode_text": "\nint clamp_s32(int param_1,int param_2,int param_3)\n\n{\n  if ((param_2 <= param_1) && (param_2 = param_3, param_1 <= param_3)) {\n    param_2 = param_1;\n  }\n  return param_2;\n}\n\n",
+                "snapshot": "current",
+                "status": "ok",
+                "view_keys": [
+                  "proposals",
+                  "pseudocode"
+                ]
+              }
+            },
+            "refs": [
+              "game::clamp_s32"
+            ],
+            "reused": false,
+            "reused_flag": false,
+            "status": "ok",
+            "wall_seconds": 5.245158666977659,
+            "worker_seconds": 5.245158666977659
+          },
+          "wall_seconds": 5.246
+        },
+        "open_session": {
+          "ok": true,
+          "wall_seconds": 0.04
+        },
+        "warm_query": {
+          "ok": true,
+          "result": {
+            "denied_reason": "",
+            "diagnostics": [],
+            "functions": {
+              "game::clamp_s32": {
+                "classification": "normal",
+                "correlation_group": "",
+                "coverage": {
+                  "blocks": "unknown",
+                  "calls": "unknown",
+                  "instructions": "unknown",
+                  "pcode": "unknown",
+                  "pseudocode": "ok",
+                  "references": "unknown",
+                  "types": "unknown"
+                },
+                "diagnostics": [],
+                "engine": "ghidra-12.1.4",
+                "entry": 65536,
+                "instruction_items": 0,
+                "provider": "direct-ghidra",
+                "pseudocode_len": 176,
+                "pseudocode_sha256": "b70af4d76206d51f3ef98a385d40bd83397c3a36dccbf10358c07a92aeab2251",
+                "pseudocode_status": "ok",
+                "pseudocode_text": "\nint clamp_s32(int param_1,int param_2,int param_3)\n\n{\n  if ((param_2 <= param_1) && (param_2 = param_3, param_1 <= param_3)) {\n    param_2 = param_1;\n  }\n  return param_2;\n}\n\n",
+                "snapshot": "current",
+                "status": "ok",
+                "view_keys": [
+                  "proposals",
+                  "pseudocode"
+                ]
+              }
+            },
+            "refs": [
+              "game::clamp_s32"
+            ],
+            "reused": true,
+            "reused_flag": true,
+            "status": "ok",
+            "wall_seconds": 0.0003329168539494276,
+            "worker_seconds": 0.0003329168539494276
+          },
+          "wall_seconds": 0.0
+        }
+      },
+      "pid": 24202,
+      "profile": {
+        "bits": 32,
+        "endian": "big",
+        "kind": "object",
+        "processor": "mips"
+      },
+      "route": "direct",
+      "sampled_tree_peak_procs": 6,
+      "sampled_tree_peak_rss_kb": 518720,
+      "sampler_samples": 20,
+      "total_wall_seconds": 5.29
+    },
+    "time_l": "        5.44 real         7.54 user         1.09 sys\n           485851136  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n              105100  page reclaims\n                1078  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                  21  messages sent\n                  42  messages received\n                  33  signals received\n                4939  voluntary context switches\n               57596  involuntary context switches\n          2100027184  instructions retired\n           897076027  cycles elapsed\n            37077568  peak memory footprint\n"
+  },
+  "engine_identity": {
+    "direct_engine": "ghidra-12.1.4",
+    "rea_engine": "ghidra-12.1.4"
+  },
+  "exit_codes": {
+    "direct": 0,
+    "rea": 0
+  },
+  "function": "clamp_s32",
+  "item": "P9.8 REA vs direct Ghidra measurement (run 2026-10-16, macOS arm64)",
+  "parity": "NOT MEASURED: REA produced no evidence for clamp_s32 (admission denied at capability gate and at open_binary), so no REA-vs-direct result comparison exists. Single route only for pseudocode.",
+  "rea": {
+    "raw": {
+      "artifact": "/Users/shanemcgovern/dev/decomp.wtf-dev/projects/demo-n64/target/game.o",
+      "artifact_bytes": 3160,
+      "artifact_sha256": "18f86e05c9fc900412a6a1ca3facfd769fc0aa76bd0241bdf99e5f90a092e914",
+      "cache_dir": "/private/tmp/claude-501/-Users-shanemcgovern-dev-decomp-wtf-dev/beff58e7-8b69-498b-b988-9bd9e9a4b785/scratchpad/cache-rea",
+      "command": [
+        "/Users/shanemcgovern/.local/bin/node",
+        "/Users/shanemcgovern/.local/lib/node_modules/rea-agents/scripts/rea.mjs",
+        "mcp"
+      ],
+      "cwd": "/Users/shanemcgovern/.local/lib/node_modules/rea-agents",
+      "engine": "ghidra-12.1.4",
+      "function": "clamp_s32",
+      "phases": {
+        "capabilities": {
+          "ok": true,
+          "result": {
+            "profile": null,
+            "provider": "rea-ghidra",
+            "reasons": [
+              "the pinned 6.4.0 target model has no verified relocatable-object (ET_REL) lane; use the direct Ghidra adapter"
+            ],
+            "supported": false
+          },
+          "wall_seconds": 0.0
+        },
+        "open_session_import_cold": {
+          "error": "REA open_binary failed: {\"category\": \"unsupported_provider\", \"code\": \"capability_unavailable\", \"details\": {\"candidate_ids\": [\"ghidra\", \"hopper\", \"ida\"], \"operation\": \"open_binary\", \"rejections\": [{\"code\": \"architecture_unsupported\", \"diagnostics\": {\"architecture\": \"mips\", \"available_architectures\": [\"mips\"], \"executable_role\": null, \"host_platform\": \"darwin\", \"managed\": null, \"target_format\": \"elf\", \"target_kind\": \"executable\"}, \"provider_id\": \"ghidra\", \"reason\": \"This Ghidra MIPS lane supports ET_EXEC only; relocatable objects, shared images and PSP PRX need separate load verification.\"}, {\"code\": \"executable_missing\", \"diagnostics\": {\"launcher_path\": \"/Applications/Hopper Disassembler.app/Contents/MacOS/hopper\", \"platform\": \"darwin\"}, \"provider_id\": \"hopper\", \"reason\": \"Hopper launcher is missing or not executable: /Applications/Hopper Disassembler.app/Contents/MacOS/hopper\"}, {\"code\": \"architecture_unsupported\", \"diagnostics\": {\"architecture\": \"mips\", \"target_format\": \"elf\", \"target_kind\": \"executable\"}, \"provider_id\": \"hopper\", \"reason\": \"REA's Hopper adapter does not admit MIPS targets.\"}, {\"code\": \"not_configured\", \"diagnostics\": {\"configured\": false, \"live_connection_probed\": false}, \"provider_id\": \"ida\", \"reason\": \"Set REA_IDA_MCP_CONFIG to an upstream IDA MCP JSON registration; see docs/ida-provider.md.\"}, {\"code\": \"architecture_unsupported\", \"diagnostics\": {\"target_format\": \"elf\", \"target_kind\": \"executable\"}, \"provider_id\": \"ida\", \"reason\": \"REA's IDA adapter has no verified MIPS lane. Select a supported Ghidra profile instead.\"}], \"requested_provider_id\": \"ghidra\", \"selection_reason\": \"target_unsupported\"}, \"message\": \"The selected analysis provider does not support this target. Choose another provider or open a supported extracted binary.\", \"remediation\": {\"action\": \"The selected analysis provider does not support this target. Choose another provider or open a supported extracted binary.\"}, \"retryable\": false}",
+          "error_type": "ReaProviderFailure",
+          "ok": false,
+          "traceback_tail": " \"reason\": \"This Ghidra MIPS lane supports ET_EXEC only; relocatable objects, shared images and PSP PRX need separate load verification.\"}, {\"code\": \"executable_missing\", \"diagnostics\": {\"launcher_path\": \"/Applications/Hopper Disassembler.app/Contents/MacOS/hopper\", \"platform\": \"darwin\"}, \"provider_id\": \"hopper\", \"reason\": \"Hopper launcher is missing or not executable: /Applications/Hopper Disassembler.app/Contents/MacOS/hopper\"}, {\"code\": \"architecture_unsupported\", \"diagnostics\": {\"architecture\": \"mips\", \"target_format\": \"elf\", \"target_kind\": \"executable\"}, \"provider_id\": \"hopper\", \"reason\": \"REA's Hopper adapter does not admit MIPS targets.\"}, {\"code\": \"not_configured\", \"diagnostics\": {\"configured\": false, \"live_connection_probed\": false}, \"provider_id\": \"ida\", \"reason\": \"Set REA_IDA_MCP_CONFIG to an upstream IDA MCP JSON registration; see docs/ida-provider.md.\"}, {\"code\": \"architecture_unsupported\", \"diagnostics\": {\"target_format\": \"elf\", \"target_kind\": \"executable\"}, \"provider_id\": \"ida\", \"reason\": \"REA's IDA adapter has no verified MIPS lane. Select a supported Ghidra profile instead.\"}], \"requested_provider_id\": \"ghidra\", \"selection_reason\": \"target_unsupported\"}, \"message\": \"The selected analysis provider does not support this target. Choose another provider or open a supported extracted binary.\", \"remediation\": {\"action\": \"The selected analysis provider does not support this target. Choose another provider or open a supported extracted binary.\"}, \"retryable\": false}\n",
+          "wall_seconds": 1.27
+        }
+      },
+      "pid": 24161,
+      "profile": {
+        "bits": 32,
+        "endian": "big",
+        "kind": "object",
+        "processor": "mips"
+      },
+      "rea_discovery": [
+        "/Users/shanemcgovern/.local/bin/node",
+        "/Users/shanemcgovern/.local/lib/node_modules/rea-agents",
+        "scripts/rea.mjs"
+      ],
+      "route": "rea",
+      "sampled_tree_peak_procs": 3,
+      "sampled_tree_peak_rss_kb": 342240,
+      "sampler_samples": 5,
+      "total_wall_seconds": 1.276
+    },
+    "time_l": "        1.47 real         1.35 user         0.33 sys\n           314540032  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               35230  page reclaims\n                1686  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                 115  messages sent\n                  86  messages received\n                   1  signals received\n                2500  voluntary context switches\n                9495  involuntary context switches\n          2072361035  instructions retired\n           822502702  cycles elapsed\n            52363864  peak memory footprint\n"
+  },
+  "results_summary": {
+    "direct": {
+      "first_query_cold_wall_s": 5.246,
+      "open_session_wall_s": 0.04,
+      "pseudocode_len": 176,
+      "pseudocode_status": "ok",
+      "warm_query_wall_s": 0.0,
+      "warm_reused": true
+    },
+    "rea": {
+      "capabilities_supported": false,
+      "first_query_ran": false,
+      "open_session_ok": false,
+      "reason": "REA capability gate rejects ET_REL object: no verified relocatable-object lane (6.4.0)",
+      "warm_query_ran": false
+    }
+  },
+  "untested": [
+    "REA on any admissible ELF32 ET_EXEC MIPS32r2 o32 artifact: none present in repo; not built (no cross toolchain run).",
+    "Warm-query timing for REA: not run (no session).",
+    "Memory: /usr/bin/time -l max RSS for the python process and the sampled descendant-tree peak are both reported; the sampled tree peak is the better number for REA (node sidecar is a descendant)."
+  ]
+}
