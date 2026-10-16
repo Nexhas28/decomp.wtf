@@ -269,7 +269,7 @@ def _opencode_log_level(exe: str) -> str:
     """OpenCode before 2 takes only "ERROR" and OpenCode 2 only "error": the wrong one prints its help and stops."""
     if exe not in _log_levels:
         try:
-            out = subprocess.run(argv([exe, "--version"]), capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                  timeout=15).stdout
             m = re.search(r"(\d+)\.\d+", out)
             _log_levels[exe] = "ERROR" if m and int(m.group(1)) < 2 else "error"
