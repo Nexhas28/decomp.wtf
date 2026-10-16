@@ -2269,6 +2269,7 @@ let fnReq = 0, fnFirst = false;
 /* Team Call: Opus, Sonnet and Haiku on the open function together until it matches. Nuke: waves of 10 Haiku agents
    on it, each starting from the best attempt so far. The server's manager runs both; one at a time per function. */
 const CALL_TIP = "Opus, Sonnet and Haiku work on this function together until it matches (stops at $3 or 30 minutes)";
+const INVESTIGATE_TIP = "Opus 5.5 works on this function until it matches, starting from the researchers' notes (on your Claude plan; one session, at most an hour)";
 const NUKE_TIP = "Waves of 10 Haiku agents on this function until it matches; each starts from the best attempt so far (on your Claude plan; stops after 8 waves or 60 minutes)";
 let callTimer = null, callWas = null;
 function callButton(b, on, text, tip) {
@@ -2285,11 +2286,21 @@ async function refreshTeam() {
   let t;
   try { t = await api(`/api/team?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
   if (fn !== S.fn) return;
-  const kind = t.kind === "nuke" ? "nuke" : "call", name = kind === "nuke" ? "Nuke" : "Team Call";
+  const kind = t.kind === "nuke" || t.kind === "investigate" ? t.kind : "call";
+  const name = kind === "nuke" ? "Nuke" : kind === "investigate" ? "The investigation" : "Team Call";
+  const inv = $("investigateCall");
   callButton(call, false, "Team Call", CALL_TIP);
   callButton(nuke, false, "Nuke", NUKE_TIP);
   call.hidden = nuke.hidden = false;
-  if (t.active) {
+  S.investigating = t.active && kind === "investigate";
+  if (!S.investigating && inv.classList.contains("on")) { callButton(inv, false, "Investigate", INVESTIGATE_TIP); refreshHelp(); }
+  if (t.active && kind === "investigate") {
+    const best = t.best != null && S.fnDetail ? ` · best ${pctText(pctOf(t.best, S.fnDetail.insns))}` : "";
+    callButton(inv, true, `Investigating${best}`, "Click to stop the investigation");
+    inv.disabled = false;
+    call.hidden = nuke.hidden = true;
+    if (!callTimer) callTimer = setInterval(refreshTeam, 3000);
+  } else if (t.active) {
     const best = t.best != null && S.fnDetail ? ` · best ${pctText(pctOf(t.best, S.fnDetail.insns))}` : "";
     const cost = t.billing === "plan" ? "" : ` · $${t.usd.toFixed(2)}`;
     if (kind === "nuke") {
@@ -2312,11 +2323,12 @@ async function refreshTeam() {
   callWas = t.active ? fn : null;
 }
 async function toggleCall(kind) {
-  const b = $(kind === "nuke" ? "nukeCall" : "teamCall"), on = !b.classList.contains("on");
+  const b = $(kind === "nuke" ? "nukeCall" : kind === "investigate" ? "investigateCall" : "teamCall"), on = !b.classList.contains("on");
   b.disabled = true;
   try {
     await api("/api/team", { method: "POST", body: { slug: S.slug, function: S.fn, on, kind } });
-    if (on) toast(kind === "nuke" ? "Nuke started: 10 Haiku agents are on it, in waves (on your Claude plan)."
+    if (on && kind === "investigate") toast("The investigator (Opus 5.5) is on it, starting from the researchers' notes (on your Claude plan).");
+    else if (on) toast(kind === "nuke" ? "Nuke started: 10 Haiku agents are on it, in waves (on your Claude plan)."
       : "Team Call started: Opus, Sonnet and Haiku are on it (on your API credits).");
   } catch (e) { toast(esc(e.message), "err"); }
   b.disabled = false;
@@ -2324,6 +2336,7 @@ async function toggleCall(kind) {
 }
 $("teamCall").onclick = () => toggleCall("call");
 $("nukeCall").onclick = () => toggleCall("nuke");
+$("investigateCall").onclick = () => toggleCall("investigate");
 
 /* Research and Auto-fix: a researcher writes this function a note; the auto-fixer repairs its cut, sets it aside
    or hands it to the permuter. Each is one session; the buttons say while it works. */
@@ -2337,7 +2350,12 @@ async function refreshHelp() {
   try { h = await api(`/api/function-help?slug=${S.slug}&function=${encodeURIComponent(fn)}`); } catch { return; }
   if (fn !== S.fn) return;
   const matched = S.fnDetail && S.fnDetail.status === "matched";
-  rb.hidden = fb.hidden = !!matched;
+  const inv = $("investigateCall");
+  rb.hidden = fb.hidden = inv.hidden = !!matched;
+  if (!S.investigating && !inv.classList.contains("on")) {
+    callButton(inv, false, "Investigate", h.has_research ? INVESTIGATE_TIP : "Run Research on this function first: the investigator starts from the researchers' notes");
+    inv.disabled = !h.has_research;
+  }
   callButton(rb, h.research, h.research ? "Researching…" : "Research", h.research ? "A researcher is writing this function a note" : RESEARCH_TIP);
   callButton(fb, !!h.fix, h.fix === "fixing" ? "Auto-fixing…" : h.fix === "waiting" ? "Auto-fix: next" : "Auto-fix",
     h.fix_unavailable || (h.fix === "fixing" ? "The auto-fixer is on this function" : h.fix === "waiting" ? "The auto-fixer takes it after its current list" : FIX_TIP));

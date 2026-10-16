@@ -125,6 +125,29 @@ plausible original C (no inline asm). Be brief: work, don't narrate.
 # them try ten kinds of change; every session starts from the best attempt so far (anyone's), so whoever improves the
 # score becomes everyone's next starting point. One session of each helper is one wave.
 NUKE_SIZE = 10
+# The function page's Investigate button: one Opus helper on one function, starting from the researchers' notes.
+INVESTIGATE_MODEL, INVESTIGATE_EFFORT, INVESTIGATE_MINUTES = "claude-opus-5-5", "medium", 60
+INVESTIGATE_PROMPT = """\
+You are the investigator on {title}: one strong agent on ONE function, {function}, until it matches. Researchers
+already studied it; their notes below are your starting point and plan. Follow them first, and say in your own notes
+where they turned out wrong.
+
+The researchers' notes on {function}:
+{research}
+
+The goal: C that compiles with the game's compiler to exactly the original machine code (score 0).
+1. get_function("{function}") shows the assembly and what was tried; find_similar("{function}") the matched
+   look-alikes the notes name.
+2. compile_and_diff(function="{function}", source=<the complete function>) judges your C. The function is already
+   yours: never call claim_function or release_function, and work on no other function.
+3. After a compile that teaches something, add_note(function="{function}", text="[investigator] <what you changed>
+   -> score N; <what the diff shows>; <which research advice held or failed>").
+4. Keep going until the score is 0. When an approach stalls, go back to the notes for the next idea, or rethink the
+   structure; stop only when you have no idea left, with a final note on where it stands and what to try next.
+
+Diff markers: '<' '>' missing/extra instructions, 'i' operands, 'o' order, 'r' registers, 's' stack. Write plausible
+original C (no inline asm). Be brief: work, don't narrate.
+"""
 NUKE_WAVES = 8
 NUKE_MINUTES = 60
 NUKE_MODEL = "claude-haiku-5-5"
@@ -1079,8 +1102,15 @@ class Manager:
         if billing == "api" and not self.anthropic_key():
             raise ValueError("add your Anthropic API key first (Settings)")
         name = self.net.resolve_function(None, slug, function) if hasattr(self.net, "resolve_function") else function
+        research = ""
+        if kind == "investigate":  # the researchers' notes are its plan: without one there is nothing to start from
+            research = self.net.research_notes(slug, name) if hasattr(self.net, "research_notes") else ""
+            if not research:
+                raise ValueError(f"{name} has no research note yet: run Research on it first")
         if kind == "nuke":
             roster = [(f"nuke{i}", NUKE_MODEL, f"Function Nuke · Haiku #{i}", None) for i in range(1, NUKE_SIZE + 1)]
+        elif kind == "investigate":
+            roster = [("investigator", INVESTIGATE_MODEL, "Investigator · Opus 5.5", None)]
         else:
             roster = [(short, model, f"Team Call · {label}", None) for short, model, label, _ in TEAM]
         sessions, agent_ids = [], []
@@ -1092,7 +1122,10 @@ class Manager:
                 sid = f"team-{short}-{n}"
                 options = {"model": model, "effort": "medium", "per_session": 1,
                            "team": {"function": name, "role": short} | ({"nuke": True, "waves": NUKE_WAVES} if kind == "nuke" else {})
+                           | ({"investigate": True, "waves": 1, "research": research} if kind == "investigate" else {})
                            } | ({"billing": "api"} if billing == "api" else {})
+                if kind == "investigate":
+                    options["effort"] = INVESTIGATE_EFFORT
                 if kind == "nuke":
                     options.pop("effort")  # Haiku's default effort: many quick tries
                 s = Session(sid, "claude", label, slug, sid, options)
@@ -1104,8 +1137,8 @@ class Manager:
         team = {"slug": slug, "function": name, "members": [s.id for s in sessions], "started_at": time.time(),
                 "state": "working", "reason": "", "kind": kind, "billing": billing,
                 "usd_cap": TEAM_USD_CAP if billing == "api" else 0.0,
-                "minutes": NUKE_MINUTES if kind == "nuke" else TEAM_MINUTES,
-                "waves": NUKE_WAVES if kind == "nuke" else 0}
+                "minutes": NUKE_MINUTES if kind == "nuke" else INVESTIGATE_MINUTES if kind == "investigate" else TEAM_MINUTES,
+                "waves": NUKE_WAVES if kind == "nuke" else 1 if kind == "investigate" else 0}
         self.teams[key] = team
         with self._lock:
             for s in sessions:
@@ -1458,7 +1491,9 @@ class Manager:
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
-        if (team := s.options.get("team")) and team.get("nuke"):
+        if (team := s.options.get("team")) and team.get("investigate"):
+            return INVESTIGATE_PROMPT.format(title=ov["title"], function=team["function"], research=team["research"])
+        if team and team.get("nuke"):
             n = int(team["role"].removeprefix("nuke"))
             return NUKE_PROMPT.format(n=n, size=NUKE_SIZE, title=ov["title"], function=team["function"],
                                       angle=NUKE_ANGLES[(n - 1) % len(NUKE_ANGLES)])

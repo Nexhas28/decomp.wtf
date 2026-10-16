@@ -397,3 +397,23 @@ def test_research_one_function_from_its_page(net):
     assert net.live("game")["researching"] == ["func_80001038"]  # the map shows it
     net.add_research_note(agent, "game", "func_80001038", "try a u8 loop counter")
     assert agent.id not in net.research_pin  # done: the session stops after its one function
+
+
+def test_the_investigator_needs_research_and_starts_from_it(net, monkeypatch):
+    from decompnet.app import agents
+
+    monkeypatch.setattr(agents.Manager, "_run", lambda self, s: None)
+    monkeypatch.setattr(agents.Manager, "_watch_team", lambda self, key: None)
+    m = agents.Manager(net, net.workspace / "agent-home", "http://127.0.0.1:1/mcp")
+    with pytest.raises(ValueError, match="run Research"):
+        m.start_team("game", "func_80001038", billing="plan", kind="investigate")
+    agent, _ = net.local_agent("claude-9")
+    net.role[agent.id] = "researcher"
+    net.add_research_note(agent, "game", "func_80001038", "Copy matched twin func_80001000; u8 counter.")
+    st = m.start_team("game", "func_80001038", billing="plan", kind="investigate")
+    assert st["active"] and st["kind"] == "investigate" and len(st["members"]) == 1
+    s = m.sessions[st["members"][0]["id"]]
+    assert (s.options["model"], s.options["effort"]) == ("claude-opus-5-5", "medium") and "billing" not in s.options
+    monkeypatch.setattr(net, "overview", lambda slug: {"title": "GAME"})
+    prompt = m._prompt(s)
+    assert "Copy matched twin func_80001000; u8 counter." in prompt and "[research]" not in prompt
