@@ -143,6 +143,9 @@ final class Backend: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.searchPath
         env["PYTHONUNBUFFERED"] = "1"
+        // If this app dies without quitting decomp.wtf properly (a crash, a force quit), decomp.wtf notices and
+        // stops its helpers and itself, so no agent keeps working unseen.
+        env["DECOMP_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         // The native Apple Silicon compilers (macos/toolchains/prebuilt) ship inside the app, so an installed `decomp`
         // command finds them too, not only a checkout. A checkout's own copy wins when the user runs one.
         if env["DECOMPNET_PREBUILT"] == nil, checkout == nil,

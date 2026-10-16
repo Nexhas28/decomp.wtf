@@ -165,12 +165,33 @@ def run(args) -> int:
           + ("\nupdated and restarted" if restarted else "\nstop with Ctrl-C"), flush=True)
     if not args.no_browser and not restarted:
         _open_when_ready(url, port)
+    # Started by the Mac app: if the app goes away (a crash, a force quit) without asking us to quit, stop the
+    # helpers and go too, so nothing keeps working, and spending, unseen.
+    if (parent := os.environ.get("DECOMP_PARENT_PID", "")).isdigit():
+        threading.Thread(target=_follow_parent, args=(int(parent), manager), daemon=True, name="parent-watch").start()
     try:
         uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
     finally:
         manager.stop()
         manager.on_stop()
     return 0
+
+
+def _follow_parent(pid: int, manager) -> None:
+    """Ends this server, helpers first, once the process that started it is gone."""
+    while True:
+        time.sleep(2)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            continue  # alive, just not ours to signal
+    try:
+        manager.stop()
+        manager.on_stop()
+    finally:
+        os._exit(0)
 
 
 def url_cmd(args) -> int:

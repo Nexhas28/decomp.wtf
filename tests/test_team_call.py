@@ -48,7 +48,7 @@ def test_three_models_share_one_function_and_others_stay_out(team_app):
     s = manager.sessions[st["members"][2]["id"]]
     assert s.options["billing"] == "api" and s.options["team"] == {"function": fn, "role": "opus"}
     assert "never call claim_function" in manager._prompt(s) and fn in manager._prompt(s)
-    assert manager.running() == []  # a Team Call isn't resumed after a restart
+    assert all(r["agent"].startswith(("team-", "nuke")) for r in manager.running())  # remembered to clean up after a crash, never resumed
     members = [net.local_agent(m["id"])[0] for m in st["members"]]
     for m in members:  # every member may compile it (a compile error still passed the claim check)
         assert "COMPILE ERROR" in net.attempt(m, fn, "this is not C", slug)["text"]
@@ -140,7 +140,7 @@ def test_the_nuke_button_runs_ten_haiku_in_waves_on_several_functions(team_app):
         # every member may compile its own function, both functions at once
         m = net.local_agent(st["members"][0]["id"])[0]
         assert "COMPILE ERROR" in net.attempt(m, f, "this is not C", slug)["text"]
-    assert manager.running() == []
+    assert all(r["agent"].startswith(("team-", "nuke")) for r in manager.running())  # remembered to clean up after a crash, never resumed
     # when every helper has done its waves, the nuke ends and lets the function go
     for m in sts[0]["members"]:
         s = manager.sessions[m["id"]]
