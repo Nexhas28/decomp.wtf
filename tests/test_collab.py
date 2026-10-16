@@ -606,3 +606,90 @@ def test_an_attempt_on_a_function_the_host_lacks_says_so(judged):
     answer["host"] = NetworkError("no function 'shop_open' in 'test'")
     res = guest.attempt(agent, "shop_open", "void shop_open(void) {} /* MATCHES */", "test")
     assert not res["matched"] and "has no function shop_open" in res["text"] and _fn(guest)["status"] == "open"
+
+
+# -- the host's merges reach members (a false split repaired on the host is repaired here too)
+
+_WORDS = [(0x27BDFFE8, "addiu", "$sp, $sp, -0x18"), (0xAFBF0010, "sw", "$ra, 0x10($sp)"),
+          (0x8FBF0010, "lw", "$ra, 0x10($sp)"), (0x03E00008, "jr", "$ra"), (0x27BD0018, "addiu", "$sp, $sp, 0x18"),
+          (0x00000000, "nop", "")]
+
+
+def _asm_fn(net, name: str, vram: int, n: int, first: int = 0, **cols) -> int:
+    lines = [f"glabel {name}"] + [f"/* {0x43000 + vram - 0x80053000 + 4 * i:X} {vram + 4 * i:08X} {w:08X} */  {m:<10} {o}".rstrip()
+                                  for i, (w, m, o) in enumerate(_WORDS[first:first + n])] + [f"endlabel {name}"]
+    with net.store.tx() as db:
+        fid = db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram,rom_offset,asm,target,relocs) "
+                         "VALUES(1,?,?,?,'main',?,?,?,?,'[]')",
+                         (name, 4 * n, n, vram, 0x43000 + vram - 0x80053000, "\n".join(lines), b"\0" * 4 * n)).lastrowid
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(1,?,?,?,'func')", (name, vram, 4 * n))
+        for k, v in cols.items():
+            db.execute(f"UPDATE functions SET {k}=? WHERE id=?", (v, fid))
+    return fid
+
+
+def _host_fn(host, name: str, vram: int, size: int) -> None:
+    with host.store.tx() as db:
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,unit,vram) VALUES(1,?,?,?,'main',?)",
+                   (name, size, size // 4, vram))
+
+
+def test_a_false_split_the_host_joined_is_joined_for_members(pair):
+    host, guest, link, client, code = pair
+    head = _asm_fn(guest, "func_80053660", 0x80053660, 1)  # the 4-byte prologue cut off its function
+    tail = _asm_fn(guest, "func_80053664", 0x80053664, 5, first=1, best_source="void f(void) {}", best_score=12)
+    with guest.store.tx() as db:
+        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(1,?,NULL,'uses a jump table',0)",
+                   (tail,))
+    _host_fn(host, "func_80053660", 0x80053660, 24)
+    link.sync()
+    fn = _fn(guest, "func_80053660")
+    assert fn["id"] == head and fn["size"] == 24 and fn["n_insns"] == 6 and fn["status"] == "open"
+    assert [ln.split()[5] for ln in fn["asm"].splitlines() if ln.startswith("/*")] == ["addiu", "sw", "lw", "jr", "addiu", "nop"]
+    assert guest.store.one("SELECT 1 FROM functions WHERE name='func_80053664'") is None
+    assert guest.store.one("SELECT 1 FROM symbols WHERE name='func_80053664'") is None
+    assert guest.store.one("SELECT size FROM symbols WHERE name='func_80053660'")["size"] == 24
+    notes = [n["text"] for n in guest.store.all("SELECT text FROM notes WHERE function_id=?", head)]
+    assert "uses a jump table" in notes  # what people learned about the piece stays
+    assert any("void f(void) {}" in n and "func_80053664" in n for n in notes)  # and so does its best attempt
+    link.sync()  # nothing new: nothing changes
+    assert _fn(guest, "func_80053660")["size"] == 24
+
+
+def test_a_matched_piece_is_never_joined(pair):
+    host, guest, link, client, code = pair
+    _asm_fn(guest, "func_80053660", 0x80053660, 1)
+    tail = _asm_fn(guest, "func_80053664", 0x80053664, 5, first=1)
+    _host_fn(host, "func_80053660", 0x80053660, 4)
+    _host_fn(host, "func_80053664", 0x80053664, 20)
+    link.sync()
+    with guest.store.tx() as db:
+        db.execute("UPDATE functions SET status='matched', matched_source='void f(void) {}' WHERE id=?", (tail,))
+    with host.store.tx() as db:  # the host joins them later
+        db.execute("DELETE FROM functions WHERE name='func_80053664'")
+        db.execute("UPDATE functions SET size=24 WHERE name='func_80053660'")
+        host._event(db, 1, None, "merge", "func_80053660 + func_80053664 joined")
+    link.sync()
+    assert _fn(guest, "func_80053660")["size"] == 4 and _fn(guest, "func_80053664")["status"] == "matched"
+
+
+def test_a_piece_matched_here_the_room_never_confirmed_is_reopened_and_joined(pair):
+    host, guest, link, client, code = pair
+    head = _asm_fn(guest, "func_80053660", 0x80053660, 1)
+    _asm_fn(guest, "func_80053664", 0x80053664, 5, first=1, status="matched", matched_source="void f(void) {}")
+    _host_fn(host, "func_80053660", 0x80053660, 24)
+    link.sync()
+    assert _fn(guest, "func_80053660")["size"] == 24 and guest.store.one("SELECT 1 FROM functions WHERE name='func_80053664'") is None
+    assert any("void f(void) {}" in n["text"] for n in guest.store.all("SELECT text FROM notes WHERE function_id=?", head))
+
+
+def test_a_cut_the_host_moved_is_moved_for_members(pair):
+    host, guest, link, client, code = pair
+    _asm_fn(guest, "func_80053660", 0x80053660, 1)
+    _asm_fn(guest, "func_80053664", 0x80053664, 5, first=1)
+    _host_fn(host, "func_80053660", 0x80053660, 12)  # the cut is two instructions later on the host
+    _host_fn(host, "func_8005366C", 0x8005366C, 12)
+    link.sync()
+    assert _fn(guest, "func_80053660")["size"] == 12
+    assert _fn(guest, "func_8005366C")["size"] == 12
+    assert guest.store.one("SELECT 1 FROM functions WHERE name='func_80053664'") is None

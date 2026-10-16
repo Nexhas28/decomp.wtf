@@ -22,6 +22,7 @@ import secrets
 import struct
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from .. import compiler_profiles as profiles
@@ -2255,9 +2256,10 @@ class RomNetwork(Network):
                                                   time.time(), ""))
 
     def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> None:
-        """Mirror the room's splits and names. The host already regression-tested them on the same ROM."""
+        """Mirror the room's merges, splits and names. The host already regression-tested them on the same ROM."""
         proj = self._project(slug)
         pid = proj["id"]
+        self._mirror_merges(proj, functions)
         local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         for f in sorted(functions, key=lambda f: f["vram"]):
             if f["vram"] in local:
@@ -2305,6 +2307,68 @@ class RomNetwork(Network):
                                 word.sub(sym["name"], r["best_source"]) if r["best_source"] else None, r["id"]))
             self._syms.pop(pid, None)
             syms = self.symbols(pid)
+
+    def _mirror_merges(self, proj, functions: list[dict]) -> None:
+        """Join what the host joined: a host function that runs over the start of local functions the host no
+        longer has (a false split it repaired) takes them in. A piece that runs past the host function's end is
+        taken in only when the host has a function starting there, which the split pass then cuts back out (a
+        moved cut). Matched functions and addresses several overlays share are left alone; notes and saved best
+        attempts of the joined pieces stay with the function they became part of."""
+        pid = proj["id"]
+        rows = self.store.all("SELECT * FROM functions WHERE project_id=?", pid)
+        if not functions:
+            return
+        shared = {v for v, n in Counter(r["vram"] for r in rows).items() if n > 1}
+        local = {r["vram"]: r for r in rows if r["vram"] not in shared}
+        host = {f["vram"] for f in functions}
+        for f in sorted(functions, key=lambda f: f["vram"]):
+            head, end = local.get(f["vram"]), f["vram"] + f["size"]
+            if head is None or head["vram"] + head["size"] >= end or head["status"] == "matched" or not head["asm"]:
+                continue
+            parts, at = [], head["vram"] + head["size"]
+            while at < end and (r := local.get(at)) is not None and at not in host:
+                if r["status"] == "matched" or not r["asm"] or (at + r["size"] > end and end not in host):
+                    parts = []
+                    break
+                parts.append(r)
+                at += r["size"]
+            if not parts or at < end:  # a gap, or pieces the host doesn't join the same way: left as they are
+                continue
+            rf = self._parse_asm(head["name"], head["asm"], head["unit"])
+            pieces = [self._parse_asm(p["name"], p["asm"], p["unit"]) for p in parts]
+            combined = split.RomFunction(head["name"], rf.vram, rf.rom, rf.segment,
+                                         rf.lines + [ln for p in pieces for ln in p.lines], rf.asm_path,
+                                         rf.labels.union(*(p.labels for p in pieces)))
+            syms = self.symbols(pid)
+            for p in parts:
+                gone = syms.by_name.pop(p["name"], None)
+                if gone is not None:
+                    syms.by_addr.pop(gone.address, None)
+            target = self._make_target(proj, combined, syms)
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                           "revision=revision+1 WHERE id=?",
+                           (combined.size, len(combined.lines), target.code, json.dumps(target.to_json()),
+                            self._asm_source(combined), head["id"]))
+                db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (combined.size, pid, head["name"]))
+                for p in parts:  # what people learned about a piece stays, on the function it was part of
+                    db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (head["id"], p["id"]))
+                    if p["best_source"]:
+                        db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                                   (pid, head["id"], None, f"Best attempt at {p['name']} (0x{p['vram']:08X}, score "
+                                    f"{p['best_score']}) before the host joined it into {head['name']}:\n{p['best_source']}",
+                                    time.time()))
+                    db.execute("DELETE FROM merge_proposals WHERE function_id=? OR continues_id=?", (p["id"], p["id"]))
+                    self._delete_function_rows(db, p["id"])
+                    db.execute("DELETE FROM functions WHERE id=?", (p["id"],))
+                    db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (pid, p["name"]))
+                self._event(db, pid, None, "merge", f"{' + '.join([head['name']] + [p['name'] for p in parts])} "
+                                                    f"joined, as on the host")
+            for p in parts:
+                local.pop(p["vram"], None)
+            local[head["vram"]] = self.store.one("SELECT * FROM functions WHERE id=?", head["id"])
+            for cache in (self._xrefs, self._ops, self._syms):
+                cache.pop(pid, None)
 
     # ------------------------------------------------------------------ export
 

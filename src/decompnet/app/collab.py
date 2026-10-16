@@ -246,7 +246,7 @@ class Room:
         out["best"] = [{"name": r["name"], "vram": r["vram"], "score": r["best_score"], "source": r["best_source"]} for r in best]
         last = net.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?", pid)
         out["a"] = max(a, last["m"] or 0)
-        if first or kinds & {"rename", "split"}:
+        if first or kinds & {"rename", "split", "merge", "boundary"}:
             out["symbols"] = [dict(r) for r in net.store.all(
                 "SELECT name, address, size, kind FROM symbols WHERE project_id=?", pid) if not AUTO_NAME.match(r["name"])]
             out["functions"] = [dict(r) for r in net.store.all(
@@ -609,7 +609,8 @@ class Link:
         if self.cursor["e"] == 0 and st.get("matched") is not None:
             # the first sync carries every match the host has: a match made here that it doesn't have was
             # never confirmed by the room's judge (an older copy accepted it locally)
-            net.reopen_unconfirmed(slug, st["matched"])
+            if net.reopen_unconfirmed(slug, st["matched"]) and st.get("functions"):
+                net.apply_remote_layout(slug, st["functions"], [])  # a reopened piece may be one the host joined
         for m in st.get("matched") or []:
             net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", m.get("name"))
         for b in st.get("best") or []:
