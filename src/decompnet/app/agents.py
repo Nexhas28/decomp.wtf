@@ -88,6 +88,14 @@ AGY_ALLOW = "mcp(decomp/*)"
 # drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
 PER_SESSION = 2
 
+# ------------------------------------------------------------------- model routing (plan P11.5)
+# Configurable model identities per task class. No model id is hardcoded here: every id comes from the
+# operator's routing config, and a configured `candidate` only replaces a class's `model` after it measured
+# more verified matches under the current prompt policy (escalation on measured benefit, never on preference).
+PROMPT_POLICY_VERSION = 1  # bump when the prompts change materially: old measurements stop counting
+DEFAULT_TASK_CLASS = "easy-edit"  # small, well-supported edits
+TASK_CLASSES = (DEFAULT_TASK_CLASS, "structural-investigation")  # larger reasoning/context work
+
 
 def kind_id(kind: str) -> str:
     return ALIASES.get(kind, kind)
@@ -517,6 +525,8 @@ class Session:
     tokens: int = 0
     signed_out: bool = False  # the agent CLI isn't signed in: trying again won't help
     throttled: bool = False  # the last run ended on the provider's limit of requests at once: not a failure
+    task_class: str = DEFAULT_TASK_CLASS  # routing task class this session works on (P11.5)
+    routed_model: str = ""  # the model chosen for the current run (logged, and measured)
 
     def push(self, kind: str, text: str) -> None:
         self.seq += 1
@@ -525,8 +535,100 @@ class Session:
     def snapshot(self, since: int = 0) -> dict:
         return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
-                "model": self.options.get("model") or "", "usd": round(self.usd, 4), "tokens": self.tokens,
+                "model": self.options.get("model") or "", "task_class": self.task_class,
+                "prompt_policy": PROMPT_POLICY_VERSION, "usd": round(self.usd, 4), "tokens": self.tokens,
                 "feed": [f for f in self.feed if f["seq"] > since]}
+
+
+def run_log(task_class: str, model: str) -> str:
+    """The per-run routing log line: what task class ran with what model, under which prompt
+    policy (P11.5: log model/version and prompt-policy version per run)."""
+    return f"task {task_class}; model {model or 'default'}; prompt-policy-v{PROMPT_POLICY_VERSION}"
+
+
+def should_escalate(class_cfg: dict, measurements: dict) -> bool:
+    """Whether a task class's configured `candidate` model has measured enough benefit to replace
+    its `model` (P11.5: escalation only on measured benefit, never on a hardcoded preference).
+
+    Requires, from `measurements` (per-model {"runs", "matches", "policy"}):
+      - both models measured under the CURRENT prompt policy, at least `min_runs` runs each
+        (defaults 3, configurable), and
+      - the candidate has at least `min_improvement` more verified matches (default 2).
+    Without data -- or with a candidate that measured worse -- the answer is always False.
+    """
+    candidate = str(class_cfg.get("candidate") or "")
+    model = str(class_cfg.get("model") or "")
+    if not candidate or candidate == model:
+        return False
+    m, c = measurements.get(model), measurements.get(candidate)
+    if not isinstance(m, dict) or not isinstance(c, dict):
+        return False
+    try:
+        min_runs = max(1, int(class_cfg.get("min_runs") or 3))
+        min_improvement = max(1, int(class_cfg.get("min_improvement") or 2))
+    except (TypeError, ValueError):
+        return False
+    if m.get("policy") != PROMPT_POLICY_VERSION or c.get("policy") != PROMPT_POLICY_VERSION:
+        return False
+    if int(m.get("runs") or 0) < min_runs or int(c.get("runs") or 0) < min_runs:
+        return False
+    return int(c.get("matches") or 0) - int(m.get("matches") or 0) >= min_improvement
+
+
+class Routing:
+    """Model routing per task class with measurement-gated escalation (plan P11.5).
+
+    The measurement hooks: `record` persists one run's outcome (its verified matches) per
+    (task_class, model); `model_for` applies the operator's config with `should_escalate`.
+    Measurements recorded under an older prompt-policy version restart at zero: comparisons
+    across prompt policies are not meaningful. The candidate is measured when the operator
+    runs it (explicit model option or a config flip); promotion is its measured reward."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def load(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def record(self, task_class: str, model: str, matches: int, runs: int = 1,
+               policy: int | None = None) -> None:
+        """Add one measurement: `matches` verified matches produced in `runs` session runs."""
+        policy = PROMPT_POLICY_VERSION if policy is None else policy
+        with self._lock:
+            data = self.load()
+            entry = data.setdefault(task_class, {}).setdefault(model, {})
+            if entry.get("policy") != policy:  # a new prompt policy: old counts aren't comparable
+                entry.update({"runs": 0, "matches": 0, "policy": policy})
+            entry["runs"] += int(runs)
+            entry["matches"] += int(matches)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def stats(self, task_class: str | None = None) -> dict:
+        data = self.load()
+        return data.get(task_class, {}) if task_class else data
+
+    def model_for(self, config: dict, task_class: str, explicit: str = "") -> str:
+        """The model to run for (task_class, explicit user choice). The explicit choice always
+        wins; otherwise the class's configured model; its configured candidate replaces it only
+        when it measured better (should_escalate). No config: the CLI's own default ("")."""
+        if explicit:
+            return explicit
+        class_cfg = config.get(task_class) or {}
+        if not isinstance(class_cfg, dict):
+            return ""
+        model = str(class_cfg.get("model") or "")
+        if not model:
+            return ""
+        if should_escalate(class_cfg, self.stats(task_class)):
+            return str(class_cfg.get("candidate") or model)
+        return model
 
 
 class Manager:
@@ -538,6 +640,10 @@ class Manager:
         self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
+        # Model routing (P11.5): the server sets routing_config from settings ("model_routing");
+        # without a config the default behaviour is unchanged. Measurements persist here.
+        self.routing_config = lambda: {}
+        self.routing = Routing(home / "agents" / "model-routing.json")
 
     # -- control
 
@@ -663,6 +769,19 @@ class Manager:
     def budget(self) -> float:
         return 0.0  # set by the server from the settings
 
+    def _routed_model(self, s: Session) -> str:
+        """The model this run actually uses (P11.5). The user's explicit choice wins; otherwise the
+        routing config for the session's task class, where a configured candidate only replaces the
+        class model after it measured more verified matches. No config: the CLI's own default --
+        exactly the behaviour before routing existed."""
+        explicit = s.options.get("model") or ""
+        config = getattr(self, "routing_config", None)
+        config = config() if callable(config) else {}
+        routing = getattr(self, "routing", None)
+        if routing is None or not config:
+            return explicit
+        return routing.model_for(config, s.task_class or DEFAULT_TASK_CLASS, explicit)
+
     def _run(self, s: Session) -> None:
         agent, token = self.net.local_agent(s.agent_name)
         self.assignments[agent.id] = s.slug
@@ -701,6 +820,12 @@ class Manager:
             s.runs += 1
             t0 = time.time()
             before = self._progress(agent.id)
+            task = s.options.get("task_class") or DEFAULT_TASK_CLASS
+            if task not in TASK_CLASSES:
+                task = DEFAULT_TASK_CLASS
+            s.task_class = task
+            s.routed_model = self._routed_model(s)
+            s.push("info", f"session {s.runs}: " + run_log(task, s.routed_model))
             try:
                 ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
             except Fatal as e:  # needs the user first: retrying can't help
@@ -709,6 +834,15 @@ class Manager:
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
+            # measurement hook (P11.5): one verified-outcome sample per (task class, model) run
+            if s.routed_model and (routing := getattr(self, "routing", None)) is not None:
+                try:
+                    matched = self.net.store.one(
+                        "SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='match' AND created_at>=?",
+                        agent.id, t0)
+                    routing.record(task, s.routed_model, int(matched["n"] or 0))
+                except Exception:
+                    pass  # measurement is best-effort: never fail the loop for it
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = "the session ended without compiling anything (check the agent's output)"
                 s.push("error", s.error)
@@ -793,7 +927,7 @@ class Manager:
         # with: that bridge works as this session's agent when it finds this, not as a new agent of the user's
         env["DECOMP_SESSION_TOKEN"] = token
         prompt = self.prompt(s)
-        model = s.options.get("model") or ""
+        model = s.routed_model or self._routed_model(s)
         if s.kind == "claude":
             cfg = workdir / "mcp.json"
             cfg.write_text(json.dumps({"mcpServers": {"decomp": {"type": "http", "url": self.mcp_url,

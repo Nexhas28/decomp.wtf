@@ -98,3 +98,114 @@ def test_w05_status_shows_verification_scope_and_origins(net):
     # conservative percent: never rounds a near-match up to a claim it didn't earn
     assert s["matched"] == 2  # the fixture's pre-matched func_006 plus the freshly matched func_002
     assert s["matched_bytes"] <= s["bytes"]
+
+
+# ------------------------------------------------------------------- W-02: new evidence
+
+def test_w02_new_evidence_regrants_a_bounded_retry_with_explicit_reason(net):
+    """W-02: an exhausted function gets a bounded retry when new evidence arrives, and the reset
+    reason names that evidence explicitly — never a silent or unbounded budget grant."""
+    from decompnet.app.permute import Permuter
+
+    alice = net.authenticate(net.register_agent("alice"))
+    proj = net.store.one("SELECT * FROM projects WHERE id=1")
+
+    # evidence kind 1: a committed header change over a walled function (toolchain wall -> cooldown)
+    net.claim(alice, function="func_002")
+    out = net.release(alice, "func_002", "jump-table: Illegal operands (lui)")
+    assert "Wall recorded" in out
+    walled = net.store.one("SELECT turns_used, max_turns, cooldown_until, reset_reason "
+                           "FROM search_budgets WHERE function_id=2")
+    assert walled["reset_reason"].startswith("wall:") and walled["turns_used"] == walled["max_turns"]
+    assert walled["cooldown_until"] > 0
+    # strategy claims skip the wall; a by-name claim still works
+    other = net.claim_row(alice, "fixture", strategy="easiest")
+    assert other is not None and other["name"] != "func_002"
+    net.release(alice, other["name"], "")  # hand the strategy claim back before the by-name claim
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET unit='u2' WHERE id=2")
+        db.execute("INSERT INTO context_versions(project_id, version, header, agent_id, message, "
+                   "created_at, unit) VALUES(1, 3, 'int u2;', NULL, 'evidence', 0, 'u2')")
+        net._reset_budgets_for_context(db, 1, "u2", 3)
+    row = net.store.one("SELECT turns_used, max_turns, cooldown_until, reset_reason "
+                        "FROM search_budgets WHERE function_id=2")
+    assert row["reset_reason"] == "context-changed"  # the reason names the evidence
+    assert row["turns_used"] == 0 and row["cooldown_until"] == 0 and row["max_turns"] == 4  # bounded
+    assert net.store.one("SELECT COUNT(*) AS n FROM function_walls WHERE function_id=2")["n"] == 1
+    assert net.claim_row(alice, "fixture", "func_002")["name"] == "func_002"  # claimable again
+
+    # evidence kind 2: a strictly better agent source over an exhausted (non-wall) budget
+    fn5 = net.store.one("SELECT * FROM functions WHERE id=5")  # a near-miss (id 3 is deliberately far)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO search_budgets(function_id, turns_used, max_turns, last_at) "
+                   "VALUES(5, 4, 4, 0)")
+    net._record(fn5, alice, fn5["best_score"] - 1, "int func_005(void) { return 0; }", 1)
+    row = net.store.one("SELECT turns_used, max_turns, reset_reason FROM search_budgets WHERE function_id=5")
+    assert row["turns_used"] == 0 and row["reset_reason"] == "better-source" and row["max_turns"] == 4
+    ids = [f["id"] for f in Permuter(net).candidates(proj, limit=50)]
+    assert 5 in ids  # the bounded retry is actually available to the permuter
+
+
+# ------------------------------------------------------------------- W-03: bounded briefs
+
+def test_w03_briefs_stay_bounded_under_repeated_long_dossiers(net):
+    """W-03: a function handed off repeatedly with long dossiers still gets a bounded brief —
+    note ingress is capped per note and per query, so the brief cannot grow with handoff count."""
+    alice = net.authenticate(net.register_agent("alice"))
+    fn = net.store.one("SELECT * FROM functions WHERE id=2")
+    big = "x" * 9000  # far beyond the per-note cap
+    for i in range(8):
+        net.add_note(alice, "fixture", f"{big}-{i}", function="func_002")
+    for i in range(5):
+        net.add_note(alice, "fixture", f"{big}-p{i}")
+    # the cap is enforced at ingress: no unbounded text ever reaches a brief
+    assert net.store.one("SELECT LENGTH(text) AS n FROM notes WHERE function_id=2 LIMIT 1")["n"] == 4000
+    brief = net._brief(fn, alice, "CLAIMED")
+    assert len(brief) <= 65_000  # bounded: 8 function notes + 5 project notes, each capped at 4000
+    assert "xxxx" in brief  # the bounded dossier content is still present
+
+
+# ------------------------------------------------- W-06: benchmark experiment identity
+
+def test_w06_benchmark_manifest_identity_separates_runs(tmp_path):
+    """W-06: the harness manifest carries a unique experiment identity per run and retains the
+    settings (stub/provider config) and cost summary — a changed configuration is a new, separate
+    experiment, never a silent overwrite of the previous run's artifacts."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    harness = repo / "benchmarks" / "harness" / "replay.py"
+    net = Network(tmp_path / "replay.db")
+    make_project(net, 3)
+    net.store.conn.close()  # hand the database over to the harness subprocesses
+    attempts = tmp_path / "attempts.jsonl"
+    attempts.write_text("".join(
+        json.dumps({"function": f"func_{i:03d}", "source": f"int func_{i:03d}(void) {{ return {i}; }}"}) + "\n"
+        for i in range(1, 4)), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(repo / "src")}
+    base = [sys.executable, str(harness), "--db", str(tmp_path / "replay.db"), "--project", "fixture",
+            "--attempts", str(attempts), "--out", str(tmp_path / "results")]
+    for stub in ("compile-error", "score-5"):  # different provider/config per run
+        subprocess.run(base + ["--stub", stub], env=env, check=True, capture_output=True, text=True,
+                       timeout=120)
+
+    run_dirs = sorted((tmp_path / "results").iterdir())
+    assert len(run_dirs) == 2  # two experiments, two separate result directories
+    manifests = []
+    for d in run_dirs:
+        m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        assert set(m) == {"schema_version", "run_id", "started_utc", "kind", "stub", "db", "project",
+                          "attempts_in"}
+        assert m["schema_version"] == 1 and m["kind"] == "fixed-input-replay"
+        assert m["project"] == "fixture" and m["attempts_in"] == 3
+        manifests.append(m)
+        s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+        assert s["total_attempts"] == 3 and s["compiles"] == 3 and s["errors"] == 0
+        assert (d / "stage-timings.jsonl").exists()
+    assert len({m["run_id"] for m in manifests}) == 2  # experiment identity separates runs
+    assert {m["stub"] for m in manifests} == {"compile-error", "score-5"}  # settings retained per run
