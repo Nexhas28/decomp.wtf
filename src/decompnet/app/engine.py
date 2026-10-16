@@ -2399,7 +2399,7 @@ class RomNetwork(Network):
                                                   time.time(), ""))
 
     def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> None:
-        """Mirror the room's splits and names. The host already regression-tested them on the same ROM."""
+        """Mirror the room's merges, splits and names. The host already regression-tested them on the same ROM."""
         proj = self._project(slug)
         pid = proj["id"]
         if functions:  # the host joined functions or moved a cut: join here first, the splits below cut again
@@ -2431,6 +2431,9 @@ class RomNetwork(Network):
                            (pid, f["name"], f["vram"], tail.size, "func"))
             local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         self._xrefs.pop(pid, None)
+        if functions:  # a cut the host moved earlier: the piece the splits just cut out takes in what follows
+            from . import boundary
+            boundary.follow_layout(self, proj, functions)
         syms = self.symbols(pid)
         for sym in symbols:
             current, off = syms.name_at(sym["address"])
