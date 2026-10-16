@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .. import retrieval, scoring, seeds, similarity, snapshots, toolchains
 from ..elfobj import FunctionObj
-from ..network import Agent, Network, NetworkError, _hash_token, config_from
+from ..network import Agent, Network, NetworkError, _fragment_like, _hash_token, config_from
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -392,7 +392,10 @@ class RomNetwork(Network):
             "kind": "rom", "platform": picked.platform, "big_endian": picked.big_endian, "gp": res.gp,
             "rom": {**info, "file": res.image or picked.filename, "program": picked.filename},
             "segments": [vars(s) for s in res.segments],
-            "compiler": {"toolchain": toolchain, "flags": flags or default_flags, "timeout": 20},
+            # the import picked a toolchain from guesses/defaults: a hypothesis, recorded as such
+            "compiler": toolchains.profile_from({"toolchain": toolchain, "flags": flags or default_flags,
+                                                 "timeout": 20, "wrapper": "cmd" if tc.cmd else "cc",
+                                                 "provenance": toolchains.PROVENANCE_GUESS}).to_dict(),
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -455,7 +458,10 @@ class RomNetwork(Network):
             "kind": "rom", "platform": "gba", "big_endian": False, "gp": 0, "arch": "thumb",
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": [{"name": "rom", "rom_start": 0, "rom_end": info["size"], "vram": gba.BASE}],
-            "compiler": {"toolchain": toolchain, "flags": flags or tc.flags, "timeout": 20},
+            # the import picked a toolchain from guesses/defaults: a hypothesis, recorded as such
+            "compiler": toolchains.profile_from({"toolchain": toolchain, "flags": flags or tc.flags,
+                                                 "timeout": 20, "wrapper": "cmd" if tc.cmd else "cc",
+                                                 "provenance": toolchains.PROVENANCE_GUESS}).to_dict(),
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -732,6 +738,14 @@ class RomNetwork(Network):
             src = self.store.one("SELECT matched_source FROM functions WHERE project_id=? AND name=?", proj["id"], best["name"])
             if src and src["matched_source"]:
                 lines += ["", f"Matching C of {best['name']}:", "```c", src["matched_source"].strip()[:4000], "```"]
+        # A.14/P10.5: with retrieval routes enabled, the holdout leakage check runs before any
+        # retrieval candidate is surfaced; a leaked answer's surface is blocked with the reason shown.
+        blocked = retrieval.feedback.surface_leaks(self, proj, fn, config_from(proj))
+        if blocked:
+            lines += ["", "### Retrieval candidates — blocked (holdout leakage)"]
+            for leak in blocked:
+                lines.append(f"- {leak.answer_id}: {leak.note}")
+            return "\n".join(lines)
         return "\n".join(self._retrieval_brief(proj, fn, lines))
 
     # --------------------------------------------------- retrieval routes (P10.4/P10.5)
@@ -937,6 +951,96 @@ class RomNetwork(Network):
         self._xrefs.pop(proj["id"], None)
         return (f"✅ split: {fn['name']} is now {len(head.lines)} instructions; {new_name} at 0x{addr:08X} has "
                 f"{len(tail.lines)}. Continue with {fn['name']} (get_function shows its new assembly).")
+
+    # ------------------------------------------------------------------ boundary merge (C.4)
+
+    def merge_function(self, agent: Agent, fragment: str, continues: str, project: str | None = None) -> str:
+        """The reviewed reverse of split_function (plan C.4): `fragment` is reassembled onto `continues`
+        — its bytes, assembly and relocations — the fragment row is deleted and the symbols updated.
+        A merge requires the recorded merge_proposals row (propose_merge's review evidence, consumed on
+        success), true adjacency, the fragment shape, and that neither function is matched. Refused
+        merges change nothing and leave the proposal row for review."""
+        self._rom_only(project, "merge_function")
+        frag = self._function(fragment, project)
+        cont = self._function(continues, project)
+        if frag["project_id"] != cont["project_id"]:
+            raise NetworkError("both functions must be in the same project")
+        if frag["status"] == "matched" or cont["status"] == "matched":
+            raise NetworkError("matched functions can't be merged")
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", frag["project_id"])
+        if not self.is_rom(proj):
+            raise NetworkError("merge_function is for ROM projects")
+        a = (frag["vram"], frag["rom_offset"], frag["size"])
+        b = (cont["vram"], cont["rom_offset"], cont["size"])
+        adjacent = (a[0] is not None and b[0] is not None and a[0] == b[0] + (b[2] or 0)) or \
+                   (a[1] is not None and b[1] is not None and a[1] == b[1] + (b[2] or 0))
+        if not adjacent:
+            raise NetworkError(f"{frag['name']} and {cont['name']} are not adjacent: no boundary to merge")
+        if not _fragment_like(frag):
+            raise NetworkError(f"{frag['name']} doesn't look like a fragment (no live-in saved register at entry)")
+        if self._merge_proposal(frag["id"], cont["id"]) is None:
+            raise NetworkError(f"no reviewed merge proposal for {frag['name']} continuing {cont['name']}; "
+                               f"propose_merge first — merges are never applied without review evidence")
+        if self.cfg(proj).get("platform") == "gba":
+            return self._merge_gba(agent, proj, frag, cont)
+        return self._merge_rom(agent, proj, frag, cont)
+
+    def _merge_rom(self, agent: Agent, proj, frag, cont) -> str:
+        """Reassemble a disassembled pair: the fragment's parsed instruction lines follow the
+        continuing function's, and the target bytes/relocations are rebuilt from the combined record."""
+        rf_cont = self._parse_asm(cont["name"], cont["asm"], cont["unit"])
+        rf_frag = self._parse_asm(frag["name"], frag["asm"], frag["unit"])
+        combined = split.RomFunction(cont["name"], rf_cont.vram, rf_cont.rom, rf_cont.segment,
+                                     rf_cont.lines + rf_frag.lines, rf_cont.asm_path,
+                                     rf_cont.labels | rf_frag.labels)
+        syms = self.symbols(proj["id"])
+        gone = syms.by_name.pop(frag["name"], None)
+        if gone is not None:
+            syms.by_addr.pop(gone.address, None)
+        target = self._make_target(proj, combined, syms)
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?",
+                       (combined.size, len(combined.lines), target.code, json.dumps(target.to_json()),
+                        self._asm_source(combined), cont["id"]))
+            self._delete_function_rows(db, frag["id"])
+            db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
+            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?",
+                       (combined.size, proj["id"], cont["name"]))
+            db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], frag["name"]))
+            self._consume_merge_proposals(db, frag["id"])
+            self._event(db, proj["id"], agent.id, "merge", f"{frag['name']} into {cont['name']}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        self._syms.pop(proj["id"], None)
+        return (f"✅ merged: {frag['name']} is now the continuation of {cont['name']} "
+                f"({len(combined.lines)} instructions, {combined.size} bytes). "
+                f"Continue with {cont['name']} (get_function shows its reassembled assembly).")
+
+    def _merge_gba(self, agent: Agent, proj, frag, cont) -> str:
+        """Reassemble a GBA pair at the byte level (the reverse of _split_gba): concatenated bytes,
+        re-offset relocations, joined assembly."""
+        off = len(cont["target"] or b"")
+        target = (cont["target"] or b"") + (frag["target"] or b"")
+        refs = json.loads(cont["relocs"]) + [[r[0] + off, r[1], r[2]] for r in json.loads(frag["relocs"])]
+        asm = (cont["asm"] or "").rstrip() + "\n" + (frag["asm"] or "").strip()
+        size = len(target)
+        n_insns = (cont["n_insns"] or 0) + (frag["n_insns"] or 0)
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                       "revision=revision+1 WHERE id=?",
+                       (size, max(1, n_insns), target, json.dumps(refs), asm, cont["id"]))
+            self._delete_function_rows(db, frag["id"])
+            db.execute("DELETE FROM functions WHERE id=?", (frag["id"],))
+            db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (size, proj["id"], cont["name"]))
+            db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], frag["name"]))
+            self._consume_merge_proposals(db, frag["id"])
+            self._event(db, proj["id"], agent.id, "merge", f"{frag['name']} into {cont['name']}")
+        self._xrefs.pop(proj["id"], None)
+        self._ops.pop(proj["id"], None)
+        self._syms.pop(proj["id"], None)
+        return (f"✅ merged: {frag['name']} is now the continuation of {cont['name']} "
+                f"({n_insns} instructions, {size} bytes). Continue with {cont['name']}.")
 
     def _split_gba(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
         """Cut a GBA function's bytes and assembly in two at `addr` (Thumb: a halfword boundary)."""
@@ -1746,12 +1850,18 @@ class RomNetwork(Network):
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """Its twins get its code, at once. (Not for the full twins pass's own matches while it runs: it tries
-        those twins itself.)"""
+        those twins itself.) Then the P6.5 acceptance feedback: the similarity index entry is marked
+        source-available and the reuse ledger records the retrieval route the verification receipt names
+        (A.14). Diagnostics only — never match state."""
         if proj is None:
             return
         if agent is not None and agent.name == "autopilot" and self.twins._full_running(proj["slug"]):
             return
         self.twins.after_match(proj, function_id)
+        try:
+            retrieval.feedback.record_acceptance(self, proj, function_id)
+        except Exception as e:  # feedback must never break the accepted match
+            logging.getLogger("decomp.wtf").info("acceptance feedback: %s", e)
 
     def try_quietly(self, agent, proj, fn, source: str) -> dict:
         """Judge one candidate for a function nobody holds (autopilot's tries): held only while it compiles,
@@ -1930,16 +2040,40 @@ class RomNetwork(Network):
                 "claims": claims, "overview": self.overview(slug)}
 
     def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> None:
+        """Set the project's compiler profile (P4.1): provenance becomes "explicit" and the change is
+        versioned with `profile_diff`. A profile-identity change invalidates the affected state -- open
+        functions' machine drafts (seeds) and permuter search budgets (bounded, reason recorded) --
+        and the event row carries the invalidation contract. The compilation cache needs no flush:
+        its keys are content-addressed from the profile, so a change is a change of key."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)
-        cfg["compiler"] = {"toolchain": tc.id, "flags": flags or tc.flags, "timeout": 20}
+        before = toolchains.profile_of(proj)
+        profile = toolchains.profile_from({**cfg.get("compiler", {}), "toolchain": tc.id,
+                                           "flags": list(flags or tc.flags),
+                                           "provenance": toolchains.PROVENANCE_EXPLICIT})
+        change = toolchains.profile_diff(before, profile, note="set_compiler")
+        cfg["compiler"] = profile.to_dict()
         with self.store.tx() as db:
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
-            self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
+            if change.is_identity_change:
+                # drafts: old seeds are m2c output for the old profile
+                db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
+                # search budgets: a different compiler is new search input (bounded; reason recorded)
+                db.execute(
+                    "UPDATE search_budgets SET turns_used=0, cooldown_until=0, epoch=?, "
+                    "reset_reason='compiler-changed', last_at=? WHERE (turns_used > 0 OR cooldown_until > 0) "
+                    "AND function_id IN (SELECT id FROM functions WHERE project_id=?)",
+                    (f"profile-{change.after_identity[:16]}", time.time(), proj["id"]))
+            detail = (f"{tc.name} {' '.join(profile.flags)} (provenance {change.provenance[0]} -> "
+                      f"{change.provenance[1]}; identity {change.before_identity[:12]} -> "
+                      f"{change.after_identity[:12]}")
+            if change.is_identity_change:
+                detail += f"; invalidated: {', '.join(change.invalidates)}"
+            detail += ")"
+            self._event(db, proj["id"], None, "compiler", detail)
 
     def chat_agent(self, base: str, client: str = "") -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,

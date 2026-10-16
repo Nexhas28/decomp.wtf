@@ -17,6 +17,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -30,7 +31,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
-from .. import __version__, hostenv, toolchains
+from .. import __version__, cache as ccache, hostenv, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
@@ -392,8 +393,32 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 out.append((p["slug"], {"slug": p["slug"], "title": p["name"] or p["slug"]}, job_error(e, jobs.log_path)))
         return out
 
+    def verification_scope(slug: str) -> dict:
+        """A.2/P11.7: truthful verification scope for one project — receipt coverage, the matched
+        epoch, candidate origins and the recorded wall/stall reasons. Counts only: the GUI renders
+        these numbers, never a rounded green percent derived from them."""
+        proj = net.project_row(slug)
+        pid = proj["id"]
+        receipts = net.store.one(
+            "SELECT COUNT(*) AS n FROM verification_receipts r JOIN functions f ON f.id=r.function_id "
+            "WHERE f.project_id=?", pid)["n"] or 0
+        origins = {r["origin"]: r["n"] for r in net.store.all(
+            "SELECT origin, COUNT(*) AS n FROM candidates c JOIN functions f ON f.id=c.function_id "
+            "WHERE f.project_id=? GROUP BY origin", pid)}
+        stalls = {r["reset_reason"] or "none": r["n"] for r in net.store.all(
+            "SELECT reset_reason, COUNT(*) AS n FROM search_budgets b JOIN functions f ON f.id=b.function_id "
+            "WHERE f.project_id=? GROUP BY reset_reason", pid)}
+        walls = {r["signature"]: r["n"] for r in net.store.all(
+            "SELECT signature, COUNT(*) AS n FROM function_walls w JOIN functions f ON f.id=w.function_id "
+            "WHERE f.project_id=? GROUP BY signature", pid)}
+        return {"receipts": receipts, "matched_epoch": proj["matched_epoch"],
+                "origins": origins, "stalls": stalls, "walls": walls}
+
     def state() -> dict:
-        projects = [ov | ({"broken": why} if why else {}) for _, ov, why in overviews()]
+        projects = []
+        for slug, ov, why in overviews():
+            projects.append(ov | ({"broken": why} if why else {})
+                            | ({"verification": verification_scope(slug)} if not why else {}))
         tcs = [t for t in toolchains.status() if t["id"] in COMPILERS or t["id"] in TOOLS]
         for t in tcs:
             t["use"] = COMPILERS.get(t["id"]) or TOOLS[t["id"]]
@@ -437,6 +462,24 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     @mcp.custom_route("/api/state", methods=["GET"])
     async def api_state(request: Request) -> Response:
         return guard(request) or JSONResponse(await call(state))
+
+    @mcp.custom_route("/api/cache", methods=["GET"])
+    async def api_cache(request: Request) -> JSONResponse:
+        return guard(request) or JSONResponse(await call(cache_status))
+
+    def cache_status() -> dict:
+        """A.4/P2.8: the compile cache the coordinator uses, for the GUI's diagnostics line — hit/miss
+        counts, published entries, quarantined and evicted entries, plus the cache's own diagnose().
+        Graceful: the cache turned off, unwritable, or not created yet all answer truthfully."""
+        if os.environ.get("DECOMPNET_COMPILE_CACHE") == "0":
+            return {"enabled": False, "reason": "DECOMPNET_COMPILE_CACHE=0 turns the compile cache off"}
+        root = Path(os.environ["DECOMPNET_CACHE_DIR"]) if os.environ.get("DECOMPNET_CACHE_DIR") \
+            else Path(tempfile.gettempdir()) / "decompnet-cache"
+        cache = ccache.cache_for_dir(root)
+        if cache is None:
+            return {"enabled": False, "dir": str(root),
+                    "reason": f"the compile cache at {root} cannot be created (unwritable?)"}
+        return {"enabled": True, "dir": str(root), "stats": dict(cache.stats), "diagnose": cache.diagnose()}
 
     @mcp.custom_route("/api/import", methods=["POST"])
     async def api_import(request: Request) -> Response:
@@ -557,7 +600,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def p_overview(slug, request, data):
         settings.data["last_project"] = slug
         settings.save()
-        return net.overview(slug)
+        return net.overview(slug) | {"verification": verification_scope(slug)}
 
     def p_live(slug, request, data):
         q = request.query_params

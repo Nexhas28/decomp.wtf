@@ -23,6 +23,7 @@ from .fid import (FID_SCHEMA, FidCandidate, FidError, FidLane, FidResult, Functi
 from .registry import (DEFAULT_ROUTE_ORDER, REGISTRY_SCHEMA, ROUTE_KINDS, Admission, Leakage,
                        ReferenceEntry, Registry, RetrievalConfig, admit_retrieval, digest,
                        normalise_location)
+from .feedback import record_acceptance, route_from_origin, similarity_index, surface_leaks
 
 __all__ = [
     # registry (P10.1/P10.5)
@@ -35,4 +36,6 @@ __all__ = [
     "BSIM_FEATURE_NAMES", "SIGNATURE_SCHEMA", "BsimCandidate", "BsimIndex", "BsimLane", "BsimResult",
     "BsimSignature", "RouteStep", "SidecarEntry", "enabled_routes", "normalise_instructions",
     "route_plan", "signature_similarity", "toolchain_available",
+    # acceptance feedback (A.14 / P6.5-P10.5)
+    "route_from_origin", "similarity_index", "record_acceptance", "surface_leaks",
 ]
