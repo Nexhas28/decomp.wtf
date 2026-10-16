@@ -38,7 +38,7 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
-                   "psx": "beta", "ps2": "beta", "gba": "beta", "gb": "beta", "gbc": "beta", "nds": "beta"}
+                   "psx": "beta", "gba": "beta", "gb": "beta", "gbc": "beta", "nds": "beta"}  # PlayStation 2: switched off for now (rom/detect.py)
 COMPILERS = {
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
@@ -52,8 +52,6 @@ COMPILERS = {
     "gcc-2.8.0-psx": "later PlayStation games",
     "gcc-2.91.66-psx": "late PlayStation games (egcs)",
     "gcc-2.95.2-psx": "the last PlayStation games",
-    "ee-gcc-2.96": "PlayStation 2 games (Sony's EE GCC)",
-    "mwcc-ps2": "PlayStation 2 games built with CodeWarrior (proprietary)",
     "agbcc": "Game Boy Advance games (pret's agbcc, GCC 2.95)",
     "gbdk-2020": "Game Boy and Game Boy Color games (GBDK-2020 / SDCC)",
 }

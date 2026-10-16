@@ -89,7 +89,8 @@ def test_reinstalled_toolchain_changes_profile_identity(tmp_path, monkeypatch):
     """Installing the toolchain, and reinstalling it with different pinned binaries, both
     change the profile identity; an identical reinstall does not."""
     monkeypatch.setenv("DECOMPNET_TOOLCHAINS", str(tmp_path / "toolchains"))
-    p = make_profile()
+    # a downloaded toolchain: for a bundled one (KMC on Apple Silicon) a manifest of a download is a stale install
+    p = make_profile(toolchain="ido-7.1")
     before = p.identity()
     write_manifest(tmp_path, p.toolchain, "1" * 64)
     first_install = p.identity()
