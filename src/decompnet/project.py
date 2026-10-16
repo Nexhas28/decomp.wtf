@@ -166,7 +166,9 @@ def variant_compiler_config(root: Path, cfg: dict, *, asm_pass: str = ASM_VARIAN
     endian = "-EB" if cfg.get("big_endian") else "-EL"
     return replace(
         base,
-        asm_cmd=(str(asm), endian, "-o", "{obj}", "{src}"),
+        # -G0: the ROM uses absolute lui/%lo addressing for these globals; the modern assembler would
+        # otherwise shrink them to %gp_rel (measured: 6790 vs 410 on slus-01363 func_800A51DC).
+        asm_cmd=(str(asm), endian, "-G0", "-o", "{obj}", "{src}"),
         asm_pass=asm_pass,
         cache=False,
         ro_paths=tuple({*base.ro_paths, str(asm_dir)}),

@@ -78,6 +78,7 @@ def test_variant_config_uses_the_modern_assembler_and_the_move_pass(tmp_path, mo
     v = project.variant_compiler_config(root, cfg)
     assert v is not None
     assert v.asm_cmd[0] == str(asm_dir / "as") and v.asm_cmd[1] == "-EL"
+    assert "-G0" in v.asm_cmd  # absolute lui/%lo addressing: the ROM never uses %gp_rel here
     assert v.asm_pass == "psyq-move-addu"
     assert v.cache is False  # variant compiles must not poison the content-addressed cache
     assert str(asm_dir) in v.ro_paths
@@ -121,10 +122,27 @@ def _should_try(verdict, score, limit=200) -> bool:
 def test_variant_only_runs_for_near_misses():
     assert _should_try(False, 100) is True          # near miss: try the variant
     assert _should_try(False, 200) is True          # at the limit
-    assert _should_try(False, 201) is False         # far off: not worth a second compile
+    assert _should_try(False, 201) is False         # far off and structurally close: skip
     assert _should_try(False, 159265) is False      # a wall (jtbl giant) is skipped
     assert _should_try(True, 0) is False            # already matched
     assert _should_try(None, 0) is False            # nothing to fix
+
+
+def _worth_variant(verdict, score, extras, limit=200, max_extra=5) -> bool:
+    """The judge's real condition (network.Network._worth_variant), restated for the table test."""
+    if verdict is True or score <= 0:
+        return False
+    return score <= limit or extras >= max_extra
+
+
+def test_structural_mismatch_also_triggers_the_variant():
+    # func_800A51DC: 785 rows for a 733-insn target - 52 extras from the assembler's blocking nops,
+    # score far above the near-miss limit, yet the variant is what makes it reproducible (5320 -> 410).
+    assert _worth_variant(False, 5320, extras=52) is True
+    assert _worth_variant(False, 110, extras=1) is True     # near-miss limit path
+    assert _worth_variant(False, 5000, extras=0) is False   # nothing structural to fix
+    assert _worth_variant(True, 0, extras=0) is False
+    assert _worth_variant(False, 159265, extras=2) is False # jtbl wall: still skipped
 
 
 def test_variant_result_is_kept_only_when_strictly_better():
