@@ -590,10 +590,16 @@ class RomNetwork(Network):
                     {"toolchain": "", "flags": [], "timeout": 20, "wrapper": "cc",
                      "provenance": "unavailable",
                      "note": "the Game Boy C toolchain (GBDK-2020) is not installed: run `decomp setup`"})
+        # One segment per 16 KiB bank: bank 0 occupies 0x0000-0x3FFF, every other bank is switched into
+        # the 0x4000-0x7FFF window (the same window for all of them, which is what the hardware does).
+        segments = [{"name": f"bank{b:03d}", "rom_start": b * gb.BANK_SIZE,
+                     "rom_end": min((b + 1) * gb.BANK_SIZE, info["size"]),
+                     "vram": 0 if b == 0 else 0x4000}
+                    for b in range(max(1, info["size"] // gb.BANK_SIZE))]
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": "sm83",
             "rom": {**info, "file": picked.filename, "program": picked.filename},
-            "segments": [{"name": "rom", "rom_start": 0, "rom_end": info["size"], "vram": 0}],
+            "segments": segments,
             "compiler": compiler,
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
@@ -610,14 +616,16 @@ class RomNetwork(Network):
             names: set[str] = set()
             for f in fns:
                 name = f.name
-                if name in names:
+                if name in names:  # two banks can share a CPU address; the bank in the name prevents it
                     name = f"{name}_{f.rom:06x}"
                 names.add(name)
                 db.execute(
                     "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    # vram is the CPU address the ROM's instructions use; rom_offset the flat file offset;
+                    # the unit is the bank, so briefs and context edits read per bank.
                     (pid, name, f.size, f.n_insns, f.code, json.dumps([list(r) for r in f.refs or []]),
-                     f.asm, None, "rom", f.vram, f.rom, "open" if matchable else "asm"))
+                     f.asm, None, f"bank{f.bank:03d}", f.vram, f.rom, "open" if matchable else "asm"))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                            (pid, name, f.vram, f.size, "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "

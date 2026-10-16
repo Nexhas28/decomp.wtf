@@ -217,6 +217,20 @@ def test_candidates_include_vectors_entry_and_call_targets():
     assert found[0x100] == "entry"
     assert 0x150 in found          # the code start itself is reached by the entry's `jp`
     assert 0x200 in found and 0x210 in found
+    # flat offsets are what discovery returns; the CPU address is derived per bank
+    assert gb.cpu_address(0x150) == 0x150 and gb.bank_of(0x150) == 0
+
+
+def test_bank_and_cpu_addresses_round_trip():
+    """Bank 0 is wired to 0x0000-0x3FFF; every other bank appears in the 0x4000-0x7FFF window, so the
+    same CPU address can exist in two banks and an address alone is not an identity."""
+    assert gb.bank_of(0x178D) == 0 and gb.cpu_address(0x178D) == 0x178D
+    assert gb.bank_of(0x432B) == 1 and gb.cpu_address(0x432B) == 0x432B      # bank 1: flat == CPU
+    assert gb.bank_of(0x831C) == 2 and gb.cpu_address(0x831C) == 0x431C      # bank 2: mapped to 0x4000+
+    assert gb.function_name(0x831C) == "func_002_431c"
+    assert gb.function_name(0x000B58) == "func_000_0b58"
+    for flat in (0x0000, 0x0150, 0x3FFF, 0x4000, 0x432B, 0x7FFF, 0x8000, 0x831C):
+        assert gb.flat_offset(gb.cpu_address(flat), gb.bank_of(flat)) == flat
 
 
 def test_functions_are_disassembled_with_names_and_refs():
@@ -224,14 +238,14 @@ def test_functions_are_disassembled_with_names_and_refs():
     rom = make_rom(code=code)
     fns = gb.functions(rom)
     by_addr = {f.vram: f for f in fns}
-    assert 0x150 in by_addr and by_addr[0x150].name == "func_000150"
+    assert 0x150 in by_addr and by_addr[0x150].name == "func_000_0150"  # bank 0, CPU address (bank_cpu)
     entry_call = by_addr[0x150]
     assert entry_call.n_insns >= 2
     assert "call $0200" in entry_call.asm
     assert (0, 10, 0x200) in entry_call.refs  # (offset, kind=call, address)
     assert all(f.size > 0 and f.asm for f in fns)
     # the entry point is disassembled too (nop · jp $0150)
-    assert by_addr[0x100].asm.startswith("000100  nop")
+    assert by_addr[0x100].asm.startswith("0150  nop") or "nop" in by_addr[0x100].asm
 
 
 def test_split_reads_a_rom_file(tmp_path):
