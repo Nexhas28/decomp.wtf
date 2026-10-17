@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -443,21 +444,21 @@ def _opencode_log_level(exe: str) -> str:
             _log_levels[exe] = "error"
     return _log_levels[exe]
 
-_standalone: dict[str, bool] = {}  # opencode path -> whether `opencode run` takes --standalone
+_own_server: dict[str, bool] = {}  # opencode path -> whether it has `opencode serve` and `opencode run --server`
 
 
-def _opencode_standalone(exe: str) -> bool:
-    """OpenCode 2 hands `opencode run` to one background service shared by every run, which keeps the MCP servers it
-    connected first: a helper's own decomp.wtf connection is never used, and its calls arrive as whoever that service
-    connected as (the user's own opencode identity, through `decomp mcp`). --standalone gives each run its own."""
-    if exe not in _standalone:
+def _opencode_own_server(exe: str) -> bool:
+    """OpenCode 2 runs `opencode run` through one background service shared by every run (which keeps the MCP
+    connection it made first, as whoever that was), and doesn't wait for MCP servers before sending the prompt.
+    Where `run` takes --server, each helper session gets its own server instead (ocrun)."""
+    if exe not in _own_server:
         try:
             out = subprocess.run([exe, "run", "--help"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                  timeout=15)
-            _standalone[exe] = "--standalone" in (out.stdout + out.stderr)
+            _own_server[exe] = "--server" in (out.stdout + out.stderr)
         except (OSError, subprocess.TimeoutExpired):
-            _standalone[exe] = False
-    return _standalone[exe]
+            _own_server[exe] = False
+    return _own_server[exe]
 
 
 # Claude Code's aliases always point at Anthropic's latest model of each kind.
@@ -1618,8 +1619,9 @@ class Manager:
             }), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
             # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag.)
-            cmd = [exe, "run", *(["--standalone"] if _opencode_standalone(exe) else []), "--format", "json",
-                   "--print-logs", "--log-level", _opencode_log_level(exe)]
+            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", _opencode_log_level(exe)]
+            if _opencode_own_server(exe):  # its own server, ready with decomp's tools before the prompt goes in
+                cmd = [sys.executable, "-m", "decompnet.app.ocrun", exe, *cmd[2:]]
             if model:
                 cmd += ["-m", model]
         else:
