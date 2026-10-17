@@ -117,25 +117,70 @@ def test_opencode_free_models_keep_their_tools_but_never_get_to_use_them(tmp_pat
         assert json.loads((work / "opencode.json").read_text())["permission"] == {"edit": rule, "bash": rule, "webfetch": rule}
 
 
-def test_opencode_2_helpers_run_standalone_not_through_the_shared_service(tmp_path, monkeypatch):
-    """OpenCode 2's `opencode run` goes through one background service that keeps the MCP servers it connected
-    first, so a helper's calls arrived as the user's own opencode identity. --standalone, where it exists."""
+def test_opencode_2_helpers_get_their_own_server(tmp_path, monkeypatch):
+    """OpenCode 2's `opencode run` goes through one shared service (which keeps the MCP connection it made first)
+    and doesn't wait for MCP servers: where `run` takes --server, the session runs through ocrun, which starts its
+    own server and waits for decomp's tools first."""
+    import sys
+
     monkeypatch.setattr(agents, "_config_model", lambda kind: None)
-    for version, help_text, standalone in (("2.0.31", "--standalone  Run with a private server", True),
-                                           ("1.19.0", "--model string", False)):
+    for version, help_text, own in (("2.0.31", "--server string  Connect to a server URL", True),
+                                    ("1.19.0", "--model string", False)):
         m = _manager(tmp_path, monkeypatch, "opencode")
         exe = tmp_path / "bin" / "opencode"
         exe.write_text(f'#!/bin/sh\nif [ "$1" = run ]; then echo "{help_text}"; else echo "opencode v{version}"; fi\n')
-        agents._standalone.clear()
+        agents._own_server.clear()
         agents._log_levels.clear()
         s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {"model": "anthropic/claude-haiku-5-5"})
         work = tmp_path / f"oc-{version}"
         work.mkdir()
         cmd, _, _ = m._command(s, "tok", work)
-        assert ("--standalone" in cmd) is standalone, cmd
-        assert cmd[1] == "run" and cmd[cmd.index("--log-level") + 1] == ("error" if standalone else "ERROR")
-    agents._standalone.clear()
+        if own:
+            assert cmd[:4] == [sys.executable, "-m", "decompnet.app.ocrun", str(exe)] and "run" not in cmd
+        else:
+            assert cmd[:2] == [str(exe), "run"]
+        assert cmd[cmd.index("--log-level") + 1] == ("error" if own else "ERROR") and "anthropic/claude-haiku-5-5" in cmd
+    agents._own_server.clear()
     agents._log_levels.clear()
+
+
+def test_ocrun_waits_for_decomps_tools_then_runs_against_its_own_server(tmp_path, monkeypatch, capsys):
+    from decompnet.app import ocrun
+
+    calls, statuses = [], iter([OSError("not up"), ("pending", ""), ("connected", "")])
+
+    class Server:
+        returncode = None
+        def poll(self): return None
+        def terminate(self): calls.append("terminate")
+        def wait(self, timeout=None): return 0
+
+    def popen(cmd, **kw):
+        calls.append(("serve", cmd[1], kw["env"]["OPENCODE_SERVER_PASSWORD"]))
+        return Server()
+
+    def status(url, password, directory):
+        v = next(statuses)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    monkeypatch.setattr(ocrun.subprocess, "Popen", popen)
+    monkeypatch.setattr(ocrun.subprocess, "run", lambda cmd, env: calls.append(("run", cmd[1:4])) or
+                        type("R", (), {"returncode": 0})())
+    monkeypatch.setattr(ocrun, "decomp_status", status)
+    monkeypatch.setattr(ocrun.time, "sleep", lambda s: None)
+    assert ocrun.main(["opencode", "--format", "json"]) == 0
+    assert calls[0][:2] == ("serve", "serve") and calls[1][0] == "run" and calls[1][1][:2] == ["run", "--server"]
+    assert calls[-1] == "terminate"
+
+    calls.clear()
+    statuses = iter([("failed", "401 unauthorized")])
+    monkeypatch.setattr(ocrun, "decomp_status", lambda *a: next(statuses))
+    assert ocrun.main(["opencode"]) == 1
+    assert not any(c[0] == "run" for c in calls if isinstance(c, tuple)) and calls[-1] == "terminate"
+    err = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert agents.parse_line("opencode", json.dumps(err))[0][1].endswith("(failed: 401 unauthorized)")
 
 
 def test_gemini_cli_helpers_carry_on_as_antigravity():
